@@ -447,10 +447,11 @@ public sealed class FixtureVaultTests
         internal IReadOnlyDictionary<string, string> HashTree()
         {
             return Directory.EnumerateFiles(Root, "*", SearchOption.AllDirectories)
-                .Where(path => !path.Contains("\\.fixturevault", StringComparison.Ordinal))
+                .Select(path => (FullPath: path, RelativePath: PathUtilities.NormalizeRelative(Root, path)))
+                .Where(item => !item.RelativePath.Equals(FixtureVaultContract.PolicyFileName, StringComparison.OrdinalIgnoreCase))
                 .ToDictionary(
-                    path => PathUtilities.NormalizeRelative(Root, path),
-                    path => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))),
+                    item => item.RelativePath,
+                    item => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(item.FullPath))),
                     StringComparer.Ordinal);
         }
 
