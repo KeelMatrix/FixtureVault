@@ -1,5 +1,7 @@
 # KeelMatrix.FixtureVault
 
+[![CI](https://github.com/KeelMatrix/FixtureVault/actions/workflows/ci.yml/badge.svg)](https://github.com/KeelMatrix/FixtureVault/actions/workflows/ci.yml)
+
 Keep your existing snapshot framework. FixtureVault audits the files around it for stale received artifacts, provable orphans, leaked sensitive data, cross-platform path problems, and CI policy violations.
 
 FixtureVault is a read-only .NET tool for repositories that use Verify, Snapshooter, approval-test outputs, or configured golden files. It complements existing snapshot frameworks; it does not replace them and does not provide snapshot assertions.
@@ -184,7 +186,7 @@ For a global tool installation, install it in an earlier step with `dotnet tool 
 
 ## Platform behavior and limitations
 
-The tool targets .NET 8 and uses platform-neutral .NET filesystem and encoding APIs. It is designed for Windows, Linux, and macOS. Case-colliding paths are reported using a case-insensitive, Unicode-normalized comparison so repositories can catch cross-filesystem hazards. The local validation matrix is documented with its tested platform evidence; unsupported conventions and inaccessible linked paths are skipped conservatively.
+The tool targets .NET 8 and uses platform-neutral .NET filesystem and encoding APIs. It is designed for Windows, Linux, and macOS. The public GitHub Actions CI matrix validates the tool on all three operating systems. Case-colliding paths are reported using a case-insensitive, Unicode-normalized comparison so repositories can catch cross-filesystem hazards. Unsupported conventions and inaccessible linked paths are skipped conservatively.
 
 FixtureVault is not a snapshot assertion framework, serializer, mutation/fix command, auto-approval system, cloud vault, hosted service, binary forensic scanner, or broad replacement for secret scanners. It does not inspect arbitrary repository files beyond the lightweight path-policy check for fixture-looking files outside approved roots.
 
