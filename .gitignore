@@ -1,0 +1,12 @@
+artifacts/
+bin/
+obj/
+.vs/
+.idea/
+.vscode/
+.dotnet/
+.nuget/
+.fixturevault.json
+keelmatrix.telemetry.json
+.env
+.env.local

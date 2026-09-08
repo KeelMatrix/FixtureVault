@@ -1,0 +1,193 @@
+# KeelMatrix.FixtureVault
+
+Keep your existing snapshot framework. FixtureVault audits the files around it for stale received artifacts, provable orphans, leaked sensitive data, cross-platform path problems, and CI policy violations.
+
+FixtureVault is a read-only .NET tool for repositories that use Verify, Snapshooter, approval-test outputs, or configured golden files. It complements existing snapshot frameworks; it does not replace them and does not provide snapshot assertions.
+
+## Install
+
+Install the global tool:
+
+```bash
+dotnet tool install --global KeelMatrix.FixtureVault --version 0.1.0
+```
+
+Update or uninstall it with:
+
+```bash
+dotnet tool update --global KeelMatrix.FixtureVault
+dotnet tool uninstall --global KeelMatrix.FixtureVault
+```
+
+## Quick start
+
+From a repository root, create the policy file and scan the configured roots:
+
+```bash
+fixturevault init
+fixturevault scan
+```
+
+`init` creates `.fixturevault.json` only when it does not already exist. It never overwrites that file and never changes fixture contents. If the file already exists, `init` reports that no files were changed.
+
+Use an explicit root for a one-off scan. Repeating `--root` scans multiple roots and overrides the roots in the policy file:
+
+```bash
+fixturevault scan --root tests/Orders --root tests/Payments
+fixturevault scan --root tests --format json
+```
+
+`scan` never creates, modifies, or deletes fixture files.
+
+## Policy
+
+The supported policy file name is `.fixturevault.json`. Its schema version is `1` and its complete v1 shape is:
+
+```json
+{
+  "version": 1,
+  "roots": ["tests"],
+  "allowedExtensions": [".verified.json", ".verified.txt", ".snap", ".golden"],
+  "maxFileBytes": 1048576,
+  "conventions": ["verify", "snapshooter", "generic"],
+  "sensitiveDataRules": ["high-confidence"],
+  "ignoredPaths": ["**/.git/**", "**/bin/**", "**/obj/**"],
+  "ci": {
+    "strict": true
+  }
+}
+```
+
+Roots are repository-relative directories. Allowed extensions are suffixes, so `.golden` matches nested names such as `Orders/Create.golden`. `maxFileBytes` is bounded to 64 MiB; the default is 1 MiB. Ignored paths use `*` for one path segment and `**` for any number of segments.
+
+When `ci.strict` is `true`, findings block the scan with exit code `1`. When it is `false`, findings are reported as warnings and the scan exits `0`; configuration and execution errors always exit `2`. `--strict` is a convenience override that turns strict behavior on for the current scan.
+
+## Supported conventions
+
+The built-in hints are:
+
+- `verify`: detects common `*.received.*` artifacts and audits `*.verified.*` baselines.
+- `snapshooter`: audits common `*.snap` files.
+- `generic`: audits files matching `allowedExtensions`, including `.golden` files.
+- `fixturevault-manifest`: enables the optional explicit orphan proof described below.
+
+Unknown hints are reported as skipped. FixtureVault does not infer a convention from arbitrary source code or test names.
+
+To configure generic golden files, add their directory to `roots`, add `.golden` to `allowedExtensions`, and include `generic` in `conventions`:
+
+```json
+{
+  "version": 1,
+  "roots": ["tests", "goldens"],
+  "allowedExtensions": [".verified.json", ".snap", ".golden"],
+  "maxFileBytes": 1048576,
+  "conventions": ["verify", "snapshooter", "generic"],
+  "sensitiveDataRules": ["high-confidence"],
+  "ignoredPaths": ["**/.git/**", "**/bin/**", "**/obj/**"],
+  "ci": { "strict": true }
+}
+```
+
+## Rules
+
+The rule IDs below are the frozen v1 report contract. Every finding has a rule ID, severity, disposition, repository-relative path, explanation, and deterministic remediation.
+
+| ID | Finding | Remediation |
+| --- | --- | --- |
+| `FV001` | A Verify `*.received.*` artifact is present without approval. | Review it and either approve it through the existing framework or remove it. |
+| `FV002` | A baseline is absent from an explicit FixtureVault manifest. | Add it to the manifest or remove the stale baseline. |
+| `FV003` | Two fixture paths differ only by case after Unicode normalization. | Rename one path so it is unique on all supported filesystems. |
+| `FV004` | A fixture exceeds `maxFileBytes`. | Reduce the fixture or deliberately raise the policy limit. |
+| `FV005` | An unexpected binary asset is present under a fixture root. | Remove it or keep only supported text fixtures. |
+| `FV006` | A fixture has non-canonical encoding or newlines. | Save it as UTF-8 without a BOM and with LF newlines. |
+| `FV007` | A high-confidence sensitive-data pattern was detected. | Remove the sensitive value from the fixture. The value is never printed. |
+| `FV008` | A fixture-looking file is outside the approved roots. | Move it below an approved root or update `roots`. |
+
+### Conservative orphan detection
+
+Ordinary Verify, Snapshooter, and generic file names do not prove that a baseline is orphaned. FixtureVault therefore reports orphan detection as skipped for those conventions and never makes a heuristic orphan claim.
+
+Teams that maintain an explicit complete baseline inventory can opt in to the `fixturevault-manifest` convention. Create `.fixturevault.manifest.json` at the repository root:
+
+```json
+{
+  "version": 1,
+  "activeBaselines": [
+    "tests/Orders/Create.verified.json",
+    "tests/Orders/List.snap"
+  ]
+}
+```
+
+With that hint enabled, a supported baseline not listed in `activeBaselines` produces `FV002`. The manifest is an explicit user-maintained proof boundary; FixtureVault does not create or update it.
+
+## JSON output
+
+Use `--format json` for CI and automation. JSON report schema version `1` is stable and findings are the same findings shown by console output:
+
+```json
+{
+  "schemaVersion": 1,
+  "toolVersion": "0.1.0",
+  "filesInspected": 2,
+  "findings": [
+    {
+      "ruleId": "FV001",
+      "severity": "error",
+      "disposition": "block",
+      "path": "tests/Orders/OrderTests.received.json",
+      "message": "A received/unapproved snapshot artifact is present in the configured fixture tree.",
+      "remediation": "Review it and either approve it through the existing framework or remove it."
+    }
+  ],
+  "skipped": [],
+  "errors": []
+}
+```
+
+Sensitive findings contain only the path and rule information. No matched value, fixture content, file hash, or secret category is included.
+
+## Exit codes
+
+- `0`: the scan completed without policy-blocking findings;
+- `1`: the scan completed and policy-blocking findings exist;
+- `2`: a configuration, input, filesystem, or execution error prevented a trustworthy scan.
+
+Malformed `.fixturevault.json`, a missing configured root, an unsafe root path, or a malformed manifest returns `2`, never a false clean result.
+
+## Security and privacy
+
+Configured roots are hard boundaries. Relative roots and `--root` overrides must remain inside the repository root; traversal outside that boundary is rejected. Repository-relative paths are used in reports. Symbolic links and Windows reparse points are never followed, including links that point outside an approved root. Link entries are reported as skipped without reading their targets.
+
+FixtureVault bounds policy size, filesystem entries, and total bytes read. It does not decode known binary assets as text. Invalid or unsupported encodings produce a bounded diagnostic. Scanning is strictly non-mutating.
+
+Sensitive-data detection is separate from redaction: FixtureVault does not rewrite a fixture to clear a finding. Detection uses hardened primitives from `KeelMatrix.Redaction` 0.1.0, but the matched value is never retained in a report or diagnostic.
+
+FixtureVault does not upload fixture contents. After a successfully completed scan, it requests the minimal activation and weekly heartbeat signals from `KeelMatrix.Telemetry` 0.1.0. Telemetry is best-effort and cannot affect scan results. Installation and `init` do not activate telemetry. Disable it for a process with:
+
+```powershell
+$env:KEELMATRIX_NO_TELEMETRY = "1"
+```
+
+The shared telemetry package also supports repository-local opt-out through `keelmatrix.telemetry.json`, `.env.local`, or `.env`.
+
+## CI example
+
+Run the built-in CLI directly; no Action is required:
+
+```yaml
+- name: Audit fixtures
+  run: fixturevault scan --format json
+```
+
+For a global tool installation, install it in an earlier step with `dotnet tool install --global KeelMatrix.FixtureVault --version 0.1.0` and add the .NET tools directory to the runner `PATH` as required by that runner.
+
+## Platform behavior and limitations
+
+The tool targets .NET 8 and uses platform-neutral .NET filesystem and encoding APIs. It is designed for Windows, Linux, and macOS. Case-colliding paths are reported using a case-insensitive, Unicode-normalized comparison so repositories can catch cross-filesystem hazards. The local validation matrix is documented with its tested platform evidence; unsupported conventions and inaccessible linked paths are skipped conservatively.
+
+FixtureVault is not a snapshot assertion framework, serializer, mutation/fix command, auto-approval system, cloud vault, hosted service, binary forensic scanner, or broad replacement for secret scanners. It does not inspect arbitrary repository files beyond the lightweight path-policy check for fixture-looking files outside approved roots.
+
+## License
+
+FixtureVault is released under the [MIT License](LICENSE).

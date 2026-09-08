@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <IsPackable>true</IsPackable>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>fixturevault</ToolCommandName>
+    <PackageId>KeelMatrix.FixtureVault</PackageId>
+    <PackageType>DotnetTool</PackageType>
+    <Description>Audit snapshot and golden files for stale artifacts, leaked secrets, orphaned baselines, portability problems, and CI policy drift.</Description>
+    <PackageTags>snapshot-testing;approval-testing;golden-files;test-fixtures;testing;ci;secrets;dotnet-tool</PackageTags>
+    <PackageReleaseNotes>Initial release of the read-only snapshot and golden-file governance tool.</PackageReleaseNotes>
+    <AssemblyName>KeelMatrix.FixtureVault</AssemblyName>
+    <RootNamespace>KeelMatrix.FixtureVault</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="KeelMatrix.Redaction" />
+    <PackageReference Include="KeelMatrix.Telemetry" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="$(MSBuildProjectDirectory)\..\..\README.md" Pack="true" PackagePath="README.md" />
+    <None Include="$(MSBuildProjectDirectory)\..\..\LICENSE" Pack="true" PackagePath="LICENSE" />
+    <None Include="$(MSBuildProjectDirectory)\..\..\icon.png" Pack="true" PackagePath="icon.png" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <PackageOutputPath>$(MSBuildProjectDirectory)\..\..\artifacts\packages\</PackageOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="KeelMatrix.FixtureVault.Tests" />
+  </ItemGroup>
+</Project>
