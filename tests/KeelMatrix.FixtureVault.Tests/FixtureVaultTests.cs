@@ -102,6 +102,26 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
+    public void Policy_and_manifest_files_are_not_fixture_candidates()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy =>
+        {
+            policy.AllowedExtensions = [".json"];
+            policy.Conventions = ["generic", "fixturevault-manifest"];
+        });
+        repository.WriteText(
+            FixtureVaultContract.ManifestFileName,
+            "{\"version\":1,\"activeBaselines\":[]}" + "\n");
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(0, result.Report.FilesInspected);
+        Assert.DoesNotContain(result.Report.Findings, item => item.RuleId == "FV008");
+    }
+
+    [Fact]
     public void Case_colliding_paths_are_reported_when_the_filesystem_can_create_both()
     {
         using var repository = new TemporaryRepository();

@@ -84,7 +84,12 @@ internal sealed class FixtureScanner
             }
         }
 
-        AddPathPolicyFindings(repositoryRoot, policy, activeRoots, ignoredMatchers, findings, skipped);
+        AddPathPolicyFindings(repositoryRoot, policy, activeRoots, ignoredMatchers, findings, skipped, errors);
+        if (errors.Count > 0)
+        {
+            return CompleteWithErrors(errors, fixtureFiles.Count);
+        }
+
         AddCaseCollisionFindings(fixtureFiles, policy, findings);
 
         ManifestLoadResult manifest = LoadManifest(repositoryRoot, policy);
@@ -193,10 +198,16 @@ internal sealed class FixtureScanner
         IReadOnlyList<ResolvedRoot> activeRoots,
         IReadOnlyList<GlobMatcher> ignoredMatchers,
         ICollection<Finding> findings,
-        ICollection<SkippedDiagnostic> skipped)
+        ICollection<SkippedDiagnostic> skipped,
+        List<ScanError> errors)
     {
         WalkResult walk = SafeFileWalker.Walk(repositoryRoot, repositoryRoot, failOnAccessErrors: false);
         AddReparseSkips(walk, skipped);
+        if (walk.Error is not null)
+        {
+            errors.Add(walk.Error);
+            return;
+        }
 
         foreach (SafeFileEntry file in walk.Files)
         {
@@ -449,6 +460,12 @@ internal sealed class FixtureScanner
     private static bool IsFixtureCandidate(string relativePath, FixtureVaultPolicy policy)
     {
         string fileName = Path.GetFileName(relativePath);
+        if (fileName.Equals(FixtureVaultContract.PolicyFileName, StringComparison.OrdinalIgnoreCase) ||
+            fileName.Equals(FixtureVaultContract.ManifestFileName, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
         bool allowedExtension = (policy.AllowedExtensions ?? []).Any(extension =>
             fileName.EndsWith(extension, StringComparison.OrdinalIgnoreCase));
         bool verify = HasConvention(policy, "verify") &&
