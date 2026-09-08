@@ -1,0 +1,77 @@
+name: CI
+
+permissions:
+  contents: read
+
+env:
+  KEELMATRIX_NO_TELEMETRY: "1"
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: ["*"]
+
+jobs:
+  validate:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "8.0.424"
+
+      - name: Restore dependencies
+        run: dotnet restore KeelMatrix.FixtureVault.sln
+
+      - name: Build Release
+        run: dotnet build KeelMatrix.FixtureVault.sln -c Release --no-restore
+
+      - name: Verify formatting
+        run: dotnet format KeelMatrix.FixtureVault.sln --verify-no-changes --no-restore
+
+      - name: Run tests
+        run: >
+          dotnet test KeelMatrix.FixtureVault.sln
+          -c Release
+          --no-restore
+          --logger "trx;LogFileName=fixturevault-${{ matrix.os }}.trx"
+          --results-directory ./artifacts/test-results
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-${{ matrix.os }}
+          path: artifacts/test-results
+          if-no-files-found: error
+
+      - name: Pack tool
+        run: >
+          dotnet pack src/KeelMatrix.FixtureVault/KeelMatrix.FixtureVault.csproj
+          -c Release
+          --no-build
+          --no-restore
+          --include-symbols
+          --p:SymbolPackageFormat=snupkg
+          --output ./artifacts/packages
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: packages-${{ matrix.os }}
+          path: |
+            artifacts/packages/*.nupkg
+            artifacts/packages/*.snupkg
+          if-no-files-found: error
+
+      - name: Check for vulnerable dependencies
+        run: dotnet list KeelMatrix.FixtureVault.sln package --vulnerable --include-transitive
