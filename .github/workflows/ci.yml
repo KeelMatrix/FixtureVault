@@ -2,6 +2,7 @@ name: CI
 
 permissions:
   contents: read
+  actions: read
 
 env:
   KEELMATRIX_NO_TELEMETRY: "1"
@@ -75,3 +76,117 @@ jobs:
 
       - name: Check for vulnerable dependencies
         run: dotnet list KeelMatrix.FixtureVault.sln package --vulnerable --include-transitive
+
+  package-consumer-smoke:
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "8.0.424"
+
+      - name: Download packed tool
+        uses: actions/download-artifact@v7
+        with:
+          name: packages-${{ matrix.os }}
+          path: ./artifacts/packages
+
+      - name: Inspect package archive
+        shell: pwsh
+        run: |
+          $package = Get-ChildItem -LiteralPath ./artifacts/packages -Filter "KeelMatrix.FixtureVault.*.nupkg" |
+            Where-Object { $_.Name -notlike "*.snupkg" } |
+            Select-Object -First 1
+          if ($null -eq $package) {
+            throw "The packed FixtureVault .nupkg was not found."
+          }
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [System.IO.Compression.ZipFile]::OpenRead($package.FullName)
+          try {
+            $entries = @($archive.Entries | ForEach-Object FullName)
+            foreach ($requiredEntry in @(
+                "README.md",
+                "LICENSE/LICENSE",
+                "icon.png",
+                "KeelMatrix.FixtureVault.nuspec",
+                "tools/net8.0/any/KeelMatrix.FixtureVault.dll")) {
+              if ($entries -notcontains $requiredEntry) {
+                throw "Expected package entry is missing: $requiredEntry"
+              }
+            }
+
+            $forbiddenEntries = @($entries | Where-Object {
+              $_ -match "(^|/)(\.git|\.env($|\.)|tests?($|/)|artifacts($|/)|bin($|/)|obj($|/))" -or
+              $_ -match "(^|/).*(secret|credential|password).*" -or
+              $_ -match "\.(trx|tmp)$"
+            })
+            if ($forbiddenEntries.Count -gt 0) {
+              throw "Unexpected package entries: $($forbiddenEntries -join ", ")"
+            }
+
+            Write-Host "Inspected $($package.Name): $($entries.Count) entries."
+          }
+          finally {
+            $archive.Dispose()
+          }
+
+      - name: Install and smoke-test packed tool
+        shell: pwsh
+        run: |
+          $toolPath = Join-Path $env:RUNNER_TEMP "fixturevault-tool"
+          $repositoryPath = Join-Path $env:RUNNER_TEMP "fixturevault-consumer"
+          New-Item -ItemType Directory -Force -Path $toolPath, (Join-Path $repositoryPath "tests") | Out-Null
+
+          $packageSource = (Resolve-Path "./artifacts/packages").Path
+          dotnet tool install KeelMatrix.FixtureVault `
+            --tool-path $toolPath `
+            --version 0.1.0 `
+            --add-source $packageSource
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          $executableName = "fixturevault"
+          if ([OperatingSystem]::IsWindows()) {
+            $executableName += ".exe"
+          }
+          $fixtureVault = Join-Path $toolPath $executableName
+
+          Push-Location $repositoryPath
+          try {
+            & $fixtureVault init
+            if ($LASTEXITCODE -ne 0) {
+              throw "fixturevault init failed with exit code $LASTEXITCODE."
+            }
+
+            & $fixtureVault scan
+            if ($LASTEXITCODE -ne 0) {
+              throw "Clean fixturevault scan failed with exit code $LASTEXITCODE."
+            }
+
+            Set-Content -Path "tests/OrderTests.received.json" -Value '{"id":1}' -NoNewline
+            $reportPath = Join-Path $repositoryPath "blocking-report.json"
+            & $fixtureVault scan --format json *> $reportPath
+            $blockingExitCode = $LASTEXITCODE
+            if ($blockingExitCode -ne 1) {
+              throw "Blocking fixturevault scan returned $blockingExitCode instead of 1."
+            }
+
+            $report = Get-Content -Raw $reportPath | ConvertFrom-Json
+            if ($report.schemaVersion -ne 1) {
+              throw "Blocking scan JSON did not report schema version 1."
+            }
+            if (-not ($report.findings | Where-Object { $_.ruleId -eq "FV001" })) {
+              throw "Blocking scan JSON did not contain the expected FV001 finding."
+            }
+          }
+          finally {
+            Pop-Location
+          }

@@ -2,6 +2,7 @@
 using System.Text;
 using System.Text.Json;
 using Xunit;
+using Xunit.Sdk;
 
 namespace KeelMatrix.FixtureVault.Tests;
 
@@ -344,7 +345,13 @@ public sealed class FixtureVaultTests
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
         {
-            return;
+            if (OperatingSystem.IsWindows())
+            {
+                throw SkipException.ForSkip(
+                    $"Windows reparse-point capability is unavailable in this environment ({ex.GetType().Name}: {ex.Message}).");
+            }
+
+            throw;
         }
 
         ScanResult result = repository.Scan();
