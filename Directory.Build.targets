@@ -22,6 +22,24 @@
           Condition="Exists('$(MSBuildThisFileDirectory)icon.png') and '$(PackageIcon)'!=''" />
   </ItemGroup>
 
+  <!-- Remove protected files from all pack input item types using invariant,
+       case-insensitive matching so Linux and macOS have the same safety
+       boundary as Windows. -->
+  <Target Name="ExcludeForbiddenFilesFromPack"
+          BeforeTargets="_GetPackageFiles"
+          Condition="'$(IsPackable)'=='true'">
+    <ItemGroup>
+      <_ForbiddenPackItems Include="@(None);@(Content);@(EmbeddedResource)"
+        Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('%(_ForbiddenPackItems.Filename)', '(?i)^\.env')) Or
+                   $([System.Text.RegularExpressions.Regex]::IsMatch('%(_ForbiddenPackItems.Filename)%(_ForbiddenPackItems.Extension)', '(?i)^(keelmatrix\.telemetry\.json|\.fixturevault\.json|\.fixturevault\.manifest\.json|keelmatrix\.fixturevault\.md|\.gitignore|nuget\.config|global\.json|agents\.md|changelog\.md|security\.md|privacy\.md|directory\..*)$')) Or
+                   $([System.Text.RegularExpressions.Regex]::IsMatch('%(_ForbiddenPackItems.Filename)%(_ForbiddenPackItems.Extension)', '(?i)^coverage.*\.xml$')) Or
+                   $([System.Text.RegularExpressions.Regex]::IsMatch('%(_ForbiddenPackItems.Extension)', '(?i)^\.(csproj|sln|yml|yaml|nupkg|snupkg|trx|coverage|coveragexml|log|cache|zip)$'))" />
+      <None Remove="@(_ForbiddenPackItems)" />
+      <Content Remove="@(_ForbiddenPackItems)" />
+      <EmbeddedResource Remove="@(_ForbiddenPackItems)" />
+    </ItemGroup>
+  </Target>
+
   <!-- Fail closed if a future pack glob or project item reintroduces a
        repository-local, policy, secret, or build file into _PackageFiles. -->
   <Target Name="RejectForbiddenFilesInPack"
@@ -29,31 +47,10 @@
           Condition="'$(IsPackable)'=='true'">
     <ItemGroup>
       <_ForbiddenPackageFiles Include="@(_PackageFiles)"
-        Condition="$([System.String]::Copy('%(_PackageFiles.Filename)').StartsWith('.env')) Or
-                   '%(_PackageFiles.Filename)%(_PackageFiles.Extension)'=='keelmatrix.telemetry.json' Or
-                   '%(_PackageFiles.Filename)%(_PackageFiles.Extension)'=='.fixturevault.json' Or
-                   '%(_PackageFiles.Filename)%(_PackageFiles.Extension)'=='.fixturevault.manifest.json' Or
-                   '%(_PackageFiles.Filename)%(_PackageFiles.Extension)'=='KeelMatrix.FixtureVault.md' Or
-                   '%(_PackageFiles.Filename)%(_PackageFiles.Extension)'=='.gitignore' Or
-                   '%(_PackageFiles.Filename)%(_PackageFiles.Extension)'=='NuGet.config' Or
-                   '%(_PackageFiles.Filename)%(_PackageFiles.Extension)'=='global.json' Or
-                   '%(_PackageFiles.Filename)%(_PackageFiles.Extension)'=='AGENTS.md' Or
-                   '%(_PackageFiles.Filename)%(_PackageFiles.Extension)'=='CHANGELOG.md' Or
-                   '%(_PackageFiles.Filename)%(_PackageFiles.Extension)'=='SECURITY.md' Or
-                   '%(_PackageFiles.Filename)%(_PackageFiles.Extension)'=='PRIVACY.md' Or
-                   '%(_PackageFiles.Extension)'=='.csproj' Or
-                   '%(_PackageFiles.Extension)'=='.sln' Or
-                   '%(_PackageFiles.Extension)'=='.yml' Or
-                   '%(_PackageFiles.Extension)'=='.yaml' Or
-                   '%(_PackageFiles.Extension)'=='.trx' Or
-                   '%(_PackageFiles.Extension)'=='.nupkg' Or
-                   '%(_PackageFiles.Extension)'=='.snupkg' Or
-                   '%(_PackageFiles.Extension)'=='.coverage' Or
-                   '%(_PackageFiles.Extension)'=='.coveragexml' Or
-                   '%(_PackageFiles.Extension)'=='.log' Or
-                   '%(_PackageFiles.Extension)'=='.cache' Or
-                   '%(_PackageFiles.Extension)'=='.zip' Or
-                   $([System.String]::Copy('%(_PackageFiles.Filename)').StartsWith('Directory.'))" />
+        Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('%(_PackageFiles.Filename)', '(?i)^\.env')) Or
+                   $([System.Text.RegularExpressions.Regex]::IsMatch('%(_PackageFiles.Filename)%(_PackageFiles.Extension)', '(?i)^(keelmatrix\.telemetry\.json|\.fixturevault\.json|\.fixturevault\.manifest\.json|keelmatrix\.fixturevault\.md|\.gitignore|nuget\.config|global\.json|agents\.md|changelog\.md|security\.md|privacy\.md|directory\..*)$')) Or
+                   $([System.Text.RegularExpressions.Regex]::IsMatch('%(_PackageFiles.Filename)%(_PackageFiles.Extension)', '(?i)^coverage.*\.xml$')) Or
+                   $([System.Text.RegularExpressions.Regex]::IsMatch('%(_PackageFiles.Extension)', '(?i)^\.(csproj|sln|yml|yaml|nupkg|snupkg|trx|coverage|coveragexml|log|cache|zip)$'))" />
     </ItemGroup>
     <Error Condition="'@(_ForbiddenPackageFiles)'!=''"
            Text="Refusing to pack forbidden repository file(s): @(_ForbiddenPackageFiles, ', ')." />

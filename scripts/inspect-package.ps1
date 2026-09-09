@@ -94,7 +94,7 @@ try {
     }
 
     $namespace = [System.Xml.XmlNamespaceManager]::new($nuspec.NameTable)
-    $namespace.AddNamespace("n", "http://schemas.microsoft.com/packaging/2012/06/nuspec.xsd")
+    $namespace.AddNamespace("n", $nuspec.DocumentElement.NamespaceURI)
     $metadata = $nuspec.SelectSingleNode("/n:package/n:metadata", $namespace)
     Assert-Contract ($null -ne $metadata) "The package metadata is missing."
     Assert-Contract ($metadata.id -eq "KeelMatrix.FixtureVault") "Package id is not KeelMatrix.FixtureVault."
@@ -107,13 +107,16 @@ try {
     $packageTypes = @($metadata.packageTypes.packageType | ForEach-Object { $_.name })
     Assert-Contract ($packageTypes.Count -eq 1 -and $packageTypes[0] -eq "DotnetTool") "Package type must be DotnetTool."
 
-    $dependencyNodes = @($metadata.SelectNodes("n:dependencies/n:group/n:dependency", $namespace))
-    if ($dependencyNodes.Count -gt 0) {
-        $dependencyIds = @($dependencyNodes | ForEach-Object { $_.id } | Sort-Object)
-        Assert-Contract (($dependencyIds -join ",") -eq "KeelMatrix.Redaction,KeelMatrix.Telemetry") "Unexpected nuspec dependency set: $($dependencyIds -join ', ')."
-        foreach ($dependency in $dependencyNodes) {
-            Assert-Contract ($dependency.version -eq "[0.1.0]") "Dependency $($dependency.id) must be pinned to 0.1.0."
-        }
+    $dependencyGroups = @($metadata.SelectNodes("n:dependencies/n:group", $namespace))
+    Assert-Contract ($dependencyGroups.Count -eq 1) "The nuspec must contain exactly one dependency group."
+    Assert-Contract ($dependencyGroups[0].targetFramework -eq "net8.0") "The dependency group must target net8.0."
+
+    $dependencyNodes = @($dependencyGroups[0].SelectNodes("n:dependency", $namespace))
+    $dependencyIds = @($dependencyNodes | ForEach-Object { $_.id } | Sort-Object)
+    Assert-Contract (($dependencyIds -join ",") -eq "KeelMatrix.Redaction,KeelMatrix.Telemetry") "Unexpected nuspec dependency set: $($dependencyIds -join ', ')."
+    foreach ($dependency in $dependencyNodes) {
+        Assert-Contract ($dependency.version -eq "[0.1.0]") "Dependency $($dependency.id) must be pinned to [0.1.0]."
+        Assert-Contract ($dependency.exclude -eq "Build,Analyzers") "Dependency $($dependency.id) must exclude Build and Analyzers assets."
     }
 
     $toolAssemblies = @($entries | Where-Object { $_ -like "tools/net8.0/any/*.dll" })

@@ -12,6 +12,7 @@
     <PackageReleaseNotes>Read-only snapshot and golden-file governance with init-only policy file creation.</PackageReleaseNotes>
     <AssemblyName>KeelMatrix.FixtureVault</AssemblyName>
     <RootNamespace>KeelMatrix.FixtureVault</RootNamespace>
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -26,4 +27,14 @@
   <ItemGroup>
     <InternalsVisibleTo Include="KeelMatrix.FixtureVault.Tests" />
   </ItemGroup>
+
+  <!-- PackAsTool suppresses dependencies by default; retain the public
+       Redaction and Telemetry dependencies in the generated nuspec. -->
+  <Target Name="EnableFixtureVaultPackageDependencies"
+          BeforeTargets="_GetFrameworksWithSuppressedDependencies"
+          Condition="'$(PackAsTool)' == 'true'">
+    <PropertyGroup>
+      <SuppressDependenciesWhenPacking>false</SuppressDependenciesWhenPacking>
+    </PropertyGroup>
+  </Target>
 </Project>
