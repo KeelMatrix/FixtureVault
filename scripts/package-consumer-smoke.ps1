@@ -101,12 +101,13 @@ try {
         throw "The packed tool failed to install.`n$installDetails"
     }
 
-    $cachedPackage = @(Get-ChildItem -LiteralPath $toolRoot -Recurse -File | Where-Object { $_.Name -ieq $expectedPackageName })
-    if ($cachedPackage.Count -ne 1) {
-        throw "The isolated tool store did not contain exactly one resolved FixtureVault package."
+    $resolvedPackages = @(Get-ChildItem -LiteralPath $toolRoot -Recurse -File | Where-Object { $_.Name -ieq $expectedPackageName })
+    Assert-Contract ($resolvedPackages.Count -gt 0) "The isolated tool store did not contain a resolved FixtureVault package."
+    $feedHash = Get-Sha512Base64 $feedPackage
+    foreach ($resolved in $resolvedPackages) {
+        Assert-Contract ((Get-Sha512Base64 $resolved.FullName) -eq $feedHash) "Resolved FixtureVault package bits did not match the local feed package."
     }
-    Assert-Contract ((Get-Sha512Base64 $cachedPackage[0].FullName) -eq (Get-Sha512Base64 $feedPackage)) "Resolved FixtureVault package bits did not match the local feed package."
-    Write-Host "Resolved KeelMatrix.FixtureVault $ExpectedVersion from the isolated local feed; package hash matches."
+    Write-Host "Resolved KeelMatrix.FixtureVault $ExpectedVersion from the isolated local feed; $($resolvedPackages.Count) installed archive copy/copies match the feed hash."
 
     $executableName = "fixturevault"
     if ([OperatingSystem]::IsWindows()) {
