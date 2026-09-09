@@ -213,6 +213,24 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
+    public void Known_binary_assets_inside_fixture_roots_are_inspected()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/image.png", [0x89, 0x50, 0x4E, 0x47, 0x00, 0x01]);
+        repository.WriteBytes("tests/document.pdf", [0x25, 0x50, 0x44, 0x46, 0x00, 0x01]);
+        repository.WriteBytes("tests/archive.zip", [0x50, 0x4B, 0x03, 0x04, 0x00, 0x01]);
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Equal(3, result.Report.FilesInspected);
+        Assert.Equal(3, result.Report.Findings.Count(item => item.RuleId == "FV005"));
+        Assert.All(result.Report.Findings.Where(item => item.RuleId == "FV005"), finding =>
+            Assert.True(finding.Path is "tests/image.png" or "tests/document.pdf" or "tests/archive.zip"));
+    }
+
+    [Fact]
     public void Ordinary_binary_assets_outside_fixture_roots_are_not_fixture_candidates()
     {
         using var repository = new TemporaryRepository();

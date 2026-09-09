@@ -77,7 +77,7 @@ internal sealed class FixtureScanner
                     continue;
                 }
 
-                if (IsFixtureCandidate(file.RelativePath, policy) && seenFiles.Add(file.FullPath))
+                if (IsFixtureCandidate(file.RelativePath, policy, insideActiveRoot: true) && seenFiles.Add(file.FullPath))
                 {
                     fixtureFiles.Add(file);
                 }
@@ -212,7 +212,7 @@ internal sealed class FixtureScanner
         foreach (SafeFileEntry file in walk.Files)
         {
             if (IsIgnored(file.RelativePath, ignoredMatchers) ||
-                !IsFixtureCandidate(file.RelativePath, policy) ||
+                !IsFixtureCandidate(file.RelativePath, policy, insideActiveRoot: false) ||
                 activeRoots.Any(root => PathUtilities.IsWithin(root.FullPath, file.FullPath)))
             {
                 continue;
@@ -459,7 +459,10 @@ internal sealed class FixtureScanner
         return false;
     }
 
-    private static bool IsFixtureCandidate(string relativePath, FixtureVaultPolicy policy)
+    private static bool IsFixtureCandidate(
+        string relativePath,
+        FixtureVaultPolicy policy,
+        bool insideActiveRoot)
     {
         string fileName = Path.GetFileName(relativePath);
         if (fileName.Equals(FixtureVaultContract.PolicyFileName, StringComparison.OrdinalIgnoreCase) ||
@@ -475,7 +478,8 @@ internal sealed class FixtureScanner
                        fileName.Contains(".verified.", StringComparison.OrdinalIgnoreCase));
         bool snapshooter = HasConvention(policy, "snapshooter") &&
                            fileName.EndsWith(".snap", StringComparison.OrdinalIgnoreCase);
-        return allowedExtension || verify || snapshooter;
+        return allowedExtension || verify || snapshooter ||
+               (insideActiveRoot && IsKnownBinaryExtension(relativePath));
     }
 
     private static bool IsBaselineCandidate(string relativePath, FixtureVaultPolicy policy)
