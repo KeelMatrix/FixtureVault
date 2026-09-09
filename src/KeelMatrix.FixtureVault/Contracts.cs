@@ -51,7 +51,7 @@ internal sealed class FixtureVaultPolicy
         return new FixtureVaultPolicy
         {
             Version = FixtureVaultContract.PolicySchemaVersion,
-            Roots = [testsDirectoryExists ? "tests" : "tests"],
+            Roots = [testsDirectoryExists ? "tests" : "."],
             AllowedExtensions = [".verified.json", ".verified.txt", ".snap", ".golden"],
             MaxFileBytes = 1_048_576,
             Conventions = ["verify", "snapshooter", "generic"],

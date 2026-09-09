@@ -43,6 +43,39 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
+    public void Init_without_tests_directory_creates_a_usable_repository_root_policy()
+    {
+        using var repository = new TemporaryRepository(createTestsDirectory: false);
+
+        int initExitCode = repository.Run(["init"], new RecordingTelemetry(), out string initOutput, out string initError);
+        int scanExitCode = repository.Run(["scan"], new RecordingTelemetry(), out string scanOutput, out string scanError);
+
+        Assert.Equal(0, initExitCode);
+        Assert.Empty(initError);
+        Assert.Contains(FixtureVaultContract.PolicyFileName, initOutput, StringComparison.Ordinal);
+        Assert.Equal(0, scanExitCode);
+        Assert.Empty(scanError);
+        Assert.Contains("0 fixture file(s) inspected", scanOutput, StringComparison.Ordinal);
+
+        PolicyLoadResult policy = PolicyLoader.Load(repository.Root);
+        Assert.Null(policy.Error);
+        Assert.Equal(".", Assert.Single(policy.Policy!.Roots!));
+    }
+
+    [Fact]
+    public void Help_is_available_without_a_policy_file()
+    {
+        using var repository = new TemporaryRepository(createTestsDirectory: false);
+
+        int exitCode = repository.Run(["--help"], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(0, exitCode);
+        Assert.Empty(error);
+        Assert.Contains("Usage:", output, StringComparison.Ordinal);
+        Assert.Contains("fixturevault", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Verify_received_artifact_is_a_blocking_finding()
     {
         using var repository = new TemporaryRepository();
@@ -98,8 +131,22 @@ public sealed class FixtureVaultTests
 
         ScanResult result = repository.Scan();
 
+        Assert.Equal(1, result.ExitCode);
         Finding finding = Assert.Single(result.Report.Findings, item => item.RuleId == "FV002");
         Assert.Equal("tests/orphan.golden", finding.Path);
+    }
+
+    [Fact]
+    public void Enabled_manifest_without_file_fails_closed()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Conventions = ["generic", "fixturevault-manifest"]);
+        repository.WriteText("tests/active.golden", "active\n");
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.Contains(result.Report.Errors, item => item.Code == "FV-E012");
     }
 
     [Fact]
@@ -158,11 +205,27 @@ public sealed class FixtureVaultTests
     {
         using var repository = new TemporaryRepository();
         repository.WritePolicy();
-        repository.WriteBytes("tests/image.png", [0x89, 0x50, 0x4E, 0x47, 0x00, 0x01]);
+        repository.WriteBytes("tests/image.golden", [0x89, 0x50, 0x4E, 0x47, 0x00, 0x01]);
 
         ScanResult result = repository.Scan();
 
         Assert.Contains(result.Report.Findings, item => item.RuleId == "FV005");
+    }
+
+    [Fact]
+    public void Ordinary_binary_assets_outside_fixture_roots_are_not_fixture_candidates()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("logo.png", [0x89, 0x50, 0x4E, 0x47, 0x00, 0x01]);
+        repository.WriteBytes("docs/guide.pdf", [0x25, 0x50, 0x44, 0x46, 0x00, 0x01]);
+        repository.WriteBytes("archives/fixtures.zip", [0x50, 0x4B, 0x03, 0x04, 0x00, 0x01]);
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(0, result.Report.FilesInspected);
+        Assert.DoesNotContain(result.Report.Findings, item => item.RuleId is "FV005" or "FV008");
     }
 
     [Fact]
@@ -211,7 +274,7 @@ public sealed class FixtureVaultTests
     public void Ignored_paths_are_not_audited()
     {
         using var repository = new TemporaryRepository();
-        repository.WritePolicy();
+        repository.WritePolicy(policy => policy.IgnoredPaths = ["TESTS\\BIN\\**"]);
         repository.WriteText("tests/bin/ignored.received.json", "secret fixture\n");
 
         ScanResult result = repository.Scan();
@@ -384,10 +447,14 @@ public sealed class FixtureVaultTests
 
     private sealed class TemporaryRepository : IDisposable
     {
-        internal TemporaryRepository()
+        internal TemporaryRepository(bool createTestsDirectory = true)
         {
             Root = Path.Combine(Path.GetTempPath(), "fixturevault-tests", Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(Path.Combine(Root, "tests"));
+            Directory.CreateDirectory(Root);
+            if (createTestsDirectory)
+            {
+                Directory.CreateDirectory(Path.Combine(Root, "tests"));
+            }
         }
 
         internal string Root { get; }

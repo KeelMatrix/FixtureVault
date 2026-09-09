@@ -32,6 +32,8 @@ fixturevault scan
 
 `init` creates `.fixturevault.json` only when it does not already exist. It never overwrites that file and never changes fixture contents. If the file already exists, `init` reports that no files were changed.
 
+When the repository has a `tests` directory, the default root is `tests`. Otherwise, `init` uses the repository root (`.`), which gives a new repository a usable clean-scan starting point without assuming a directory that does not exist.
+
 Use an explicit root for a one-off scan. Repeating `--root` scans multiple roots and overrides the roots in the policy file:
 
 ```bash
@@ -60,7 +62,7 @@ The supported policy file name is `.fixturevault.json`. Its schema version is `1
 }
 ```
 
-Roots are repository-relative directories. Allowed extensions are suffixes, so `.golden` matches nested names such as `Orders/Create.golden`. `maxFileBytes` is bounded to 64 MiB; the default is 1 MiB. Ignored paths use `*` for one path segment and `**` for any number of segments.
+Roots are repository-relative directories. Allowed extensions are suffixes, so `.golden` matches nested names such as `Orders/Create.golden`. `maxFileBytes` is bounded to 64 MiB; the default is 1 MiB. Ignored paths use `*` for one path segment and `**` for any number of segments; matching is deterministic across operating systems and ignores path-separator and casing differences.
 
 When `ci.strict` is `true`, findings block the scan with exit code `1`. When it is `false`, findings are reported as warnings and the scan exits `0`; configuration and execution errors always exit `2`. `--strict` is a convenience override that turns strict behavior on for the current scan.
 
@@ -71,7 +73,7 @@ The built-in hints are:
 - `verify`: detects common `*.received.*` artifacts and audits `*.verified.*` baselines.
 - `snapshooter`: audits common `*.snap` files.
 - `generic`: audits files matching `allowedExtensions`, including `.golden` files.
-- `fixturevault-manifest`: enables the optional explicit orphan proof described below.
+- `fixturevault-manifest`: enables the explicit orphan proof described below. When enabled, the manifest is required; a missing manifest is a configuration error (exit code `2`).
 
 Unknown hints are reported as skipped. FixtureVault does not infer a convention from arbitrary source code or test names.
 
@@ -155,7 +157,7 @@ Sensitive findings contain only the path and rule information. No matched value,
 - `1`: the scan completed and policy-blocking findings exist;
 - `2`: a configuration, input, filesystem, or execution error prevented a trustworthy scan.
 
-Malformed `.fixturevault.json`, a missing configured root, an unsafe root path, or a malformed manifest returns `2`, never a false clean result.
+Malformed `.fixturevault.json`, a missing configured root, an unsafe root path, or a missing/malformed enabled manifest returns `2`, never a false clean result.
 
 ## Security and privacy
 

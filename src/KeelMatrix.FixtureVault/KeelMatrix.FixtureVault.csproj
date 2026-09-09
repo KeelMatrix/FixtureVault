@@ -19,12 +19,6 @@
     <PackageReference Include="KeelMatrix.Telemetry" />
   </ItemGroup>
 
-  <ItemGroup>
-    <None Include="$(MSBuildProjectDirectory)\..\..\README.md" Pack="true" PackagePath="README.md" />
-    <None Include="$(MSBuildProjectDirectory)\..\..\LICENSE" Pack="true" PackagePath="LICENSE" />
-    <None Include="$(MSBuildProjectDirectory)\..\..\icon.png" Pack="true" PackagePath="icon.png" />
-  </ItemGroup>
-
   <PropertyGroup>
     <PackageOutputPath>$(MSBuildProjectDirectory)\..\..\artifacts\packages\</PackageOutputPath>
   </PropertyGroup>

@@ -122,6 +122,30 @@ jobs:
               }
             }
 
+            $nuspecEntry = $archive.Entries | Where-Object { $_.FullName -like "*.nuspec" } | Select-Object -First 1
+            if ($null -eq $nuspecEntry) {
+              throw "The package nuspec is missing."
+            }
+
+            $nuspecReader = [System.IO.StreamReader]::new($nuspecEntry.Open())
+            try {
+              [xml]$nuspec = $nuspecReader.ReadToEnd()
+            }
+            finally {
+              $nuspecReader.Dispose()
+            }
+
+            $namespace = [System.Xml.XmlNamespaceManager]::new($nuspec.NameTable)
+            $namespace.AddNamespace("n", "http://schemas.microsoft.com/packaging/2012/06/nuspec.xsd")
+            $readme = $nuspec.SelectSingleNode("/n:package/n:metadata/n:readme", $namespace)
+            $license = $nuspec.SelectSingleNode("/n:package/n:metadata/n:license", $namespace)
+            if ($null -eq $readme -or $readme.InnerText -ne "README.md") {
+              throw "NuGet README metadata does not point to README.md."
+            }
+            if ($null -eq $license -or $license.GetAttribute("type") -ne "expression" -or $license.InnerText -ne "MIT") {
+              throw "NuGet license metadata does not declare the MIT expression."
+            }
+
             $forbiddenEntries = @($entries | Where-Object {
               $_ -match "(^|/)(\.git|\.env($|\.)|tests?($|/)|artifacts($|/)|bin($|/)|obj($|/))" -or
               $_ -match "(^|/).*(secret|credential|password).*" -or
@@ -142,7 +166,7 @@ jobs:
         run: |
           $toolPath = Join-Path $env:RUNNER_TEMP "fixturevault-tool"
           $repositoryPath = Join-Path $env:RUNNER_TEMP "fixturevault-consumer"
-          New-Item -ItemType Directory -Force -Path $toolPath, (Join-Path $repositoryPath "tests") | Out-Null
+          New-Item -ItemType Directory -Force -Path $toolPath, $repositoryPath | Out-Null
 
           $packageSource = (Resolve-Path "./artifacts/packages").Path
           dotnet tool install KeelMatrix.FixtureVault `
@@ -161,6 +185,16 @@ jobs:
 
           Push-Location $repositoryPath
           try {
+            $helpPath = Join-Path $repositoryPath "help.txt"
+            & $fixtureVault --help *> $helpPath
+            if ($LASTEXITCODE -ne 0) {
+              throw "fixturevault --help failed with exit code $LASTEXITCODE."
+            }
+            $help = Get-Content -Raw $helpPath
+            if ($help -notmatch "Usage:" -or $help -notmatch "fixturevault") {
+              throw "fixturevault --help did not print the expected usage text."
+            }
+
             & $fixtureVault init
             if ($LASTEXITCODE -ne 0) {
               throw "fixturevault init failed with exit code $LASTEXITCODE."
@@ -171,6 +205,7 @@ jobs:
               throw "Clean fixturevault scan failed with exit code $LASTEXITCODE."
             }
 
+            New-Item -ItemType Directory -Force -Path "tests" | Out-Null
             Set-Content -Path "tests/OrderTests.received.json" -Value '{"id":1}' -NoNewline
             $reportPath = Join-Path $repositoryPath "blocking-report.json"
             & $fixtureVault scan --format json *> $reportPath

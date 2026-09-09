@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+env:
+  KEELMATRIX_NO_TELEMETRY: "1"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Validate release tag
+        id: release-version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if ($tag -notmatch '^v(?<version>\d+\.\d+\.\d+)$') {
+            throw "Malformed release tag '$tag'. Expected vX.Y.Z."
+          }
+          "version=$($Matches.version)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore from NuGet.org
+        run: dotnet restore KeelMatrix.FixtureVault.sln --configfile NuGet.config --no-cache --force
+
+      - name: Build Release
+        run: dotnet build KeelMatrix.FixtureVault.sln --configuration Release --no-restore -p:Version=${{ steps.release-version.outputs.version }}
+
+      - name: Run tests
+        run: dotnet test KeelMatrix.FixtureVault.sln --configuration Release --no-build --no-restore
+
+      - name: Pack KeelMatrix.FixtureVault
+        run: >
+          dotnet pack src/KeelMatrix.FixtureVault/KeelMatrix.FixtureVault.csproj
+          --configuration Release --no-build --no-restore
+          --include-symbols --p:SymbolPackageFormat=snupkg
+          -p:Version=${{ steps.release-version.outputs.version }}
+          --output ./artifacts/packages
+
+      - name: Validate release artifacts
+        shell: pwsh
+        run: |
+          $version = "${{ steps.release-version.outputs.version }}"
+          $expected = @(
+            "KeelMatrix.FixtureVault.$version.nupkg",
+            "KeelMatrix.FixtureVault.$version.snupkg"
+          ) | Sort-Object
+          $actual = @(Get-ChildItem -LiteralPath ./artifacts/packages -File | Select-Object -ExpandProperty Name | Sort-Object)
+          if ((Compare-Object $expected $actual) -ne $null) {
+            throw "Unexpected release artifact set. Expected: $($expected -join ', '). Actual: $($actual -join ', ')."
+          }
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: nuget-release-packages
+          path: ./artifacts/packages
+          if-no-files-found: error
+
+      - name: Authenticate to NuGet.org
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: dmitriyzen
+
+      - name: Push package to NuGet.org
+        shell: pwsh
+        run: |
+          $version = "${{ steps.release-version.outputs.version }}"
+          $packages = @(
+            "./artifacts/packages/KeelMatrix.FixtureVault.$version.nupkg",
+            "./artifacts/packages/KeelMatrix.FixtureVault.$version.snupkg"
+          )
+          foreach ($package in $packages) {
+            dotnet nuget push $package --source https://api.nuget.org/v3/index.json --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" --skip-duplicate
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+            }
+          }

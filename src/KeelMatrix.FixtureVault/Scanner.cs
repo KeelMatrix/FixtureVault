@@ -270,7 +270,9 @@ internal sealed class FixtureScanner
         string path = Path.Combine(repositoryRoot, FixtureVaultContract.ManifestFileName);
         if (!File.Exists(path))
         {
-            return new ManifestLoadResult(null, null);
+            return new ManifestLoadResult(null, new ScanError(
+                "FV-E012",
+                $"The configured FixtureVault manifest was not found. Create {FixtureVaultContract.ManifestFileName} or remove the 'fixturevault-manifest' convention."));
         }
 
         try
@@ -473,8 +475,7 @@ internal sealed class FixtureScanner
                        fileName.Contains(".verified.", StringComparison.OrdinalIgnoreCase));
         bool snapshooter = HasConvention(policy, "snapshooter") &&
                            fileName.EndsWith(".snap", StringComparison.OrdinalIgnoreCase);
-        bool binaryAsset = IsKnownBinaryExtension(relativePath);
-        return allowedExtension || verify || snapshooter || binaryAsset;
+        return allowedExtension || verify || snapshooter;
     }
 
     private static bool IsBaselineCandidate(string relativePath, FixtureVaultPolicy policy)

@@ -240,7 +240,7 @@ internal sealed class GlobMatcher
             return false;
         }
 
-        string normalized = pattern.Replace('\\', '/').TrimStart('/');
+        string normalized = PathUtilities.NormalizeComparisonPath(pattern.Replace('\\', '/').TrimStart('/'));
         if (Path.IsPathRooted(pattern) || normalized.StartsWith("../", StringComparison.Ordinal) || normalized == "..")
         {
             return false;
@@ -277,13 +277,10 @@ internal sealed class GlobMatcher
         expression.Append('$');
         try
         {
-            RegexOptions options = RegexOptions.CultureInvariant | RegexOptions.Compiled;
-            if (OperatingSystem.IsWindows())
-            {
-                options |= RegexOptions.IgnoreCase;
-            }
-
-            matcher = new GlobMatcher(new Regex(expression.ToString(), options, TimeSpan.FromMilliseconds(100)));
+            matcher = new GlobMatcher(new Regex(
+                expression.ToString(),
+                RegexOptions.CultureInvariant | RegexOptions.Compiled,
+                TimeSpan.FromMilliseconds(100)));
             return true;
         }
         catch (ArgumentException)
@@ -296,7 +293,7 @@ internal sealed class GlobMatcher
     {
         try
         {
-            return regex.IsMatch(relativePath.Replace('\\', '/'));
+            return regex.IsMatch(PathUtilities.NormalizeComparisonPath(relativePath));
         }
         catch (RegexMatchTimeoutException)
         {
