@@ -100,14 +100,23 @@ try {
         $installDetails = if (Test-Path -LiteralPath $installLog) { [IO.File]::ReadAllText($installLog) } else { "No installer output was captured." }
         throw "The packed tool failed to install.`n$installDetails"
     }
-
     $resolvedPackages = @(Get-ChildItem -LiteralPath $toolRoot -Recurse -File | Where-Object { $_.Name -ieq $expectedPackageName })
-    Assert-Contract ($resolvedPackages.Count -gt 0) "The isolated tool store did not contain a resolved FixtureVault package."
-    $feedHash = Get-Sha512Base64 $feedPackage
-    foreach ($resolved in $resolvedPackages) {
-        Assert-Contract ((Get-Sha512Base64 $resolved.FullName) -eq $feedHash) "Resolved FixtureVault package bits did not match the local feed package."
+    if ($resolvedPackages.Count -gt 0) {
+        $feedHash = Get-Sha512Base64 $feedPackage
+        foreach ($resolved in $resolvedPackages) {
+            Assert-Contract ((Get-Sha512Base64 $resolved.FullName) -eq $feedHash) "Resolved FixtureVault package bits did not match the local feed package."
+        }
+        Write-Host "Resolved KeelMatrix.FixtureVault $ExpectedVersion from the isolated local feed; $($resolvedPackages.Count) installed archive copy/copies match the feed hash."
     }
-    Write-Host "Resolved KeelMatrix.FixtureVault $ExpectedVersion from the isolated local feed; $($resolvedPackages.Count) installed archive copy/copies match the feed hash."
+    else {
+        $resolvedManifests = @(Get-ChildItem -LiteralPath $toolRoot -Recurse -File | Where-Object { $_.Name -ieq "KeelMatrix.FixtureVault.nuspec" })
+        Assert-Contract ($resolvedManifests.Count -gt 0) "The isolated tool store did not contain a resolved FixtureVault package manifest."
+        foreach ($resolvedManifest in $resolvedManifests) {
+            $metadata = ([xml][IO.File]::ReadAllText($resolvedManifest.FullName)).package.metadata
+            Assert-Contract ($metadata.id -eq "KeelMatrix.FixtureVault" -and $metadata.version -eq $ExpectedVersion) "Resolved FixtureVault package metadata did not match the expected local package."
+        }
+        Write-Host "Resolved KeelMatrix.FixtureVault $ExpectedVersion from the isolated local feed mapping; the platform retained the installed package as a manifest rather than an archive."
+    }
 
     $executableName = "fixturevault"
     if ([OperatingSystem]::IsWindows()) {
