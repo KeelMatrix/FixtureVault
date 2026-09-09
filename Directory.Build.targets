@@ -1,5 +1,19 @@
 <Project>
   <ItemGroup Condition="'$(IsPackable)'=='true'">
+    <!-- Preserve pack input items before the exclusions below remove them.
+         The later target also checks items added after evaluation. -->
+    <_NoneItemsBeforeExclusion Include="@(None)" />
+    <_ContentItemsBeforeExclusion Include="@(Content)" />
+    <_EmbeddedResourceItemsBeforeExclusion Include="@(EmbeddedResource)" />
+
+    <!-- Root-level environment files are outside the tool project's default
+         item glob, so inspect the repository tree explicitly. -->
+    <_ForbiddenRepositoryEnvironmentFiles Include="$(MSBuildThisFileDirectory)**/.env*"
+      Exclude="$(MSBuildThisFileDirectory)**/.git/**;$(MSBuildThisFileDirectory)**/artifacts/**;$(MSBuildThisFileDirectory)**/bin/**;$(MSBuildThisFileDirectory)**/obj/**;$(MSBuildThisFileDirectory)**/TestResults/**" />
+    <_ForbiddenRepositoryEnvironmentFiles Include="$(MSBuildThisFileDirectory)**/.eNv*;$(MSBuildThisFileDirectory)**/.enV*;$(MSBuildThisFileDirectory)**/.eNV*;$(MSBuildThisFileDirectory)**/.Env*;$(MSBuildThisFileDirectory)**/.EnV*;$(MSBuildThisFileDirectory)**/.ENv*;$(MSBuildThisFileDirectory)**/.ENV*"
+      Exclude="$(MSBuildThisFileDirectory)**/.git/**;$(MSBuildThisFileDirectory)**/artifacts/**;$(MSBuildThisFileDirectory)**/bin/**;$(MSBuildThisFileDirectory)**/obj/**;$(MSBuildThisFileDirectory)**/TestResults/**"
+      Condition="'$(OS)' != 'Windows_NT'" />
+
     <!-- Repository files are not package content. Keep known local, policy, and
          non-package files out even if a future SDK or project glob marks them Pack. -->
     <None Remove="**/.env*;**/keelmatrix.telemetry.json;**/.fixturevault.json;**/.fixturevault.manifest.json;**/KeelMatrix.FixtureVault.md;**/.gitignore;**/NuGet.config;**/global.json;**/AGENTS.md;**/CHANGELOG.md;**/SECURITY.md;**/PRIVACY.md;**/*.csproj;**/*.sln;**/*.yml;**/*.yaml;**/Directory.*;**/*.nupkg;**/*.snupkg;**/*.trx;**/*.coverage;**/*.coveragexml;**/coverage*.xml;**/*.log;**/*.cache;**/*.zip;**/TestResults/**;**/artifacts/**;**/bin/**;**/obj/**" />
@@ -29,6 +43,30 @@
           BeforeTargets="_GetPackageFiles"
           Condition="'$(IsPackable)'=='true'">
     <ItemGroup>
+      <_ForbiddenPackItemsBeforeExclusion Include="@(_NoneItemsBeforeExclusion)"
+        Condition="'%(_NoneItemsBeforeExclusion.Pack)' == 'true' And
+                   ($([System.Text.RegularExpressions.Regex]::IsMatch('%(_ForbiddenPackItemsBeforeExclusion.Filename)', '(?i)^\.env')) Or
+                    $([System.Text.RegularExpressions.Regex]::IsMatch('%(_ForbiddenPackItemsBeforeExclusion.Filename)%(_ForbiddenPackItemsBeforeExclusion.Extension)', '(?i)^(keelmatrix\.telemetry\.json|\.fixturevault\.json|\.fixturevault\.manifest\.json|keelmatrix\.fixturevault\.md|\.gitignore|nuget\.config|global\.json|agents\.md|changelog\.md|security\.md|privacy\.md|directory\..*)$')) Or
+                    $([System.Text.RegularExpressions.Regex]::IsMatch('%(_ForbiddenPackItemsBeforeExclusion.Filename)%(_ForbiddenPackItemsBeforeExclusion.Extension)', '(?i)^coverage.*\.xml$')) Or
+                    $([System.Text.RegularExpressions.Regex]::IsMatch('%(_ForbiddenPackItemsBeforeExclusion.Extension)', '(?i)^\.(csproj|sln|yml|yaml|nupkg|snupkg|trx|coverage|coveragexml|log|cache|zip)$')))" />
+      <_ForbiddenPackItemsBeforeExclusion Include="@(_ContentItemsBeforeExclusion)"
+        Condition="'%(_ContentItemsBeforeExclusion.Pack)' != 'false' And
+                   ($([System.Text.RegularExpressions.Regex]::IsMatch('%(_ForbiddenPackItemsBeforeExclusion.Filename)', '(?i)^\.env')) Or
+                    $([System.Text.RegularExpressions.Regex]::IsMatch('%(_ForbiddenPackItemsBeforeExclusion.Filename)%(_ForbiddenPackItemsBeforeExclusion.Extension)', '(?i)^(keelmatrix\.telemetry\.json|\.fixturevault\.json|\.fixturevault\.manifest\.json|keelmatrix\.fixturevault\.md|\.gitignore|nuget\.config|global\.json|agents\.md|changelog\.md|security\.md|privacy\.md|directory\..*)$')) Or
+                    $([System.Text.RegularExpressions.Regex]::IsMatch('%(_ForbiddenPackItemsBeforeExclusion.Filename)%(_ForbiddenPackItemsBeforeExclusion.Extension)', '(?i)^coverage.*\.xml$')) Or
+                    $([System.Text.RegularExpressions.Regex]::IsMatch('%(_ForbiddenPackItemsBeforeExclusion.Extension)', '(?i)^\.(csproj|sln|yml|yaml|nupkg|snupkg|trx|coverage|coveragexml|log|cache|zip)$')))" />
+      <_ForbiddenPackItemsBeforeExclusion Include="@(_EmbeddedResourceItemsBeforeExclusion)"
+        Condition="'%(_EmbeddedResourceItemsBeforeExclusion.Pack)' == 'true' And
+                   ($([System.Text.RegularExpressions.Regex]::IsMatch('%(_ForbiddenPackItemsBeforeExclusion.Filename)', '(?i)^\.env')) Or
+                    $([System.Text.RegularExpressions.Regex]::IsMatch('%(_ForbiddenPackItemsBeforeExclusion.Filename)%(_ForbiddenPackItemsBeforeExclusion.Extension)', '(?i)^(keelmatrix\.telemetry\.json|\.fixturevault\.json|\.fixturevault\.manifest\.json|keelmatrix\.fixturevault\.md|\.gitignore|nuget\.config|global\.json|agents\.md|changelog\.md|security\.md|privacy\.md|directory\..*)$')) Or
+                    $([System.Text.RegularExpressions.Regex]::IsMatch('%(_ForbiddenPackItemsBeforeExclusion.Filename)%(_ForbiddenPackItemsBeforeExclusion.Extension)', '(?i)^coverage.*\.xml$')) Or
+                    $([System.Text.RegularExpressions.Regex]::IsMatch('%(_ForbiddenPackItemsBeforeExclusion.Extension)', '(?i)^\.(csproj|sln|yml|yaml|nupkg|snupkg|trx|coverage|coveragexml|log|cache|zip)$')))" />
+    </ItemGroup>
+    <Error Condition="'@(_ForbiddenPackItemsBeforeExclusion)'!=''"
+           Text="Refusing to pack forbidden repository file(s): @(_ForbiddenPackItemsBeforeExclusion, ', ')." />
+    <Error Condition="'@(_ForbiddenRepositoryEnvironmentFiles)'!=''"
+           Text="Refusing to pack forbidden repository file(s): @(_ForbiddenRepositoryEnvironmentFiles, ', ')." />
+    <ItemGroup>
       <_ForbiddenPackItems Include="@(None);@(Content);@(EmbeddedResource)"
         Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('%(_ForbiddenPackItems.Filename)', '(?i)^\.env')) Or
                    $([System.Text.RegularExpressions.Regex]::IsMatch('%(_ForbiddenPackItems.Filename)%(_ForbiddenPackItems.Extension)', '(?i)^(keelmatrix\.telemetry\.json|\.fixturevault\.json|\.fixturevault\.manifest\.json|keelmatrix\.fixturevault\.md|\.gitignore|nuget\.config|global\.json|agents\.md|changelog\.md|security\.md|privacy\.md|directory\..*)$')) Or
@@ -38,6 +76,8 @@
       <Content Remove="@(_ForbiddenPackItems)" />
       <EmbeddedResource Remove="@(_ForbiddenPackItems)" />
     </ItemGroup>
+    <Error Condition="'@(_ForbiddenPackItems)'!=''"
+           Text="Refusing to pack forbidden repository file(s): @(_ForbiddenPackItems, ', ')." />
   </Target>
 
   <!-- Fail closed if a future pack glob or project item reintroduces a

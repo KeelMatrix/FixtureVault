@@ -46,6 +46,37 @@ $probeTargets = @'
 
 try {
     foreach ($tripName in @(".env.trip", ".ENV.trip")) {
+        $tripPath = Join-Path $repositoryRoot $tripName
+        Assert-Contract (-not (Test-Path -LiteralPath $tripPath)) "Cannot run the real-file pack-guard test because $tripName already exists."
+        [IO.File]::WriteAllText($tripPath, "real pack guard regression probe", [Text.UTF8Encoding]::new($false))
+        try {
+            $negativeOutputPath = Join-Path $workRoot ("real-negative-" + $tripName.TrimStart(".").Replace(".", "-"))
+            $result = Invoke-Pack @(
+                "pack",
+                $projectPath,
+                "-c", "Release",
+                "--no-build",
+                "--no-restore",
+                "--output", $negativeOutputPath
+            )
+
+            Assert-Contract ($result.ExitCode -ne 0) "Pack unexpectedly succeeded with real repository file $tripName."
+            Assert-Contract ($result.Output.Contains("Refusing to pack forbidden repository file(s):")) "Pack failed for real repository file $tripName without the pack-guard error."
+            Assert-Contract ($result.Output.Contains($tripPath)) "Pack-guard output did not identify real repository file $tripName."
+            $negativeArchives = @(Get-ChildItem -LiteralPath $negativeOutputPath -File -ErrorAction SilentlyContinue)
+            Assert-Contract ($negativeArchives.Count -eq 0) "Pack emitted archives after rejecting real repository file $tripName."
+            Write-Host "Pack guard rejected real repository file $tripName as expected."
+        }
+        finally {
+            if (Test-Path -LiteralPath $tripPath) {
+                Remove-Item -LiteralPath $tripPath -Force
+            }
+        }
+
+        Assert-Contract (-not (Test-Path -LiteralPath $tripPath)) "$tripName was not removed after its real-file negative test."
+    }
+
+    foreach ($tripName in @(".env.trip", ".ENV.trip")) {
         $tripPath = Join-Path $workRoot $tripName
         [IO.File]::WriteAllText($tripPath, "pack guard regression probe", [Text.UTF8Encoding]::new($false))
         try {
@@ -87,8 +118,15 @@ try {
         "--output", $normalOutputPath
     )
     Assert-Contract ($normalResult.ExitCode -eq 0) "Normal pack failed after the pack-guard negative tests. $($normalResult.Output)"
-    Assert-Contract (Test-Path -LiteralPath (Join-Path $normalOutputPath "KeelMatrix.FixtureVault.0.1.0.nupkg")) "Normal pack did not produce the expected package."
-    Write-Host "Normal pack passed after both pack-guard trip files were removed."
+    $normalPackagePath = Join-Path $normalOutputPath "KeelMatrix.FixtureVault.0.1.0.nupkg"
+    $normalSymbolsPackagePath = Join-Path $normalOutputPath "KeelMatrix.FixtureVault.0.1.0.snupkg"
+    Assert-Contract (Test-Path -LiteralPath $normalPackagePath) "Normal pack did not produce the expected package."
+    Assert-Contract (Test-Path -LiteralPath $normalSymbolsPackagePath) "Normal pack did not produce the expected symbols package."
+
+    $inspectionScriptPath = Join-Path $repositoryRoot "scripts/inspect-package.ps1"
+    & pwsh -NoProfile -File $inspectionScriptPath -PackagePath $normalPackagePath -SymbolsPackagePath $normalSymbolsPackagePath -ExpectedVersion "0.1.0"
+    Assert-Contract ($LASTEXITCODE -eq 0) "Normal pack archives failed package-content inspection."
+    Write-Host "Normal pack passed after both real and synthetic pack-guard trip files were removed; both archives passed inspection."
 }
 finally {
     if (Test-Path -LiteralPath $workRoot) {
