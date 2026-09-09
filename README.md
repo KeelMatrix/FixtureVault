@@ -64,6 +64,8 @@ The supported policy file name is `.fixturevault.json`. Its schema version is `1
 
 Roots are repository-relative directories. Allowed extensions are suffixes, so `.golden` matches nested names such as `Orders/Create.golden`. `maxFileBytes` is bounded to 64 MiB; the default is 1 MiB. Ignored paths use `*` for one path segment and `**` for any number of segments; matching is deterministic across operating systems and ignores path-separator and casing differences.
 
+Only files matching an allowed fixture extension or a supported fixture convention are inspected. Ordinary repository assets such as documentation images, PDFs, and ZIP archives outside configured fixture roots are ignored.
+
 When `ci.strict` is `true`, findings block the scan with exit code `1`. When it is `false`, findings are reported as warnings and the scan exits `0`; configuration and execution errors always exit `2`. `--strict` is a convenience override that turns strict behavior on for the current scan.
 
 ## Supported conventions
