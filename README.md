@@ -161,6 +161,15 @@ Sensitive findings contain only the path and rule information. No matched value,
 
 Malformed `.fixturevault.json`, a missing configured root, an unsafe root path, or a missing/malformed enabled manifest returns `2`, never a false clean result.
 
+## Troubleshooting
+
+- **Missing policy:** `FV-E001` means `.fixturevault.json` is absent. Run `fixturevault init`, or create the policy file manually using the documented schema.
+- **Malformed policy:** `FV-E005` means the policy is invalid, too large, or uses an unsupported schema. Check `version`, required arrays, extensions, roots, and `ci.strict`.
+- **Missing or unsafe root:** `FV-E008` means a configured root does not exist, is not a directory, is outside the repository, or is a link. Use repository-relative directories that exist and do not traverse outside the repository.
+- **Required manifest:** with the `fixturevault-manifest` convention enabled, a missing manifest returns `FV-E012` and a malformed or unsafe manifest returns `FV-E011`; create `.fixturevault.manifest.json` with explicit `activeBaselines`, or remove that convention when no manifest is maintained.
+- **Unsupported or skipped checks:** unknown convention hints appear as `FV-SKIP-CONVENTION`. Orphan checks for Verify, Snapshooter, and generic files appear as `FV-SKIP-ORPHAN` because no relationship was proved. Reparse points appear as `FV-SKIP-REPARSE`; their targets are not read.
+- **Exit codes:** `0` means a completed scan has no blocking findings, `1` means a completed scan has blocking findings, and `2` means an error prevented a trustworthy scan. Use `--format json` to inspect structured `findings`, `skipped`, and `errors`.
+
 ## Security and privacy
 
 Configured roots are hard boundaries. Relative roots and `--root` overrides must remain inside the repository root; traversal outside that boundary is rejected. Repository-relative paths are used in reports. Symbolic links and Windows reparse points are never followed, including links that point outside an approved root. Link entries are reported as skipped without reading their targets.
@@ -187,6 +196,18 @@ Run the built-in CLI directly; no Action is required:
 ```
 
 For a global tool installation, install it in an earlier step with `dotnet tool install --global KeelMatrix.FixtureVault --version 0.1.0` and add the .NET tools directory to the runner `PATH` as required by that runner.
+
+## Package verification
+
+After building the package, inspect the actual archive and run the consumer smoke from a clean temporary package cache:
+
+```powershell
+dotnet pack src/KeelMatrix.FixtureVault/KeelMatrix.FixtureVault.csproj -c Release --no-build --include-symbols --p:SymbolPackageFormat=snupkg --output ./artifacts/packages
+pwsh -NoProfile -File ./scripts/inspect-package.ps1 -PackagePath ./artifacts/packages/KeelMatrix.FixtureVault.0.1.0.nupkg -SymbolsPackagePath ./artifacts/packages/KeelMatrix.FixtureVault.0.1.0.snupkg -ExpectedVersion 0.1.0
+pwsh -NoProfile -File ./scripts/package-consumer-smoke.ps1 -PackagePath ./artifacts/packages/KeelMatrix.FixtureVault.0.1.0.nupkg -ExpectedVersion 0.1.0
+```
+
+The smoke script stages only that `.nupkg` in a local feed, uses a controlled `NuGet.config` with cleared sources and explicit source mapping, sets fresh `NUGET_PACKAGES` and HTTP-cache directories, and verifies that the resolved package hash matches the staged package. It then proves `--help`, `init`, clean scan exit `0`, and blocking JSON scan exit `1`.
 
 ## Platform behavior and limitations
 

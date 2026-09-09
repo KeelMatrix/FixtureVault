@@ -1,5 +1,10 @@
 <Project>
   <ItemGroup Condition="'$(IsPackable)'=='true'">
+    <!-- Repository files are not package content. Keep known local, policy, and
+         non-package files out even if a future SDK or project glob marks them Pack. -->
+    <None Remove="**/.env*;**/keelmatrix.telemetry.json;**/.fixturevault.json;**/.fixturevault.manifest.json;**/KeelMatrix.FixtureVault.md;**/.gitignore;**/NuGet.config;**/global.json;**/AGENTS.md;**/CHANGELOG.md;**/SECURITY.md;**/PRIVACY.md;**/*.csproj;**/*.sln;**/*.yml;**/*.yaml;**/Directory.*;**/*.nupkg;**/*.snupkg;**/*.trx;**/*.coverage;**/*.coveragexml;**/coverage*.xml;**/*.log;**/*.cache;**/*.zip;**/TestResults/**;**/artifacts/**;**/bin/**;**/obj/**" />
+    <Content Remove="**/.env*;**/keelmatrix.telemetry.json;**/.fixturevault.json;**/.fixturevault.manifest.json;**/KeelMatrix.FixtureVault.md;**/.gitignore;**/NuGet.config;**/global.json;**/AGENTS.md;**/CHANGELOG.md;**/SECURITY.md;**/PRIVACY.md;**/*.csproj;**/*.sln;**/*.yml;**/*.yaml;**/Directory.*;**/*.nupkg;**/*.snupkg;**/*.trx;**/*.coverage;**/*.coveragexml;**/coverage*.xml;**/*.log;**/*.cache;**/*.zip;**/TestResults/**;**/artifacts/**;**/bin/**;**/obj/**" />
+    <EmbeddedResource Remove="**/.env*;**/keelmatrix.telemetry.json;**/.fixturevault.json;**/.fixturevault.manifest.json;**/KeelMatrix.FixtureVault.md;**/.gitignore;**/NuGet.config;**/global.json;**/AGENTS.md;**/CHANGELOG.md;**/SECURITY.md;**/PRIVACY.md;**/*.csproj;**/*.sln;**/*.yml;**/*.yaml;**/Directory.*;**/*.nupkg;**/*.snupkg;**/*.trx;**/*.coverage;**/*.coveragexml;**/coverage*.xml;**/*.log;**/*.cache;**/*.zip;**/TestResults/**;**/artifacts/**;**/bin/**;**/obj/**" />
     <None Include="$(MSBuildThisFileDirectory)README.md"
           Pack="true"
           PackagePath=""
@@ -16,4 +21,41 @@
           Link="icon.png"
           Condition="Exists('$(MSBuildThisFileDirectory)icon.png') and '$(PackageIcon)'!=''" />
   </ItemGroup>
+
+  <!-- Fail closed if a future pack glob or project item reintroduces a
+       repository-local, policy, secret, or build file into _PackageFiles. -->
+  <Target Name="RejectForbiddenFilesInPack"
+          AfterTargets="_GetPackageFiles"
+          Condition="'$(IsPackable)'=='true'">
+    <ItemGroup>
+      <_ForbiddenPackageFiles Include="@(_PackageFiles)"
+        Condition="$([System.String]::Copy('%(_PackageFiles.Filename)').StartsWith('.env')) Or
+                   '%(_PackageFiles.Filename)%(_PackageFiles.Extension)'=='keelmatrix.telemetry.json' Or
+                   '%(_PackageFiles.Filename)%(_PackageFiles.Extension)'=='.fixturevault.json' Or
+                   '%(_PackageFiles.Filename)%(_PackageFiles.Extension)'=='.fixturevault.manifest.json' Or
+                   '%(_PackageFiles.Filename)%(_PackageFiles.Extension)'=='KeelMatrix.FixtureVault.md' Or
+                   '%(_PackageFiles.Filename)%(_PackageFiles.Extension)'=='.gitignore' Or
+                   '%(_PackageFiles.Filename)%(_PackageFiles.Extension)'=='NuGet.config' Or
+                   '%(_PackageFiles.Filename)%(_PackageFiles.Extension)'=='global.json' Or
+                   '%(_PackageFiles.Filename)%(_PackageFiles.Extension)'=='AGENTS.md' Or
+                   '%(_PackageFiles.Filename)%(_PackageFiles.Extension)'=='CHANGELOG.md' Or
+                   '%(_PackageFiles.Filename)%(_PackageFiles.Extension)'=='SECURITY.md' Or
+                   '%(_PackageFiles.Filename)%(_PackageFiles.Extension)'=='PRIVACY.md' Or
+                   '%(_PackageFiles.Extension)'=='.csproj' Or
+                   '%(_PackageFiles.Extension)'=='.sln' Or
+                   '%(_PackageFiles.Extension)'=='.yml' Or
+                   '%(_PackageFiles.Extension)'=='.yaml' Or
+                   '%(_PackageFiles.Extension)'=='.trx' Or
+                   '%(_PackageFiles.Extension)'=='.nupkg' Or
+                   '%(_PackageFiles.Extension)'=='.snupkg' Or
+                   '%(_PackageFiles.Extension)'=='.coverage' Or
+                   '%(_PackageFiles.Extension)'=='.coveragexml' Or
+                   '%(_PackageFiles.Extension)'=='.log' Or
+                   '%(_PackageFiles.Extension)'=='.cache' Or
+                   '%(_PackageFiles.Extension)'=='.zip' Or
+                   $([System.String]::Copy('%(_PackageFiles.Filename)').StartsWith('Directory.'))" />
+    </ItemGroup>
+    <Error Condition="'@(_ForbiddenPackageFiles)'!=''"
+           Text="Refusing to pack forbidden repository file(s): @(_ForbiddenPackageFiles, ', ')." />
+  </Target>
 </Project>

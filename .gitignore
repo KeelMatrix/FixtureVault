@@ -1,4 +1,6 @@
 artifacts/
+/build/artifacts/
+/BenchmarkDotNet.Artifacts/
 bin/
 obj/
 .vs/
@@ -7,6 +9,49 @@ obj/
 .dotnet/
 .nuget/
 .fixturevault.json
+.fixturevault.manifest.json
 keelmatrix.telemetry.json
 .env
 .env.local
+
+# NuGet outputs and local feeds
+*.nupkg
+*.snupkg
+*.nuspec
+packages/
+
+# Test and coverage outputs
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+*.cov
+coverage*.xml
+*.opencover.xml
+*.cobertura.xml
+lcov*.info
+*.gcov
+*.gcda
+*.gcno
+
+# IDE and editor state
+*.suo
+*.user
+*.userosscache
+*.csproj.user
+*.userprefs
+*.zip
+
+# Operating-system noise
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Logs and caches
+*.log
+*.cache
+project.lock.json
+
+# Generated SDK files
+**/GeneratedMSBuildEditorConfig.editorconfig

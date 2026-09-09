@@ -9,7 +9,7 @@
     <PackageType>DotnetTool</PackageType>
     <Description>Audit snapshot and golden files for stale artifacts, leaked secrets, orphaned baselines, portability problems, and CI policy drift.</Description>
     <PackageTags>snapshot-testing;approval-testing;golden-files;test-fixtures;testing;ci;secrets;dotnet-tool</PackageTags>
-    <PackageReleaseNotes>Initial release of the read-only snapshot and golden-file governance tool.</PackageReleaseNotes>
+    <PackageReleaseNotes>Read-only snapshot and golden-file governance with init-only policy file creation.</PackageReleaseNotes>
     <AssemblyName>KeelMatrix.FixtureVault</AssemblyName>
     <RootNamespace>KeelMatrix.FixtureVault</RootNamespace>
   </PropertyGroup>
