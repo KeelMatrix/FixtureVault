@@ -102,12 +102,25 @@ try {
     }
     $resolvedPackages = @(Get-ChildItem -LiteralPath $toolRoot -Recurse -File -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -ieq $expectedPackageName })
-    Assert-Contract ($resolvedPackages.Count -gt 0) "The isolated consumer did not retain a resolved FixtureVault package archive in its installed tool store."
     $candidateHash = Get-Sha512Base64 $resolvedPackage
-    foreach ($resolved in $resolvedPackages) {
-        Assert-Contract ((Get-Sha512Base64 $resolved.FullName) -eq $candidateHash) "A package archive resolved and installed by the isolated consumer did not match the exact candidate .nupkg."
+    if ($resolvedPackages.Count -gt 0) {
+        foreach ($resolved in $resolvedPackages) {
+            Assert-Contract ((Get-Sha512Base64 $resolved.FullName) -eq $candidateHash) "A package archive resolved and installed by the isolated consumer did not match the exact candidate .nupkg."
+        }
+
+        Write-Host "Resolved KeelMatrix.FixtureVault $ExpectedVersion from the isolated local feed; $($resolvedPackages.Count) installed tool-store archive copy/copies match the exact candidate .nupkg SHA-512."
     }
-    Write-Host "Resolved KeelMatrix.FixtureVault $ExpectedVersion from the isolated local feed; $($resolvedPackages.Count) installed tool-store archive copy/copies match the exact candidate .nupkg SHA-512."
+    else {
+        $resolvedHashes = @(Get-ChildItem -LiteralPath $toolRoot -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ieq "$expectedPackageName.sha512" })
+        Assert-Contract ($resolvedHashes.Count -gt 0) "The isolated consumer did not retain a resolved FixtureVault archive or its NuGet SHA-512 metadata in the installed tool store."
+        foreach ($resolvedHash in $resolvedHashes) {
+            $storedHash = [IO.File]::ReadAllText($resolvedHash.FullName).Trim()
+            Assert-Contract ($storedHash -eq $candidateHash) "The installed consumer's NuGet package SHA-512 metadata did not match the exact candidate .nupkg."
+        }
+
+        Write-Host "Resolved KeelMatrix.FixtureVault $ExpectedVersion from the isolated local feed; $($resolvedHashes.Count) installed tool-store NuGet SHA-512 metadata file(s) match the exact candidate .nupkg."
+    }
 
     $executableName = "fixturevault"
     if ([OperatingSystem]::IsWindows()) {

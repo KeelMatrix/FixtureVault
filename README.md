@@ -209,7 +209,7 @@ pwsh -NoProfile -File ./scripts/inspect-package.ps1 -PackagePath ./artifacts/pac
 pwsh -NoProfile -File ./scripts/package-consumer-smoke.ps1 -PackagePath ./artifacts/packages/KeelMatrix.FixtureVault.0.1.0.nupkg -ExpectedVersion 0.1.0
 ```
 
-The smoke script stages only that `.nupkg` in a local feed, uses a controlled `NuGet.config` with cleared sources and explicit source mapping, sets fresh `NUGET_PACKAGES` and HTTP-cache directories, and verifies that the package archive actually resolved and installed into the isolated tool store has the same SHA-512 as the exact candidate `.nupkg`. It then proves `--help`, `init` in a no-tests repository containing ordinary binary assets, clean scan exit `0`, and blocking JSON scan exit `1`.
+The smoke script stages only that `.nupkg` in a local feed, uses a controlled `NuGet.config` with cleared sources and explicit source mapping, sets fresh `NUGET_PACKAGES` and HTTP-cache directories, and verifies that the package archive actually resolved and installed into the isolated tool store—or its NuGet SHA-512 metadata retained there—matches the exact candidate `.nupkg`. It then proves `--help`, `init` in a no-tests repository containing ordinary binary assets, clean scan exit `0`, and blocking JSON scan exit `1`.
 
 ## Platform behavior and limitations
 
