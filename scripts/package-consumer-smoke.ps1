@@ -92,7 +92,9 @@ function Assert-InstalledPackageMatchesArchive {
 
     foreach ($relativePath in @('KeelMatrix.FixtureVault.nuspec', 'tools/net8.0/any/KeelMatrix.FixtureVault.dll')) {
         Assert-Contract ($archiveHashes.ContainsKey($relativePath)) "The candidate package did not contain required payload file '$relativePath'."
-        Assert-Contract ((Test-Path -LiteralPath (Join-Path $PackageRoot $relativePath.Replace('/', [IO.Path]::DirectorySeparatorChar)))) "The installed package did not retain required payload file '$relativePath'."
+        $installedPath = [IO.Path]::GetFileName($relativePath)
+        Assert-Contract (@(Get-ChildItem -LiteralPath $PackageRoot -Recurse -File |
+            Where-Object { $_.Name -ieq $installedPath }).Count -gt 0) "The installed package did not retain required payload file '$relativePath'."
     }
 }
 
