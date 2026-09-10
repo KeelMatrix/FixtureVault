@@ -12,24 +12,24 @@ env:
   KEELMATRIX_NO_TELEMETRY: "1"
 
 jobs:
-  release:
+  validate-release:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
       contents: read
     steps:
       - name: Check out source
         uses: actions/checkout@v7
 
+      - name: Test release contract
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/test-release-contract.ps1
+
       - name: Validate release tag
         id: release-version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         shell: pwsh
-        run: |
-          $tag = "${{ github.ref_name }}"
-          if ($tag -ne "v0.1.0") {
-            throw "Unsupported release tag '$tag'. The first release accepts exactly v0.1.0."
-          }
-          "version=0.1.0" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        run: pwsh -NoProfile -File ./scripts/validate-release-tag.ps1
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v6
@@ -87,8 +87,35 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: nuget-release-packages
-          path: ./artifacts/packages
+          path: |
+            ./artifacts/packages/KeelMatrix.FixtureVault.${{ steps.release-version.outputs.version }}.nupkg
+            ./artifacts/packages/KeelMatrix.FixtureVault.${{ steps.release-version.outputs.version }}.snupkg
           if-no-files-found: error
+
+  publish:
+    needs: validate-release
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      id-token: write
+    steps:
+      - name: Download validated release artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: nuget-release-packages
+          path: ./artifacts/packages
+
+      - name: Validate downloaded artifact set
+        shell: pwsh
+        run: |
+          $expected = @(
+            "KeelMatrix.FixtureVault.0.1.0.nupkg",
+            "KeelMatrix.FixtureVault.0.1.0.snupkg"
+          ) | Sort-Object
+          $actual = @(Get-ChildItem -LiteralPath ./artifacts/packages -File | Select-Object -ExpandProperty Name | Sort-Object)
+          if ((Compare-Object $expected $actual) -ne $null) {
+            throw "Unexpected downloaded release artifact set. Expected: $($expected -join ', '). Actual: $($actual -join ', ')."
+          }
 
       - name: Authenticate to NuGet.org
         id: nuget-login
@@ -96,17 +123,27 @@ jobs:
         with:
           user: dmitriyzen
 
-      - name: Push package to NuGet.org
+      - name: Push primary package to NuGet.org
         shell: pwsh
+        env:
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
         run: |
-          $version = "${{ steps.release-version.outputs.version }}"
-          $packages = @(
-            "./artifacts/packages/KeelMatrix.FixtureVault.$version.nupkg",
-            "./artifacts/packages/KeelMatrix.FixtureVault.$version.snupkg"
-          )
-          foreach ($package in $packages) {
-            dotnet nuget push $package --source https://api.nuget.org/v3/index.json --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" --skip-duplicate
-            if ($LASTEXITCODE -ne 0) {
-              exit $LASTEXITCODE
-            }
+          dotnet nuget push ./artifacts/packages/KeelMatrix.FixtureVault.0.1.0.nupkg `
+            --source https://api.nuget.org/v3/index.json `
+            --api-key $env:NUGET_API_KEY `
+            --no-symbols
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Push symbols package to NuGet.org
+        shell: pwsh
+        env:
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+        run: |
+          dotnet nuget push ./artifacts/packages/KeelMatrix.FixtureVault.0.1.0.snupkg `
+            --source https://api.nuget.org/v3/index.json `
+            --api-key $env:NUGET_API_KEY
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
           }

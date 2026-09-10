@@ -62,6 +62,11 @@ internal static class PathUtilities
                 return false;
             }
 
+            if (!TryValidateNoReparsePoints(repositoryRoot, fullPath, out error))
+            {
+                return false;
+            }
+
             relativePath = NormalizeRelative(repositoryRoot, fullPath);
             if (relativePath == ".")
             {
@@ -74,13 +79,6 @@ internal static class PathUtilities
                 return false;
             }
 
-            var attributes = File.GetAttributes(fullPath);
-            if ((attributes & FileAttributes.ReparsePoint) != 0)
-            {
-                error = "A configured fixture root is a link and cannot be scanned safely.";
-                return false;
-            }
-
             return true;
         }
         catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or NotSupportedException)
@@ -88,6 +86,71 @@ internal static class PathUtilities
             error = "A configured fixture root could not be resolved safely.";
             return false;
         }
+    }
+
+    private static bool TryValidateNoReparsePoints(
+        string repositoryRoot,
+        string fullPath,
+        out string error)
+    {
+        error = string.Empty;
+        string relativePath = Path.GetRelativePath(repositoryRoot, fullPath);
+        DirectoryInfo current = new(Path.GetFullPath(repositoryRoot));
+
+        if (!TryReadDirectoryAttributes(current, out FileAttributes attributes, out error) ||
+            IsLinked(attributes, current))
+        {
+            error = "A configured fixture root is beneath a linked or reparse path and cannot be scanned safely.";
+            return false;
+        }
+
+        if (relativePath == ".")
+        {
+            return true;
+        }
+
+        foreach (string component in relativePath.Split(
+                     [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                     StringSplitOptions.RemoveEmptyEntries))
+        {
+            current = new DirectoryInfo(Path.Combine(current.FullName, component));
+            if (!TryReadDirectoryAttributes(current, out attributes, out error))
+            {
+                return false;
+            }
+
+            if (IsLinked(attributes, current))
+            {
+                error = "A configured fixture root is beneath a linked or reparse path and cannot be scanned safely.";
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool TryReadDirectoryAttributes(
+        DirectoryInfo directory,
+        out FileAttributes attributes,
+        out string error)
+    {
+        try
+        {
+            attributes = directory.Attributes;
+            error = string.Empty;
+            return true;
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            attributes = default;
+            error = "A configured fixture root could not be resolved safely.";
+            return false;
+        }
+    }
+
+    private static bool IsLinked(FileAttributes attributes, FileSystemInfo entry)
+    {
+        return (attributes & FileAttributes.ReparsePoint) != 0 || entry.LinkTarget is not null;
     }
 
     internal static bool IsWithin(string parent, string candidate)

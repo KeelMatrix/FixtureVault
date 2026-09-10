@@ -100,7 +100,14 @@ try {
         $installDetails = if (Test-Path -LiteralPath $installLog) { [IO.File]::ReadAllText($installLog) } else { "No installer output was captured." }
         throw "The packed tool failed to install.`n$installDetails"
     }
-    Write-Host "Resolved KeelMatrix.FixtureVault $ExpectedVersion from the isolated local feed using fresh package and HTTP caches plus explicit package-source mapping."
+    $resolvedPackages = @(Get-ChildItem -LiteralPath $toolRoot -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ieq $expectedPackageName })
+    Assert-Contract ($resolvedPackages.Count -gt 0) "The isolated consumer did not retain a resolved FixtureVault package archive in its installed tool store."
+    $candidateHash = Get-Sha512Base64 $resolvedPackage
+    foreach ($resolved in $resolvedPackages) {
+        Assert-Contract ((Get-Sha512Base64 $resolved.FullName) -eq $candidateHash) "A package archive resolved and installed by the isolated consumer did not match the exact candidate .nupkg."
+    }
+    Write-Host "Resolved KeelMatrix.FixtureVault $ExpectedVersion from the isolated local feed; $($resolvedPackages.Count) installed tool-store archive copy/copies match the exact candidate .nupkg SHA-512."
 
     $executableName = "fixturevault"
     if ([OperatingSystem]::IsWindows()) {

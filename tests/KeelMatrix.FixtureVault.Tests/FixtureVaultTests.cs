@@ -476,6 +476,60 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
+    public void Root_below_an_intermediate_link_is_rejected_without_reading_the_target()
+    {
+        using var repository = new TemporaryRepository();
+        string outsideRoot = Path.Combine(Path.GetTempPath(), "fixturevault-outside", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(outsideRoot, "fixtures"));
+        File.WriteAllText(
+            Path.Combine(outsideRoot, "fixtures", "outside.received.json"),
+            "must not be read\n",
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+        string link = Path.Combine(repository.Root, "tests", "linked");
+        try
+        {
+            Directory.CreateSymbolicLink(link, outsideRoot);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                throw SkipException.ForSkip(
+                    $"Windows reparse-point capability is unavailable in this environment ({ex.GetType().Name}: {ex.Message}).");
+            }
+
+            throw;
+        }
+
+        try
+        {
+            repository.WritePolicy(policy => policy.Roots = ["tests/linked/fixtures"]);
+
+            ScanResult configuredRoot = repository.Scan();
+            ScanResult overrideRoot = repository.Scan(["--root", "tests/linked/fixtures"]);
+
+            foreach (ScanResult result in new[] { configuredRoot, overrideRoot })
+            {
+                Assert.Equal(2, result.ExitCode);
+                Assert.Contains(result.Report.Errors, item => item.Code == "FV-E008");
+                Assert.Empty(result.Report.Findings);
+                Assert.Equal(0, result.Report.FilesInspected);
+                Assert.DoesNotContain(
+                    result.Report.Skipped,
+                    item => item.Path is not null && item.Path.Contains("outside", StringComparison.OrdinalIgnoreCase));
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(outsideRoot))
+            {
+                Directory.Delete(outsideRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void Malformed_policy_returns_json_error_and_not_false_clean()
     {
         using var repository = new TemporaryRepository();

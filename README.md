@@ -4,7 +4,7 @@
 
 Keep your existing snapshot framework. FixtureVault audits the files around it for stale received artifacts, provable orphans, leaked sensitive data, cross-platform path problems, and CI policy violations.
 
-FixtureVault is a read-only .NET tool for repositories that use Verify, Snapshooter, approval-test outputs, or configured golden files. It complements existing snapshot frameworks; it does not replace them and does not provide snapshot assertions.
+FixtureVault is a .NET tool for repositories that use Verify, Snapshooter, approval-test outputs, or configured golden files. Its `scan` command is strictly read-only. FixtureVault complements existing snapshot frameworks; it does not replace them and does not provide snapshot assertions.
 
 ## Install
 
@@ -174,7 +174,7 @@ Malformed `.fixturevault.json`, a missing configured root, an unsafe root path, 
 
 ## Security and privacy
 
-Configured roots are hard boundaries. Relative roots and `--root` overrides must remain inside the repository root; traversal outside that boundary is rejected. Repository-relative paths are used in reports. Symbolic links and Windows reparse points are never followed, including links that point outside an approved root. Link entries are reported as skipped without reading their targets.
+Configured roots are hard boundaries. Relative roots and `--root` overrides must remain inside the repository root; traversal outside that boundary is rejected. Every directory component from the repository root to a selected root is checked for links and reparse points before scanning, so a root beneath an intermediate link fails conservatively. Repository-relative paths are used in reports. Symbolic links and Windows reparse points are never followed, including links that point outside an approved root. Link entries are reported as skipped without reading their targets.
 
 FixtureVault bounds policy size, filesystem entries, and total bytes read. It does not decode known binary assets as text. Invalid or unsupported encodings produce a bounded diagnostic. Scanning is strictly non-mutating.
 
@@ -209,7 +209,7 @@ pwsh -NoProfile -File ./scripts/inspect-package.ps1 -PackagePath ./artifacts/pac
 pwsh -NoProfile -File ./scripts/package-consumer-smoke.ps1 -PackagePath ./artifacts/packages/KeelMatrix.FixtureVault.0.1.0.nupkg -ExpectedVersion 0.1.0
 ```
 
-The smoke script stages only that `.nupkg` in a local feed, uses a controlled `NuGet.config` with cleared sources and explicit source mapping, sets fresh `NUGET_PACKAGES` and HTTP-cache directories, and verifies that the resolved package hash matches the staged package. It then proves `--help`, `init` in a no-tests repository containing ordinary binary assets, clean scan exit `0`, and blocking JSON scan exit `1`.
+The smoke script stages only that `.nupkg` in a local feed, uses a controlled `NuGet.config` with cleared sources and explicit source mapping, sets fresh `NUGET_PACKAGES` and HTTP-cache directories, and verifies that the package archive actually resolved and installed into the isolated tool store has the same SHA-512 as the exact candidate `.nupkg`. It then proves `--help`, `init` in a no-tests repository containing ordinary binary assets, clean scan exit `0`, and blocking JSON scan exit `1`.
 
 ## Platform behavior and limitations
 

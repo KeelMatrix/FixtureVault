@@ -39,6 +39,10 @@ jobs:
       - name: Verify formatting
         run: dotnet format KeelMatrix.FixtureVault.sln --verify-no-changes --no-restore
 
+      - name: Test release contract and negative publication guards
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/test-release-contract.ps1
+
       - name: Run tests
         run: >
           dotnet test KeelMatrix.FixtureVault.sln
