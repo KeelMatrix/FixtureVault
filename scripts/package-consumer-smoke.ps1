@@ -32,6 +32,78 @@ function Get-Sha512Base64 {
     }
 }
 
+function Get-Sha512Base64Bytes {
+    param([byte[]]$Bytes)
+
+    $sha512 = [Security.Cryptography.SHA512]::Create()
+    try {
+        return [Convert]::ToBase64String($sha512.ComputeHash($Bytes))
+    }
+    finally {
+        $sha512.Dispose()
+    }
+}
+
+function Get-PayloadHashFromArchive {
+    param([string]$Path)
+
+    $archive = [IO.Compression.ZipFile]::OpenRead($Path)
+    try {
+        $records = @(
+            foreach ($entry in $archive.Entries) {
+                $relativePath = $entry.FullName.Replace('\', '/')
+                if ($relativePath.EndsWith('/') -or
+                    $relativePath.Equals('[Content_Types].xml', [StringComparison]::OrdinalIgnoreCase) -or
+                    $relativePath.StartsWith('_rels/', [StringComparison]::OrdinalIgnoreCase) -or
+                    $relativePath.StartsWith('package/', [StringComparison]::OrdinalIgnoreCase)) {
+                    continue
+                }
+
+                $stream = $entry.Open()
+                try {
+                    $sha512 = [Security.Cryptography.SHA512]::Create()
+                    try {
+                        $entryHash = [Convert]::ToBase64String($sha512.ComputeHash($stream))
+                    }
+                    finally {
+                        $sha512.Dispose()
+                    }
+                }
+                finally {
+                    $stream.Dispose()
+                }
+
+                "$relativePath|$entryHash"
+            }
+        ) | Sort-Object
+
+        return Get-Sha512Base64Bytes ([Text.UTF8Encoding]::new($false).GetBytes(($records -join "`n")))
+    }
+    finally {
+        $archive.Dispose()
+    }
+}
+
+function Get-PayloadHashFromInstalledPackage {
+    param([string]$PackageRoot)
+
+    $records = @(
+        foreach ($file in Get-ChildItem -LiteralPath $PackageRoot -Recurse -File) {
+            $relativePath = [IO.Path]::GetRelativePath($PackageRoot, $file.FullName).Replace('\', '/')
+            if ($relativePath.EndsWith('.nupkg', [StringComparison]::OrdinalIgnoreCase) -or
+                $relativePath.EndsWith('.nupkg.sha512', [StringComparison]::OrdinalIgnoreCase) -or
+                $relativePath.Equals('.nupkg.metadata', [StringComparison]::OrdinalIgnoreCase)) {
+                continue
+            }
+
+            $fileHash = Get-Sha512Base64 $file.FullName
+            "$relativePath|$fileHash"
+        }
+    ) | Sort-Object
+
+    return Get-Sha512Base64Bytes ([Text.UTF8Encoding]::new($false).GetBytes(($records -join "`n")))
+}
+
 function Invoke-CommandCapture {
     param(
         [string]$Executable,
@@ -113,13 +185,26 @@ try {
     else {
         $resolvedHashes = @(Get-ChildItem -LiteralPath $toolRoot -Recurse -File -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -ieq "$expectedPackageName.sha512" })
-        Assert-Contract ($resolvedHashes.Count -gt 0) "The isolated consumer did not retain a resolved FixtureVault archive or its NuGet SHA-512 metadata in the installed tool store."
-        foreach ($resolvedHash in $resolvedHashes) {
-            $storedHash = [IO.File]::ReadAllText($resolvedHash.FullName).Trim()
-            Assert-Contract ($storedHash -eq $candidateHash) "The installed consumer's NuGet package SHA-512 metadata did not match the exact candidate .nupkg."
-        }
+        if ($resolvedHashes.Count -gt 0) {
+            foreach ($resolvedHash in $resolvedHashes) {
+                $storedHash = [IO.File]::ReadAllText($resolvedHash.FullName).Trim()
+                Assert-Contract ($storedHash -eq $candidateHash) "The installed consumer's NuGet package SHA-512 metadata did not match the exact candidate .nupkg."
+            }
 
-        Write-Host "Resolved KeelMatrix.FixtureVault $ExpectedVersion from the isolated local feed; $($resolvedHashes.Count) installed tool-store NuGet SHA-512 metadata file(s) match the exact candidate .nupkg."
+            Write-Host "Resolved KeelMatrix.FixtureVault $ExpectedVersion from the isolated local feed; $($resolvedHashes.Count) installed tool-store NuGet SHA-512 metadata file(s) match the exact candidate .nupkg."
+        }
+        else {
+            $resolvedManifests = @(Get-ChildItem -LiteralPath $toolRoot -Recurse -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -ieq "KeelMatrix.FixtureVault.nuspec" })
+            Assert-Contract ($resolvedManifests.Count -gt 0) "The isolated consumer did not retain a resolved FixtureVault package archive, hash metadata, or manifest."
+            $candidatePayloadHash = Get-PayloadHashFromArchive $resolvedPackage
+            foreach ($resolvedManifest in $resolvedManifests) {
+                $installedPayloadHash = Get-PayloadHashFromInstalledPackage (Split-Path -Parent $resolvedManifest.FullName)
+                Assert-Contract ($installedPayloadHash -eq $candidatePayloadHash) "The installed consumer package payload did not match the exact candidate .nupkg contents."
+            }
+
+            Write-Host "Resolved KeelMatrix.FixtureVault $ExpectedVersion from the isolated local feed; installed package payload hash matches the exact candidate .nupkg contents."
+        }
     }
 
     $executableName = "fixturevault"
