@@ -8,6 +8,7 @@ internal static class FixtureVaultContract
     internal const int PolicySchemaVersion = 1;
     internal const int ReportSchemaVersion = 1;
     internal const string ToolVersion = "0.1.0";
+    internal const string HighConfidenceSensitiveDataRule = "high-confidence";
     internal const string PolicyFileName = ".fixturevault.json";
     internal const string ManifestFileName = ".fixturevault.manifest.json";
 
@@ -18,6 +19,9 @@ internal static class FixtureVaultContract
         AllowTrailingCommas = false,
         WriteIndented = true
     };
+
+    internal static string SerializePolicy(FixtureVaultPolicy policy) =>
+        JsonSerializer.Serialize(policy, JsonOptions).Replace("\r\n", "\n", StringComparison.Ordinal) + "\n";
 }
 
 internal sealed class FixtureVaultPolicy
@@ -108,7 +112,8 @@ internal sealed class ScanReport
 
     internal bool HasBlockingFindings => Findings.Any(f => f.Disposition == "block");
 
-    internal string ToJson() => JsonSerializer.Serialize(this, FixtureVaultContract.JsonOptions);
+    internal string ToJson() => JsonSerializer.Serialize(this, FixtureVaultContract.JsonOptions)
+        .Replace("\r\n", "\n", StringComparison.Ordinal);
 }
 
 internal sealed record ScanResult(ScanReport Report, int ExitCode, bool Completed);

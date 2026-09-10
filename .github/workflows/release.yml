@@ -26,10 +26,10 @@ jobs:
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}"
-          if ($tag -notmatch '^v(?<version>\d+\.\d+\.\d+)$') {
-            throw "Malformed release tag '$tag'. Expected vX.Y.Z."
+          if ($tag -ne "v0.1.0") {
+            throw "Unsupported release tag '$tag'. The first release accepts exactly v0.1.0."
           }
-          "version=$($Matches.version)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "version=0.1.0" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v6
@@ -65,6 +65,23 @@ jobs:
           if ((Compare-Object $expected $actual) -ne $null) {
             throw "Unexpected release artifact set. Expected: $($expected -join ', '). Actual: $($actual -join ', ')."
           }
+
+      - name: Inspect release packages
+        shell: pwsh
+        run: |
+          $version = "${{ steps.release-version.outputs.version }}"
+          pwsh -NoProfile -File ./scripts/inspect-package.ps1 `
+            -PackagePath "./artifacts/packages/KeelMatrix.FixtureVault.$version.nupkg" `
+            -SymbolsPackagePath "./artifacts/packages/KeelMatrix.FixtureVault.$version.snupkg" `
+            -ExpectedVersion $version
+
+      - name: Smoke-test the release package
+        shell: pwsh
+        run: |
+          $version = "${{ steps.release-version.outputs.version }}"
+          pwsh -NoProfile -File ./scripts/package-consumer-smoke.ps1 `
+            -PackagePath "./artifacts/packages/KeelMatrix.FixtureVault.$version.nupkg" `
+            -ExpectedVersion $version
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v7

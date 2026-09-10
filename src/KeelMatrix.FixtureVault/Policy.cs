@@ -27,9 +27,10 @@ internal static class PolicyLoader
 
             string json = File.ReadAllText(path);
             var policy = JsonSerializer.Deserialize<FixtureVaultPolicy>(json, FixtureVaultContract.JsonOptions);
-            if (policy is null || !TryValidate(policy))
+            string? validationError = null;
+            if (policy is null || !TryValidate(policy, out validationError))
             {
-                return InvalidPolicy();
+                return InvalidPolicy(validationError);
             }
 
             return new PolicyLoadResult(policy, null);
@@ -48,11 +49,17 @@ internal static class PolicyLoader
 
     internal static bool TryValidate(FixtureVaultPolicy policy)
     {
+        return TryValidate(policy, out _);
+    }
+
+    internal static bool TryValidate(FixtureVaultPolicy policy, out string? validationError)
+    {
+        validationError = null;
         if (policy.Version != FixtureVaultContract.PolicySchemaVersion ||
             policy.Roots is null || policy.Roots.Count == 0 || policy.Roots.Count > 64 ||
             policy.AllowedExtensions is null || policy.AllowedExtensions.Count == 0 || policy.AllowedExtensions.Count > 128 ||
             policy.Conventions is null || policy.Conventions.Count == 0 || policy.Conventions.Count > 32 ||
-            policy.SensitiveDataRules is null || policy.SensitiveDataRules.Count > 32 ||
+            policy.SensitiveDataRules is null || policy.SensitiveDataRules.Count == 0 || policy.SensitiveDataRules.Count > 32 ||
             policy.IgnoredPaths is null || policy.IgnoredPaths.Count > 256 ||
             policy.Ci is null || policy.MaxFileBytes < 1 || policy.MaxFileBytes > 64 * 1024 * 1024)
         {
@@ -82,14 +89,24 @@ internal static class PolicyLoader
             return false;
         }
 
+        string? unsupportedRule = policy.SensitiveDataRules.FirstOrDefault(rule =>
+            !rule.Equals(FixtureVaultContract.HighConfidenceSensitiveDataRule, StringComparison.OrdinalIgnoreCase));
+        if (unsupportedRule is not null)
+        {
+            validationError = $"Unsupported sensitiveDataRules value '{unsupportedRule}'. Supported value: '{FixtureVaultContract.HighConfidenceSensitiveDataRule}'.";
+            return false;
+        }
+
         return policy.IgnoredPaths.All(path => !string.IsNullOrWhiteSpace(path) && path.Length <= 256);
     }
 
-    private static PolicyLoadResult InvalidPolicy()
+    private static PolicyLoadResult InvalidPolicy(string? validationError = null)
     {
         return new PolicyLoadResult(null, new ScanError(
             "FV-E005",
-            $"{FixtureVaultContract.PolicyFileName} is malformed or uses an unsupported schema."));
+            validationError is null
+                ? $"{FixtureVaultContract.PolicyFileName} is malformed or uses an unsupported schema."
+                : $"{FixtureVaultContract.PolicyFileName} is invalid: {validationError}"));
     }
 }
 
@@ -106,7 +123,7 @@ internal static class PolicyWriter
         try
         {
             FixtureVaultPolicy policy = FixtureVaultPolicy.CreateDefault(Directory.Exists(Path.Combine(repositoryRoot, "tests")));
-            string json = JsonSerializer.Serialize(policy, FixtureVaultContract.JsonOptions) + Environment.NewLine;
+            string json = FixtureVaultContract.SerializePolicy(policy);
             using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
             using var writer = new StreamWriter(stream, new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
             writer.Write(json);

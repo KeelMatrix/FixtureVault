@@ -59,11 +59,14 @@ internal static class CommandLineParser
 
             if (argument == "--root")
             {
-                if (index + 1 >= args.Length || string.IsNullOrWhiteSpace(args[++index]))
+                if (index + 1 >= args.Length ||
+                    args[index + 1].StartsWith('-') ||
+                    string.IsNullOrWhiteSpace(args[index + 1]))
                 {
                     return new CommandLineParseResult(null, "The --root option requires a path.");
                 }
 
+                index++;
                 roots.Add(args[index]);
                 continue;
             }
@@ -82,11 +85,14 @@ internal static class CommandLineParser
 
             if (argument == "--format")
             {
-                if (index + 1 >= args.Length || !TryParseFormat(args[++index], out format))
+                if (index + 1 >= args.Length ||
+                    args[index + 1].StartsWith('-') ||
+                    !TryParseFormat(args[index + 1], out format))
                 {
                     return new CommandLineParseResult(null, "The --format option must be 'console' or 'json'.");
                 }
 
+                index++;
                 continue;
             }
 

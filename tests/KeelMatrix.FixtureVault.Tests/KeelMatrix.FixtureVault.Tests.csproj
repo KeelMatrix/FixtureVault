@@ -19,4 +19,10 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\KeelMatrix.FixtureVault\KeelMatrix.FixtureVault.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="..\fixtures\v1\.fixturevault.json" Link="fixtures\v1\.fixturevault.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\fixtures\v1\.fixturevault.manifest.json" Link="fixtures\v1\.fixturevault.manifest.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\fixtures\v1\report-v1.json" Link="fixtures\v1\report-v1.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

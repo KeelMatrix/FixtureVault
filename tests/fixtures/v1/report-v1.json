@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "toolVersion": "0.1.0",
+  "filesInspected": 1,
+  "findings": [
+    {
+      "ruleId": "FV001",
+      "severity": "error",
+      "disposition": "block",
+      "path": "tests/Orders/OrderTests.received.json",
+      "message": "A received/unapproved snapshot artifact is present in the configured fixture tree.",
+      "remediation": "Review it and either approve it through the existing framework or remove it."
+    }
+  ],
+  "skipped": [],
+  "errors": []
+}

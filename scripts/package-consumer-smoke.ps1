@@ -111,6 +111,18 @@ try {
 
     Push-Location $consumerRoot
     try {
+        [IO.File]::WriteAllBytes(
+            (Join-Path $consumerRoot "icon.png"),
+            [byte[]](0x89, 0x50, 0x4E, 0x47, 0x00, 0x01))
+        $docsRoot = Join-Path $consumerRoot "docs"
+        New-Item -ItemType Directory -Force -Path $docsRoot | Out-Null
+        [IO.File]::WriteAllBytes(
+            (Join-Path $docsRoot "manual.pdf"),
+            [byte[]](0x25, 0x50, 0x44, 0x46, 0x00, 0x01))
+        [IO.File]::WriteAllBytes(
+            (Join-Path $consumerRoot "unrelated.zip"),
+            [byte[]](0x50, 0x4B, 0x03, 0x04, 0x00, 0x01))
+
         $helpPath = Join-Path $workRoot "help.txt"
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("--help") $helpPath) -eq 0) "fixturevault --help failed."
         $help = [IO.File]::ReadAllText($helpPath)

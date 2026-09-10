@@ -77,7 +77,12 @@ internal sealed class FixtureScanner
                     continue;
                 }
 
-                if (IsFixtureCandidate(file.RelativePath, policy, insideActiveRoot: true) && seenFiles.Add(file.FullPath))
+                if (IsFixtureCandidate(
+                        file.RelativePath,
+                        policy,
+                        insideActiveRoot: true,
+                        isRepositoryRoot: root.RelativePath.Length == 0) &&
+                    seenFiles.Add(file.FullPath))
                 {
                     fixtureFiles.Add(file);
                 }
@@ -421,7 +426,8 @@ internal sealed class FixtureScanner
 
     private static bool HasSensitiveData(string text, FixtureVaultPolicy policy)
     {
-        if (!(policy.SensitiveDataRules ?? []).Any(rule => rule.Equals("high-confidence", StringComparison.OrdinalIgnoreCase)))
+        if (!(policy.SensitiveDataRules ?? []).Any(rule =>
+                rule.Equals(FixtureVaultContract.HighConfidenceSensitiveDataRule, StringComparison.OrdinalIgnoreCase)))
         {
             return false;
         }
@@ -462,7 +468,8 @@ internal sealed class FixtureScanner
     private static bool IsFixtureCandidate(
         string relativePath,
         FixtureVaultPolicy policy,
-        bool insideActiveRoot)
+        bool insideActiveRoot,
+        bool isRepositoryRoot = false)
     {
         string fileName = Path.GetFileName(relativePath);
         if (fileName.Equals(FixtureVaultContract.PolicyFileName, StringComparison.OrdinalIgnoreCase) ||
@@ -479,7 +486,7 @@ internal sealed class FixtureScanner
         bool snapshooter = HasConvention(policy, "snapshooter") &&
                            fileName.EndsWith(".snap", StringComparison.OrdinalIgnoreCase);
         return allowedExtension || verify || snapshooter ||
-               (insideActiveRoot && IsKnownBinaryExtension(relativePath));
+               (insideActiveRoot && !isRepositoryRoot && IsKnownBinaryExtension(relativePath));
     }
 
     private static bool IsBaselineCandidate(string relativePath, FixtureVaultPolicy policy)

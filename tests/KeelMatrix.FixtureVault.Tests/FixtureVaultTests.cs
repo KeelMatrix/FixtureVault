@@ -63,6 +63,23 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
+    public void Init_without_tests_directory_ignores_ordinary_binary_assets_at_repository_root()
+    {
+        using var repository = new TemporaryRepository(createTestsDirectory: false);
+        repository.WriteBytes("icon.png", [0x89, 0x50, 0x4E, 0x47, 0x00, 0x01]);
+        repository.WriteBytes("docs/manual.pdf", [0x25, 0x50, 0x44, 0x46, 0x00, 0x01]);
+        repository.WriteBytes("unrelated.zip", [0x50, 0x4B, 0x03, 0x04, 0x00, 0x01]);
+
+        Assert.Equal(0, repository.Run(["init"], new RecordingTelemetry(), out _, out _));
+        int scanExitCode = repository.Run(["scan"], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(0, scanExitCode);
+        Assert.Empty(error);
+        Assert.Contains("0 fixture file(s) inspected", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("FV005", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Help_is_available_without_a_policy_file()
     {
         using var repository = new TemporaryRepository(createTestsDirectory: false);
@@ -73,6 +90,117 @@ public sealed class FixtureVaultTests
         Assert.Empty(error);
         Assert.Contains("Usage:", output, StringComparison.Ordinal);
         Assert.Contains("fixturevault", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Help_is_written_to_stdout_for_each_supported_command()
+    {
+        using var repository = new TemporaryRepository(createTestsDirectory: false);
+
+        foreach (string[] args in new[] { new[] { "scan", "--help" }, new[] { "init", "--help" } })
+        {
+            int exitCode = repository.Run(args, new RecordingTelemetry(), out string output, out string error);
+
+            Assert.Equal(0, exitCode);
+            Assert.Contains("Usage:", output, StringComparison.Ordinal);
+            Assert.Empty(error);
+        }
+    }
+
+    [Fact]
+    public void Unknown_command_is_an_exit_code_two_stderr_diagnostic()
+    {
+        using var repository = new TemporaryRepository(createTestsDirectory: false);
+
+        int exitCode = repository.Run(["unknown"], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(output);
+        Assert.Contains("init", error, StringComparison.Ordinal);
+        Assert.Contains("--help", error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Unknown_option_is_an_exit_code_two_stderr_diagnostic()
+    {
+        using var repository = new TemporaryRepository(createTestsDirectory: false);
+
+        int exitCode = repository.Run(["scan", "--unknown"], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(output);
+        Assert.Contains("Unknown option '--unknown'", error, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void Root_option_requires_a_non_empty_value(int inputKind)
+    {
+        using var repository = new TemporaryRepository(createTestsDirectory: false);
+        string[] args = inputKind switch
+        {
+            0 => ["scan", "--root"],
+            1 => ["scan", "--root="],
+            _ => ["scan", "--root", ""],
+        };
+
+        int exitCode = repository.Run(args, new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(output);
+        Assert.Contains("--root option requires a path", error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Root_option_does_not_consume_the_next_option_as_its_value()
+    {
+        using var repository = new TemporaryRepository(createTestsDirectory: false);
+
+        int exitCode = repository.Run(["scan", "--root", "--format", "json"], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(output);
+        Assert.Contains("--root option requires a path", error, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void Invalid_format_values_are_exit_code_two_stderr_diagnostics(int inputKind)
+    {
+        using var repository = new TemporaryRepository(createTestsDirectory: false);
+        string[] args = inputKind == 0
+            ? ["scan", "--format", "yaml"]
+            : ["scan", "--format=yaml"];
+
+        int exitCode = repository.Run(args, new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(output);
+        Assert.Contains("--format option must be 'console' or 'json'", error, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void Init_rejects_scan_only_options(int inputKind)
+    {
+        using var repository = new TemporaryRepository(createTestsDirectory: false);
+        string[] args = inputKind switch
+        {
+            0 => ["init", "--strict"],
+            1 => ["init", "--root", "tests"],
+            _ => ["init", "--format", "json"],
+        };
+
+        int exitCode = repository.Run(args, new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(output);
+        Assert.Contains("FixtureVault:", error, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -289,6 +417,22 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
+    public void Unknown_sensitive_data_rule_fails_closed_instead_of_returning_a_false_clean_scan()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.SensitiveDataRules = ["high-confidance"]);
+        repository.WriteText("tests/payment.golden", "{\"apiKey\":\"fixture-test-secret-1234567890\"}\n");
+
+        int exitCode = repository.Run(["scan"], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(output);
+        Assert.Contains("sensitiveDataRules", error, StringComparison.Ordinal);
+        Assert.Contains("high-confidance", error, StringComparison.Ordinal);
+        Assert.Contains("high-confidence", error, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Ignored_paths_are_not_audited()
     {
         using var repository = new TemporaryRepository();
@@ -453,6 +597,44 @@ public sealed class FixtureVaultTests
         Assert.Contains(result.Report.Skipped, item => item.Code == "FV-SKIP-CONVENTION");
     }
 
+    [Fact]
+    public void Committed_v1_policy_fixture_is_read_and_serialized_deterministically()
+    {
+        string golden = ReadCompatibilityFixture(FixtureVaultContract.PolicyFileName);
+        FixtureVaultPolicy policy = JsonSerializer.Deserialize<FixtureVaultPolicy>(golden, FixtureVaultContract.JsonOptions)!;
+
+        Assert.True(PolicyLoader.TryValidate(policy, out string? validationError), validationError);
+        Assert.Equal(golden, FixtureVaultContract.SerializePolicy(policy));
+    }
+
+    [Fact]
+    public void Committed_v1_manifest_fixture_is_read_by_the_manifest_loader()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Conventions = ["generic", "fixturevault-manifest"]);
+        repository.WriteText("tests/Orders/Create.verified.json", "{\"id\":1}\n");
+        repository.WriteText(FixtureVaultContract.ManifestFileName, ReadCompatibilityFixture(FixtureVaultContract.ManifestFileName));
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.Report.Errors);
+        Assert.Equal(1, result.Report.FilesInspected);
+    }
+
+    [Fact]
+    public void Committed_v1_report_fixture_round_trips_without_serialization_drift()
+    {
+        string golden = ReadCompatibilityFixture("report-v1.json");
+        ScanReport report = JsonSerializer.Deserialize<ScanReport>(golden, FixtureVaultContract.JsonOptions)!;
+        string serialized = report.ToJson();
+        ScanReport roundTripped = JsonSerializer.Deserialize<ScanReport>(serialized, FixtureVaultContract.JsonOptions)!;
+
+        Assert.Equal(1, report.SchemaVersion);
+        Assert.Equal("0.1.0", report.ToolVersion);
+        Assert.Equal(serialized, roundTripped.ToJson());
+    }
+
     private sealed class RecordingTelemetry : IUsageTelemetry
     {
         internal int SuccessfulScans { get; private set; }
@@ -489,7 +671,7 @@ public sealed class FixtureVaultTests
         {
             FixtureVaultPolicy policy = FixtureVaultPolicy.CreateDefault(testsDirectoryExists: true);
             customize?.Invoke(policy);
-            WriteText(FixtureVaultContract.PolicyFileName, JsonSerializer.Serialize(policy, FixtureVaultContract.JsonOptions));
+            WriteText(FixtureVaultContract.PolicyFileName, FixtureVaultContract.SerializePolicy(policy));
         }
 
         internal void WriteText(string relativePath, string content)
@@ -548,5 +730,11 @@ public sealed class FixtureVaultTests
         }
 
         private string GetPath(string relativePath) => Path.Combine(Root, relativePath.Replace('/', Path.DirectorySeparatorChar));
+    }
+
+    private static string ReadCompatibilityFixture(string fileName)
+    {
+        string path = Path.Combine(AppContext.BaseDirectory, "fixtures", "v1", fileName);
+        return File.ReadAllText(path, Encoding.UTF8).Replace("\r\n", "\n", StringComparison.Ordinal);
     }
 }

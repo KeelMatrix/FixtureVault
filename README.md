@@ -64,7 +64,9 @@ The supported policy file name is `.fixturevault.json`. Its schema version is `1
 
 Roots are repository-relative directories. Allowed extensions are suffixes, so `.golden` matches nested names such as `Orders/Create.golden`. `maxFileBytes` is bounded to 64 MiB; the default is 1 MiB. Ignored paths use `*` for one path segment and `**` for any number of segments; matching is deterministic across operating systems and ignores path-separator and casing differences.
 
-Only files matching an allowed fixture extension or a supported fixture convention are inspected. Ordinary repository assets such as documentation images, PDFs, and ZIP archives outside configured fixture roots are ignored.
+Candidates are files matching an allowed fixture extension or a supported fixture convention; known binary extensions are additionally inspected only under a configured fixture root other than the repository-root fallback. When `init` uses `.` because no `tests` directory exists, ordinary repository assets such as documentation images, PDFs, and ZIP archives remain outside the governed fixture set; fixture-looking extensions and supported convention names are still audited.
+
+The v1 `sensitiveDataRules` policy supports only `high-confidence` (case-insensitive), which is also the default. An unknown value is invalid configuration and returns exit code `2`; it never disables sensitive-data detection silently.
 
 When `ci.strict` is `true`, findings block the scan with exit code `1`. When it is `false`, findings are reported as warnings and the scan exits `0`; configuration and execution errors always exit `2`. `--strict` is a convenience override that turns strict behavior on for the current scan.
 
@@ -164,7 +166,7 @@ Malformed `.fixturevault.json`, a missing configured root, an unsafe root path, 
 ## Troubleshooting
 
 - **Missing policy:** `FV-E001` means `.fixturevault.json` is absent. Run `fixturevault init`, or create the policy file manually using the documented schema.
-- **Malformed policy:** `FV-E005` means the policy is invalid, too large, or uses an unsupported schema. Check `version`, required arrays, extensions, roots, and `ci.strict`.
+- **Malformed policy:** `FV-E005` means the policy is invalid, too large, or uses an unsupported schema. Check `version`, required arrays, extensions, roots, `sensitiveDataRules` (`high-confidence` is the only v1 value), and `ci.strict`.
 - **Missing or unsafe root:** `FV-E008` means a configured root does not exist, is not a directory, is outside the repository, or is a link. Use repository-relative directories that exist and do not traverse outside the repository.
 - **Required manifest:** with the `fixturevault-manifest` convention enabled, a missing manifest returns `FV-E012` and a malformed or unsafe manifest returns `FV-E011`; create `.fixturevault.manifest.json` with explicit `activeBaselines`, or remove that convention when no manifest is maintained.
 - **Unsupported or skipped checks:** unknown convention hints appear as `FV-SKIP-CONVENTION`. Orphan checks for Verify, Snapshooter, and generic files appear as `FV-SKIP-ORPHAN` because no relationship was proved. Reparse points appear as `FV-SKIP-REPARSE`; their targets are not read.
@@ -207,7 +209,7 @@ pwsh -NoProfile -File ./scripts/inspect-package.ps1 -PackagePath ./artifacts/pac
 pwsh -NoProfile -File ./scripts/package-consumer-smoke.ps1 -PackagePath ./artifacts/packages/KeelMatrix.FixtureVault.0.1.0.nupkg -ExpectedVersion 0.1.0
 ```
 
-The smoke script stages only that `.nupkg` in a local feed, uses a controlled `NuGet.config` with cleared sources and explicit source mapping, sets fresh `NUGET_PACKAGES` and HTTP-cache directories, and verifies that the resolved package hash matches the staged package. It then proves `--help`, `init`, clean scan exit `0`, and blocking JSON scan exit `1`.
+The smoke script stages only that `.nupkg` in a local feed, uses a controlled `NuGet.config` with cleared sources and explicit source mapping, sets fresh `NUGET_PACKAGES` and HTTP-cache directories, and verifies that the resolved package hash matches the staged package. It then proves `--help`, `init` in a no-tests repository containing ordinary binary assets, clean scan exit `0`, and blocking JSON scan exit `1`.
 
 ## Platform behavior and limitations
 

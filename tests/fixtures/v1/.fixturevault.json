@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "roots": [
+    "tests"
+  ],
+  "allowedExtensions": [
+    ".verified.json",
+    ".verified.txt",
+    ".snap",
+    ".golden"
+  ],
+  "maxFileBytes": 1048576,
+  "conventions": [
+    "verify",
+    "snapshooter",
+    "generic"
+  ],
+  "sensitiveDataRules": [
+    "high-confidence"
+  ],
+  "ignoredPaths": [
+    "**/.git/**",
+    "**/bin/**",
+    "**/obj/**"
+  ],
+  "ci": {
+    "strict": true
+  }
+}

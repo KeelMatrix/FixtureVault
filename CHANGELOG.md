@@ -9,6 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 
 - Packaging, archive-contract, and consumer-smoke hardening for the planned first public release.
+- Sensitive-data policy values now fail closed, and repository-root fallback scans no longer classify ordinary binary assets as fixtures.
+- Release validation now accepts only the fixed first-release tag `v0.1.0` and inspects the exact tag-built packages before publication.
 
 ## [0.1.0] - Planned (not yet published)
 

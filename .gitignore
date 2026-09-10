@@ -11,8 +11,18 @@ obj/
 .fixturevault.json
 .fixturevault.manifest.json
 keelmatrix.telemetry.json
-.env
-.env.local
+.env*
+.eNv*
+.enV*
+.eNV*
+.Env*
+.EnV*
+.ENv*
+.ENV*
+
+# Committed v1 compatibility inputs are intentionally tracked test fixtures.
+!tests/fixtures/v1/.fixturevault.json
+!tests/fixtures/v1/.fixturevault.manifest.json
 
 # NuGet outputs and local feeds
 *.nupkg
