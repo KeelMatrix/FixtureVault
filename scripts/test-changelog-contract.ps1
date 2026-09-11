@@ -112,7 +112,7 @@ if (-not [IO.Path]::IsPathRooted($relativeChangelogPath) -and
 $changelog = [IO.File]::ReadAllText($resolvedChangelogPath)
 $headingMatches = [Text.RegularExpressions.Regex]::Matches(
     $changelog,
-    '(?m)^(?<level>#{2,6})[ \t]+(?<title>[^\r\n]+?)[ \t]*\r?$')
+    '(?m)^(?<level>#{1,6})[ \t]+(?<title>[^\r\n]+?)[ \t]*\r?$')
 $releaseHeadingPattern = '^[ ]*\[?(?<version>\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\]?(?:[ \t]+-[ \t]+(?<suffix>.*?))?[ \t]*$'
 $headings = @(
     foreach ($headingMatch in $headingMatches) {
@@ -140,7 +140,21 @@ if ($parentHeading.Count -eq 1 -and $parentHeading[0].Title -match '^(?i:\[?unre
     Fail-Contract "Release version '$ExpectedVersion' is nested inside the Unreleased section."
 }
 
-Assert-Contract ($targetHeading.Title -notmatch '(?i)\b(?:planned|unreleased|tbd|draft|upcoming|pending)\b|not[ -]+yet[ -]+published|not[ -]+published|to[ -]+be[ -]+released') "Release heading for '$ExpectedVersion' is still marked as planned or unpublished."
+$preReleaseMarkerPattern = '(?i)\b(?:planned|unreleased|tbd|draft|upcoming|pending)\b|not[ \t-]+yet[ \t-]+published|not[ \t-]+published|to[ \t-]+be[ \t-]+released'
+Assert-Contract ($targetHeading.Title -notmatch $preReleaseMarkerPattern) "Release heading for '$ExpectedVersion' is still marked as planned or unpublished."
+
+$nextSectionHeading = @($headings |
+    Where-Object { $_.Index -gt $targetHeading.Index -and $_.Level -le $targetHeading.Level } |
+    Sort-Object Index |
+    Select-Object -First 1)
+$sectionEndIndex = if ($nextSectionHeading.Count -eq 1) {
+    $nextSectionHeading[0].Index
+}
+else {
+    $changelog.Length
+}
+$targetSection = $changelog.Substring($targetHeading.Index, $sectionEndIndex - $targetHeading.Index)
+Assert-Contract ($targetSection -notmatch $preReleaseMarkerPattern) "Release section for '$ExpectedVersion' is still marked as planned or unpublished."
 
 $releaseDateText = $targetHeading.ReleaseSuffix
 Assert-Contract (-not [string]::IsNullOrWhiteSpace($releaseDateText)) "Release date for '$ExpectedVersion' is missing."

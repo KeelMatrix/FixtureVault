@@ -164,10 +164,34 @@ try {
 "@
     Assert-Contract ($nestedUnreleased.ExitCode -ne 0) "A release entry nested under Unreleased passed the changelog publication gate."
 
+    $bodyMarkerCases = @(
+        [pscustomobject]@{ Name = "Planned"; Body = "Planned first public release notes." },
+        [pscustomobject]@{ Name = "not yet published"; Body = "This release is not yet published." },
+        [pscustomobject]@{ Name = "Unreleased"; Body = "Release notes remain Unreleased." },
+        [pscustomobject]@{ Name = "TBD"; Body = "Release details are TBD." },
+        [pscustomobject]@{ Name = "Draft"; Body = "This is a Draft release entry." }
+    )
+    foreach ($bodyMarkerCase in $bodyMarkerCases) {
+        $bodyMarker = Invoke-ChangelogContract @"
+# Changelog
+
+## [Unreleased]
+
+- Future work remains Unreleased and is TBD.
+
+## [0.1.0] - $today
+
+- $($bodyMarkerCase.Body)
+"@
+        Assert-Contract ($bodyMarker.ExitCode -ne 0) "A finalized release entry with a body-level $($bodyMarkerCase.Name) marker passed the changelog publication gate."
+    }
+
     $finalized = Invoke-ChangelogContract @"
 # Changelog
 
 ## [Unreleased]
+
+- Future work remains Unreleased and is TBD.
 
 ## [0.1.0] - $today
 
@@ -176,6 +200,25 @@ try {
 - Finalized release notes.
 "@
     Assert-Contract ($finalized.ExitCode -eq 0) "A finalized, internally consistent release entry was rejected: $($finalized.Output)"
+
+    $trackedChangelogPath = Join-Path $repositoryRoot "CHANGELOG.md"
+    $realContractParameters = @{
+        ExpectedVersion = "0.1.0"
+        ExpectedPackageVersion = "0.1.0"
+        ExpectedCommit = $script:RepositoryCommit
+        ChangelogPath = $trackedChangelogPath
+        RepositoryRoot = $repositoryRoot
+    }
+    $realChangelogOutput = & pwsh -NoProfile -File $changelogScriptPath @realContractParameters 2>&1
+    $realChangelogExitCode = $LASTEXITCODE
+    $realChangelogText = [IO.File]::ReadAllText($trackedChangelogPath)
+    $realChangelogIsPlanned = $realChangelogText -match '(?im)^##[ \t]+\[0\.1\.0\][^\r\n]*(?:planned|not[ \t-]+yet[ \t-]+published)'
+    if ($realChangelogIsPlanned) {
+        Assert-Contract ($realChangelogExitCode -ne 0) "The real planned CHANGELOG.md passed the changelog publication gate. Output: $($realChangelogOutput -join [Environment]::NewLine)"
+    }
+    else {
+        Assert-Contract ($realChangelogExitCode -eq 0) "The finalized real CHANGELOG.md was rejected by the changelog publication gate. Output: $($realChangelogOutput -join [Environment]::NewLine)"
+    }
 
     $changelogTagMismatch = Invoke-ChangelogContract @"
 # Changelog
@@ -205,7 +248,6 @@ try {
 "@ -Commit $wrongCommit
     Assert-Contract ($commitMismatch.ExitCode -ne 0) "A changelog contract check accepted a commit different from the checked-out commit."
 
-    $trackedChangelogPath = Join-Path $repositoryRoot "CHANGELOG.md"
     $originalChangelog = [IO.File]::ReadAllText($trackedChangelogPath)
     try {
         [IO.File]::WriteAllText($trackedChangelogPath, $originalChangelog + "`n", [Text.UTF8Encoding]::new($false))
