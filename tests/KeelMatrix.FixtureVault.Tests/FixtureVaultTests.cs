@@ -258,6 +258,62 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
+    public void Verify_bommed_verified_baseline_is_clean()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/Orders/OrderTests.verified.json", Utf8Bom("{\"id\":1}"));
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.Report.Findings);
+    }
+
+    [Fact]
+    public void Verify_split_mode_received_artifact_is_a_blocking_finding()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/Orders/OrderTests.received/result.json", Utf8Bom("{\"id\":1}"));
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(1, result.ExitCode);
+        Finding finding = Assert.Single(result.Report.Findings, item => item.RuleId == "FV001");
+        Assert.Equal("tests/Orders/OrderTests.received/result.json", finding.Path);
+    }
+
+    [Fact]
+    public void Verify_split_mode_verified_baseline_is_clean()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/Orders/OrderTests.verified/result.json", Utf8Bom("{\"id\":1}"));
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.Report.Findings);
+    }
+
+    [Theory]
+    [InlineData("mismatch")]
+    [InlineData("__mismatch__")]
+    public void Snapshooter_mismatch_artifacts_are_blocking_findings(string mismatchDirectory)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText($"tests/Orders/__snapshots__/{mismatchDirectory}/OrderTests.snap", "{\"id\":2}");
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(1, result.ExitCode);
+        Finding finding = Assert.Single(result.Report.Findings, item => item.RuleId == "FV001");
+        Assert.Equal($"tests/Orders/__snapshots__/{mismatchDirectory}/OrderTests.snap", finding.Path);
+    }
+
+    [Fact]
     public void Snapshooter_and_generic_golden_files_are_audited()
     {
         using var repository = new TemporaryRepository();
@@ -414,17 +470,18 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
-    public void Invalid_encoding_bom_and_crlf_are_detected_deterministically()
+    public void Invalid_encoding_and_verify_newlines_are_detected_deterministically()
     {
         using var repository = new TemporaryRepository();
         repository.WritePolicy();
         repository.WriteBytes("tests/bom.golden", [0xEF, 0xBB, 0xBF, 0x6F, 0x6B, 0x0A]);
-        repository.WriteBytes("tests/crlf.golden", Encoding.UTF8.GetBytes("one\r\ntwo\r\n"));
+        repository.WriteBytes("tests/verify.verified.json", [0xEF, 0xBB, 0xBF, 0x6F, 0x6E, 0x65, 0x0D, 0x0A, 0x74, 0x77, 0x6F]);
         repository.WriteBytes("tests/utf16.golden", [0xFF, 0xFE, 0x6F, 0x00, 0x6B, 0x00]);
 
         ScanResult result = repository.Scan();
 
-        Assert.Equal(3, result.Report.Findings.Count(item => item.RuleId == "FV006"));
+        Assert.Equal(2, result.Report.Findings.Count(item => item.RuleId == "FV006"));
+        Assert.DoesNotContain(result.Report.Findings, item => item.Path == "tests/bom.golden");
     }
 
     [Fact]
@@ -606,7 +663,7 @@ public sealed class FixtureVaultTests
     {
         using var repository = new TemporaryRepository();
         repository.WritePolicy(policy => policy.Ci!.Strict = false);
-        repository.WriteText("tests/OrderTests.received.json", "received\n");
+        repository.WriteText("tests/OrderTests.received.json", "received");
 
         ScanResult warning = repository.Scan();
         ScanResult strict = repository.Scan(["--strict"]);
@@ -901,4 +958,7 @@ public sealed class FixtureVaultTests
         string path = Path.Combine(AppContext.BaseDirectory, "fixtures", "v1", fileName);
         return File.ReadAllText(path, Encoding.UTF8).Replace("\r\n", "\n", StringComparison.Ordinal);
     }
+
+    private static byte[] Utf8Bom(string text) =>
+        [.. Encoding.UTF8.GetPreamble(), .. Encoding.UTF8.GetBytes(text)];
 }

@@ -129,9 +129,8 @@ internal sealed class FixtureScanner
         long totalBytesRead = 0;
         foreach (SafeFileEntry file in fixtureFiles.OrderBy(file => file.RelativePath, StringComparer.Ordinal))
         {
-            string fileName = Path.GetFileName(file.RelativePath);
-            if (HasConvention(policy, "verify") &&
-                fileName.Contains(".received.", StringComparison.OrdinalIgnoreCase))
+            if ((HasConvention(policy, "verify") && IsVerifyReceivedPath(file.RelativePath)) ||
+                (HasConvention(policy, "snapshooter") && IsSnapshooterMismatchPath(file.RelativePath)))
             {
                 AddFinding(
                     findings,
@@ -357,9 +356,12 @@ internal sealed class FixtureScanner
         FixtureVaultPolicy policy,
         ICollection<Finding> findings)
     {
-        bool hasUtf8Bom = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
         bool hasOtherBom = bytes.Length >= 2 && ((bytes[0] == 0xFF && bytes[1] == 0xFE) ||
-                                                 (bytes[0] == 0xFE && bytes[1] == 0xFF));
+                                                 (bytes[0] == 0xFE && bytes[1] == 0xFF) ||
+                                                 (bytes.Length >= 4 && bytes[0] == 0x00 && bytes[1] == 0x00 &&
+                                                  bytes[2] == 0xFE && bytes[3] == 0xFF) ||
+                                                 (bytes.Length >= 4 && bytes[0] == 0xFF && bytes[1] == 0xFE &&
+                                                  bytes[2] == 0x00 && bytes[3] == 0x00));
         if (hasOtherBom)
         {
             AddFinding(
@@ -368,7 +370,7 @@ internal sealed class FixtureScanner
                 "FV006",
                 file.RelativePath,
                 "The fixture uses a non-UTF-8 encoding.",
-                "Save the fixture as UTF-8 without a byte-order mark.");
+                "Save the fixture as UTF-8 text. A UTF-8 byte-order mark is supported where the fixture convention permits it.");
             return;
         }
 
@@ -401,15 +403,18 @@ internal sealed class FixtureScanner
             return;
         }
 
-        if (hasUtf8Bom || text.Contains('\r'))
+        bool isVerifyFixture = HasConvention(policy, "verify") && IsVerifySnapshotPath(file.RelativePath);
+        bool hasCarriageReturn = bytes.Contains((byte)'\r');
+        bool hasTrailingNewline = bytes.Length > 0 && (bytes[^1] == (byte)'\r' || bytes[^1] == (byte)'\n');
+        if (isVerifyFixture && (hasCarriageReturn || hasTrailingNewline))
         {
             AddFinding(
                 findings,
                 policy,
                 "FV006",
                 file.RelativePath,
-                "The fixture has non-canonical encoding or newline bytes.",
-                "Save the fixture as UTF-8 without a byte-order mark and use LF newlines.");
+                "The Verify fixture has newline bytes that do not match Verify's LF-only, no-trailing-newline convention.",
+                "Regenerate or save the Verify fixture as UTF-8 with LF-only newlines and no trailing newline. A UTF-8 byte-order mark is supported.");
         }
 
         if (HasSensitiveData(text, policy))
@@ -481,8 +486,7 @@ internal sealed class FixtureScanner
         bool allowedExtension = (policy.AllowedExtensions ?? []).Any(extension =>
             fileName.EndsWith(extension, StringComparison.OrdinalIgnoreCase));
         bool verify = HasConvention(policy, "verify") &&
-                      (fileName.Contains(".received.", StringComparison.OrdinalIgnoreCase) ||
-                       fileName.Contains(".verified.", StringComparison.OrdinalIgnoreCase));
+                      IsVerifySnapshotPath(relativePath);
         bool snapshooter = HasConvention(policy, "snapshooter") &&
                            fileName.EndsWith(".snap", StringComparison.OrdinalIgnoreCase);
         return allowedExtension || verify || snapshooter ||
@@ -493,10 +497,59 @@ internal sealed class FixtureScanner
     {
         string fileName = Path.GetFileName(relativePath);
         return !IsKnownBinaryExtension(relativePath) &&
-               ((HasConvention(policy, "verify") && fileName.Contains(".verified.", StringComparison.OrdinalIgnoreCase)) ||
-                (HasConvention(policy, "snapshooter") && fileName.EndsWith(".snap", StringComparison.OrdinalIgnoreCase)) ||
+               ((HasConvention(policy, "verify") && IsVerifyVerifiedPath(relativePath)) ||
+                (HasConvention(policy, "snapshooter") &&
+                 fileName.EndsWith(".snap", StringComparison.OrdinalIgnoreCase) &&
+                 !IsSnapshooterMismatchPath(relativePath)) ||
                 (HasConvention(policy, "generic") &&
                  (policy.AllowedExtensions ?? []).Any(extension => fileName.EndsWith(extension, StringComparison.OrdinalIgnoreCase))));
+    }
+
+    private static bool IsVerifySnapshotPath(string relativePath) =>
+        IsVerifyReceivedPath(relativePath) || IsVerifyVerifiedPath(relativePath);
+
+    private static bool IsVerifyReceivedPath(string relativePath) =>
+        IsVerifyFilePath(relativePath, ".received.") || IsVerifySplitDirectoryPath(relativePath, ".received");
+
+    private static bool IsVerifyVerifiedPath(string relativePath) =>
+        IsVerifyFilePath(relativePath, ".verified.") || IsVerifySplitDirectoryPath(relativePath, ".verified");
+
+    private static bool IsVerifyFilePath(string relativePath, string marker) =>
+        Path.GetFileName(relativePath).Contains(marker, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsVerifySplitDirectoryPath(string relativePath, string suffix)
+    {
+        string[] segments = relativePath.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+        for (int index = 0; index < segments.Length - 1; index++)
+        {
+            if (segments[index].EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsSnapshooterMismatchPath(string relativePath)
+    {
+        string[] segments = relativePath.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (!Path.GetFileName(relativePath).EndsWith(".snap", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        for (int index = 0; index < segments.Length - 2; index++)
+        {
+            if (segments[index].Equals("__snapshots__", StringComparison.OrdinalIgnoreCase) &&
+                (segments[index + 1].Equals("mismatch", StringComparison.OrdinalIgnoreCase) ||
+                 segments[index + 1].Equals("__mismatch__", StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool HasConvention(FixtureVaultPolicy policy, string convention)

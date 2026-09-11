@@ -74,8 +74,8 @@ When `ci.strict` is `true`, findings block the scan with exit code `1`. When it 
 
 The built-in hints are:
 
-- `verify`: detects common `*.received.*` artifacts and audits `*.verified.*` baselines.
-- `snapshooter`: audits common `*.snap` files.
+- `verify`: detects common `*.received.*` artifacts and split-mode `*.received/<file>` artifacts, and audits `*.verified.*` and split-mode `*.verified/<file>` baselines. For Verify text fixtures, FixtureVault accepts UTF-8 with or without a BOM and requires LF-only bytes with no trailing newline.
+- `snapshooter`: audits ordinary `*.snap` files and treats `.snap` files below `__snapshots__/mismatch/` or the documented `__snapshots__/__mismatch__/` directory as received/unapproved artifacts.
 - `generic`: audits files matching `allowedExtensions`, including `.golden` files.
 - `fixturevault-manifest`: enables the explicit orphan proof described below. When enabled, the manifest is required; a missing manifest is a configuration error (exit code `2`).
 
@@ -102,12 +102,12 @@ The rule IDs below are the frozen v1 report contract. Every finding has a rule I
 
 | ID | Finding | Remediation |
 | --- | --- | --- |
-| `FV001` | A Verify `*.received.*` artifact is present without approval. | Review it and either approve it through the existing framework or remove it. |
+| `FV001` | A Verify `*.received.*` or split-mode `*.received/<file>` artifact, or a Snapshooter mismatch `.snap` file, is present without approval. | Review it and either approve it through the existing framework or remove it. |
 | `FV002` | A baseline is absent from an explicit FixtureVault manifest. | Add it to the manifest or remove the stale baseline. |
 | `FV003` | Two fixture paths differ only by case after Unicode normalization. | Rename one path so it is unique on all supported filesystems. |
 | `FV004` | A fixture exceeds `maxFileBytes`. | Reduce the fixture or deliberately raise the policy limit. |
 | `FV005` | An unexpected binary asset is present under a fixture root. | Remove it or keep only supported text fixtures. |
-| `FV006` | A fixture has non-canonical encoding or newlines. | Save it as UTF-8 without a BOM and with LF newlines. |
+| `FV006` | A fixture is not valid UTF-8, uses a non-UTF-8 encoding, or violates a proven newline convention. UTF-8 BOMs are accepted. Verify text fixtures must use LF-only bytes and no trailing newline. Other supported conventions have no asserted newline style. | Save non-Verify text as valid UTF-8. Regenerate or save Verify text as UTF-8 with optional BOM, LF-only newlines, and no trailing newline. |
 | `FV007` | A high-confidence sensitive-data pattern was detected. | Remove the sensitive value from the fixture. The value is never printed. |
 | `FV008` | A fixture-looking file is outside the approved roots. | Move it below an approved root or update `roots`. |
 
