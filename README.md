@@ -188,6 +188,16 @@ $env:KEELMATRIX_NO_TELEMETRY = "1"
 
 The shared telemetry package also supports repository-local opt-out through `keelmatrix.telemetry.json`, `.env.local`, or `.env`.
 
+## Dependency vulnerability gate
+
+The repository-owned audit runs the .NET package vulnerability check with both direct and transitive dependencies:
+
+```powershell
+pwsh -NoProfile -File ./scripts/audit-vulnerabilities.ps1 -SolutionPath KeelMatrix.FixtureVault.sln
+```
+
+The gate fails when an applicable vulnerability is reported, when the audit command fails, or when advisory data is empty, unavailable, or unrecognized. Normal CI and tag validation run this same command before packaging.
+
 ## CI example
 
 Run the built-in CLI directly; no Action is required:

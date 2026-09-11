@@ -17,8 +17,10 @@ function Assert-Contract {
 
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $workflowPath = Join-Path $repositoryRoot ".github/workflows/release.yml"
+$ciWorkflowPath = Join-Path $repositoryRoot ".github/workflows/ci.yml"
 $tagScriptPath = Join-Path $repositoryRoot "scripts/validate-release-tag.ps1"
 $workflow = [IO.File]::ReadAllText($workflowPath)
+$ciWorkflow = [IO.File]::ReadAllText($ciWorkflowPath)
 
 $validationMatch = [Text.RegularExpressions.Regex]::Match(
     $workflow,
@@ -38,6 +40,7 @@ Assert-Contract ($validation.Contains("dotnet test", [StringComparison]::Ordinal
 Assert-Contract ($validation.Contains("dotnet pack", [StringComparison]::Ordinal)) "Release validation must pack the tool."
 Assert-Contract ($validation.Contains("inspect-package.ps1", [StringComparison]::Ordinal)) "Release validation must inspect the package archives."
 Assert-Contract ($validation.Contains("package-consumer-smoke.ps1", [StringComparison]::Ordinal)) "Release validation must run the package consumer smoke."
+Assert-Contract ($validation.Contains("audit-vulnerabilities.ps1", [StringComparison]::Ordinal)) "Release validation must run the repository vulnerability audit."
 Assert-Contract ($validation.Contains('KeelMatrix.FixtureVault.${{ steps.release-version.outputs.version }}.nupkg', [StringComparison]::Ordinal)) "Release validation must upload the primary package by exact name."
 Assert-Contract ($validation.Contains('KeelMatrix.FixtureVault.${{ steps.release-version.outputs.version }}.snupkg', [StringComparison]::Ordinal)) "Release validation must upload the symbols package by exact name."
 Assert-Contract ($validation.Contains('RELEASE_TAG: ${{ github.ref_name }}', [StringComparison]::Ordinal)) "The release ref must be passed through RELEASE_TAG."
@@ -52,6 +55,7 @@ Assert-Contract (-not $publication.Contains("--skip-duplicate", [StringCompariso
 Assert-Contract (([Text.RegularExpressions.Regex]::Matches($publication, 'dotnet nuget push')).Count -eq 2) "Publication must push exactly two artifacts."
 Assert-Contract ($publication.Contains("--no-symbols", [StringComparison]::Ordinal)) "The primary package push must not publish symbols implicitly."
 Assert-Contract ($publication.Contains(".snupkg", [StringComparison]::Ordinal)) "Publication must push the symbols package explicitly."
+Assert-Contract ($ciWorkflow.Contains("audit-vulnerabilities.ps1", [StringComparison]::Ordinal)) "Normal CI must run the repository vulnerability audit."
 
 $previousTag = $env:RELEASE_TAG
 $previousOutput = $env:GITHUB_OUTPUT

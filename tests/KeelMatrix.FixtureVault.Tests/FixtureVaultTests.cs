@@ -79,6 +79,45 @@ public sealed class FixtureVaultTests
         Assert.DoesNotContain("FV005", output, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Repository_policy_discovery_stops_at_the_nearest_git_root_with_an_in_repo_policy(bool gitMarkerIsFile)
+    {
+        using var repository = new GitBoundaryRepository(gitMarkerIsFile);
+        repository.WriteParentPolicy();
+        repository.WriteParentText("sibling/leaked.received.json", "{\"apiKey\":\"fixture-test-secret-1234567890\"}\n");
+        repository.WritePolicyInRepository();
+        repository.WriteRepositoryText("tests/clean.golden", "clean\n");
+
+        int exitCode = repository.RunFromNestedDirectory(["scan"], out string output, out string error);
+
+        Assert.Equal(0, exitCode);
+        Assert.Empty(error);
+        Assert.Contains("1 fixture file(s) inspected", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("sibling", output, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("fixture-test-secret-1234567890", output, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Repository_policy_discovery_does_not_adopt_a_policy_above_the_nearest_git_root(bool gitMarkerIsFile)
+    {
+        using var repository = new GitBoundaryRepository(gitMarkerIsFile);
+        repository.WriteParentPolicy();
+        repository.WriteParentText("sibling/leaked.received.json", "{\"apiKey\":\"fixture-test-secret-1234567890\"}\n");
+
+        int exitCode = repository.RunFromNestedDirectory(["scan"], out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(output);
+        Assert.Contains("FV-E001", error, StringComparison.Ordinal);
+        Assert.Contains(".fixturevault.json was not found", error, StringComparison.Ordinal);
+        Assert.DoesNotContain("sibling", error, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("fixture-test-secret-1234567890", error, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Help_is_available_without_a_policy_file()
     {
@@ -784,6 +823,77 @@ public sealed class FixtureVaultTests
         }
 
         private string GetPath(string relativePath) => Path.Combine(Root, relativePath.Replace('/', Path.DirectorySeparatorChar));
+    }
+
+    private sealed class GitBoundaryRepository : IDisposable
+    {
+        internal GitBoundaryRepository(bool gitMarkerIsFile)
+        {
+            ParentRoot = Path.Combine(Path.GetTempPath(), "fixturevault-git-boundary-tests", Guid.NewGuid().ToString("N"));
+            RepositoryRoot = Path.Combine(ParentRoot, "repository");
+            Directory.CreateDirectory(Path.Combine(RepositoryRoot, "tests"));
+
+            string gitMarker = Path.Combine(RepositoryRoot, ".git");
+            if (gitMarkerIsFile)
+            {
+                File.WriteAllText(gitMarker, "gitdir: synthetic\n");
+            }
+            else
+            {
+                Directory.CreateDirectory(gitMarker);
+            }
+        }
+
+        internal string ParentRoot { get; }
+
+        internal string RepositoryRoot { get; }
+
+        public void Dispose()
+        {
+            if (Directory.Exists(ParentRoot))
+            {
+                Directory.Delete(ParentRoot, recursive: true);
+            }
+        }
+
+        internal void WriteParentPolicy()
+        {
+            FixtureVaultPolicy policy = FixtureVaultPolicy.CreateDefault(testsDirectoryExists: false);
+            policy.Roots = ["sibling"];
+            WriteText(ParentRoot, FixtureVaultContract.PolicyFileName, FixtureVaultContract.SerializePolicy(policy));
+        }
+
+        internal void WritePolicyInRepository()
+        {
+            FixtureVaultPolicy policy = FixtureVaultPolicy.CreateDefault(testsDirectoryExists: true);
+            WriteText(RepositoryRoot, FixtureVaultContract.PolicyFileName, FixtureVaultContract.SerializePolicy(policy));
+        }
+
+        internal void WriteParentText(string relativePath, string content) => WriteText(ParentRoot, relativePath, content);
+
+        internal void WriteRepositoryText(string relativePath, string content) => WriteText(RepositoryRoot, relativePath, content);
+
+        internal int RunFromNestedDirectory(string[] args, out string output, out string error)
+        {
+            using var stdout = new StringWriter();
+            using var stderr = new StringWriter();
+            int exitCode = FixtureVaultApplication.Run(
+                args,
+                Path.Combine(RepositoryRoot, "tests"),
+                new RecordingTelemetry(),
+                stdout,
+                stderr);
+            output = stdout.ToString();
+            error = stderr.ToString();
+            return exitCode;
+        }
+
+        private static void WriteText(string root, string relativePath, string content)
+        {
+            string path = Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        }
     }
 
     private static string ReadCompatibilityFixture(string fileName)

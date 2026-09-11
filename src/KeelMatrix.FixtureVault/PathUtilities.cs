@@ -14,7 +14,6 @@ internal static class PathUtilities
         }
 
         var directory = new DirectoryInfo(current);
-        string? gitRoot = null;
         while (directory is not null)
         {
             if (File.Exists(Path.Combine(directory.FullName, FixtureVaultContract.PolicyFileName)))
@@ -22,16 +21,16 @@ internal static class PathUtilities
                 return directory.FullName;
             }
 
-            if (gitRoot is null && (File.Exists(Path.Combine(directory.FullName, ".git")) ||
-                                    Directory.Exists(Path.Combine(directory.FullName, ".git"))))
+            if (File.Exists(Path.Combine(directory.FullName, ".git")) ||
+                Directory.Exists(Path.Combine(directory.FullName, ".git")))
             {
-                gitRoot = directory.FullName;
+                return directory.FullName;
             }
 
             directory = directory.Parent;
         }
 
-        return gitRoot ?? current;
+        return current;
     }
 
     internal static bool TryResolveRoot(
