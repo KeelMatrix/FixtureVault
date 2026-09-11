@@ -15,6 +15,20 @@ function Assert-Contract {
     }
 }
 
+function Assert-JobTimeout {
+    param(
+        [string]$JobName,
+        [string]$JobText,
+        [int]$ExpectedMinutes
+    )
+
+    $timeoutMatch = [Text.RegularExpressions.Regex]::Match(
+        $JobText,
+        '(?m)^    timeout-minutes:\s*(\d+)\s*$')
+    Assert-Contract $timeoutMatch.Success "$JobName must declare a job-level timeout-minutes bound."
+    Assert-Contract ([int]$timeoutMatch.Groups[1].Value -eq $ExpectedMinutes) "$JobName must use timeout-minutes: $ExpectedMinutes."
+}
+
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $workflowPath = Join-Path $repositoryRoot ".github/workflows/release.yml"
 $ciWorkflowPath = Join-Path $repositoryRoot ".github/workflows/ci.yml"
@@ -33,6 +47,14 @@ Assert-Contract $publicationMatch.Success "The release workflow is missing the p
 
 $validation = $validationMatch.Value
 $publication = $publicationMatch.Value
+Assert-JobTimeout "CI validate" ([Text.RegularExpressions.Regex]::Match(
+    $ciWorkflow,
+    '(?ms)^  validate:.*?(?=^  package-consumer-smoke:)').Value) 30
+Assert-JobTimeout "CI package-consumer-smoke" ([Text.RegularExpressions.Regex]::Match(
+    $ciWorkflow,
+    '(?ms)^  package-consumer-smoke:.*$').Value) 20
+Assert-JobTimeout "Release validate-release" $validation 45
+Assert-JobTimeout "Release publish" $publication 20
 Assert-Contract (-not $validation.Contains("id-token: write", [StringComparison]::Ordinal)) "The release validation job must not request id-token: write."
 Assert-Contract ($validation.Contains("dotnet restore", [StringComparison]::Ordinal)) "Release validation must restore the solution."
 Assert-Contract ($validation.Contains("dotnet build", [StringComparison]::Ordinal)) "Release validation must build the solution."

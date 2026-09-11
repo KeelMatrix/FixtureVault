@@ -13,6 +13,7 @@ env:
 
 jobs:
   validate-release:
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -98,6 +99,7 @@ jobs:
 
   publish:
     needs: validate-release
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     permissions:
       actions: read
