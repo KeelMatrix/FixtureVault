@@ -380,6 +380,49 @@ dotnet tool install --global KeelMatrix.FixtureVault `
 - Finalized release notes.
 "@
         Assert-Contract ($multilineInstallMismatch.ExitCode -ne 0) "A multiline install-example/version mismatch passed the publication gate."
+
+        [IO.File]::WriteAllText($readmePath, @"
+dotnet tool install --global KeelMatrix.FixtureVault --version=0.1.0
+"@, [Text.UTF8Encoding]::new($false))
+        $equalsInstallConsistent = Invoke-ChangelogContract @"
+# Changelog
+
+## [Unreleased]
+
+## [0.1.0] - $today
+
+- Finalized release notes.
+"@
+        Assert-Contract ($equalsInstallConsistent.ExitCode -eq 0) "An equals-form install example with the release version was rejected: $($equalsInstallConsistent.Output)"
+
+        [IO.File]::WriteAllText($readmePath, @"
+dotnet tool install --global KeelMatrix.FixtureVault --version=0.2.0
+"@, [Text.UTF8Encoding]::new($false))
+        $singleLineEqualsMismatch = Invoke-ChangelogContract @"
+# Changelog
+
+## [Unreleased]
+
+## [0.1.0] - $today
+
+- Finalized release notes.
+"@
+        Assert-Contract ($singleLineEqualsMismatch.ExitCode -ne 0) "A single-line equals-form install-example/version mismatch passed the publication gate."
+
+        [IO.File]::WriteAllText($readmePath, @"
+dotnet tool install --global KeelMatrix.FixtureVault \
+  --version=0.2.0
+"@, [Text.UTF8Encoding]::new($false))
+        $continuationEqualsMismatch = Invoke-ChangelogContract @"
+# Changelog
+
+## [Unreleased]
+
+## [0.1.0] - $today
+
+- Finalized release notes.
+"@
+        Assert-Contract ($continuationEqualsMismatch.ExitCode -ne 0) "A continuation-line equals-form install-example/version mismatch passed the publication gate."
     }
     finally {
         [IO.File]::WriteAllText($readmePath, $originalReadme, [Text.UTF8Encoding]::new($false))
