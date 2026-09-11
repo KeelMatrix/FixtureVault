@@ -142,7 +142,10 @@ $targetHeadings = @($headings | Where-Object { $_.ReleaseVersion -ceq $ExpectedV
 Assert-Contract ($targetHeadings.Count -eq 1) "Expected exactly one release heading for version '$ExpectedVersion'."
 $targetHeading = $targetHeadings[0]
 
-$preReleaseMarkerPattern = '(?i)\b(?:planned|unreleased|tbd|draft|upcoming|pending|forthcoming)\b|not\s+yet\s+published|not\s+published|to\s+be\s+released|not\s+ready|work\s+in\s+progress|pre[\s-]?release|coming\s+soon'
+$preReleaseStatusWords = 'planned|unreleased|tbd|draft|upcoming|pending|forthcoming|pre-?release'
+$preReleaseStatusPhrases = 'not\s+yet\s+(?:published|released)'
+$preReleaseStatusTokens = "(?:$preReleaseStatusWords|not\s+(?:published|released)|to\s+be\s+(?:published|released)|not\s+ready|work\s+in\s+progress|coming\s+soon)"
+$preReleaseMarkerPattern = "(?i)(?<![A-Za-z])$preReleaseStatusTokens(?![A-Za-z])|(?i)\b$preReleaseStatusPhrases\b"
 $ancestorWithMarker = @($targetHeading.Ancestors |
     Where-Object { $_.Title -match $preReleaseMarkerPattern } |
     Select-Object -First 1)
@@ -150,34 +153,55 @@ Assert-Contract ($ancestorWithMarker.Count -eq 0) "Release version '$ExpectedVer
 
 Assert-Contract ($targetHeading.Title -notmatch $preReleaseMarkerPattern) "Release heading for '$ExpectedVersion' is still marked as planned or unpublished."
 
-$releaseStatusContextPattern = '(?i)\b(?:release|publication|published|version|package|tag|notes|entry|ship(?:ped|ping)?|launch)\b'
+$releaseStatusContextPattern = '(?i)\b(?:release|released|publication|published|publish|package|tag|notes|entry|ship(?:ped|ping)?|launch(?:ed|ing)?)\b'
 function Test-PreReleaseBodyMarker {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$NormalizedText,
+        [string]$SectionText,
 
         [Parameter(Mandatory = $true)]
-        [string]$MarkerPattern,
+        [string]$TokenPattern,
+
+        [Parameter(Mandatory = $true)]
+        [string]$PhrasePattern,
 
         [Parameter(Mandatory = $true)]
         [string]$ContextPattern
     )
 
-    foreach ($sentence in ($NormalizedText -split '[.!?;:]+')) {
-        foreach ($markerMatch in [Text.RegularExpressions.Regex]::Matches($sentence, $MarkerPattern)) {
-            if ($markerMatch.Value -match '(?i)\s|pre[\s-]?release|coming\s+soon|work\s+in\s+progress') {
-                return $true
-            }
+    $normalizedSection = [Text.RegularExpressions.Regex]::Replace($SectionText, '\s+', ' ').Trim()
+    if ([Text.RegularExpressions.Regex]::IsMatch($normalizedSection, $PhrasePattern)) {
+        return $true
+    }
 
-            $beforeMarker = $sentence.Substring(0, $markerMatch.Index).Trim()
-            $afterMarkerStart = $markerMatch.Index + $markerMatch.Length
-            $afterMarker = $sentence.Substring($afterMarkerStart).Trim()
+    foreach ($sentence in ($normalizedSection -split '[.!?;:]+')) {
+        foreach ($tokenMatch in [Text.RegularExpressions.Regex]::Matches($sentence, $TokenPattern)) {
+            $beforeMarker = $sentence.Substring(0, $tokenMatch.Index).Trim()
+            $afterMarker = $sentence.Substring($tokenMatch.Index + $tokenMatch.Length).Trim()
             $beforeWords = @($beforeMarker -split '\s+' | Where-Object { $_ } | Select-Object -Last 4)
             $afterWords = @($afterMarker -split '\s+' | Where-Object { $_ } | Select-Object -First 4)
             $contextWindow = (@($beforeWords) + @($afterWords)) -join ' '
             if ($contextWindow -match $ContextPattern) {
                 return $true
             }
+        }
+    }
+
+    foreach ($rawLine in ($SectionText -split "\r?\n")) {
+        $statusLine = $rawLine.Trim()
+        $statusLine = [Text.RegularExpressions.Regex]::Replace($statusLine, '^(?:#{1,6}[ \t]*|>[ \t]*|[-*+][ \t]+|\d+[.)][ \t]+)+', '')
+        $statusLine = $statusLine.Trim('*', '_', '`', ' ', "`t")
+        $statusLine = $statusLine.TrimEnd('.', '!', ';', ':', '-', '*', '_', '`', ' ', "`t")
+        if ([string]::IsNullOrWhiteSpace($statusLine)) {
+            continue
+        }
+
+        if ([Text.RegularExpressions.Regex]::IsMatch($statusLine, "^$TokenPattern$")) {
+            return $true
+        }
+
+        if ([Text.RegularExpressions.Regex]::IsMatch($statusLine, "^(?<label>[^:]{0,60}):[ \t]*$TokenPattern$")) {
+            return $true
         }
     }
 
@@ -195,10 +219,10 @@ else {
     $changelog.Length
 }
 $targetSection = $changelog.Substring($targetHeading.Index, $sectionEndIndex - $targetHeading.Index)
-$normalizedTargetSection = [Text.RegularExpressions.Regex]::Replace($targetSection, '\s+', ' ').Trim()
 Assert-Contract (-not (Test-PreReleaseBodyMarker `
-        -NormalizedText $normalizedTargetSection `
-        -MarkerPattern $preReleaseMarkerPattern `
+        -SectionText $targetSection `
+        -TokenPattern "(?i)(?<![A-Za-z])$preReleaseStatusTokens(?![A-Za-z])" `
+        -PhrasePattern "(?i)\b$preReleaseStatusPhrases\b" `
         -ContextPattern $releaseStatusContextPattern)) "Release section for '$ExpectedVersion' is still marked as planned or unpublished."
 
 $releaseDateText = $targetHeading.ReleaseSuffix

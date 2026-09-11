@@ -190,6 +190,19 @@ try {
 "@
     Assert-Contract ($cleanNestedRelease.ExitCode -eq 0) "A finalized release entry in a clean nested heading structure was rejected: $($cleanNestedRelease.Output)"
 
+    $deepAncestorUnreleased = Invoke-ChangelogContract @"
+# Changelog
+
+## [Unreleased]
+
+### Release train
+
+#### [0.1.0] - $today
+
+- Finalized release notes.
+"@
+    Assert-Contract ($deepAncestorUnreleased.ExitCode -ne 0) "A release entry nested more than one level below Unreleased passed the changelog publication gate."
+
     $splitWhitespaceCases = @(
         [pscustomobject]@{ Name = "LF"; Body = "This release is not`nyet published." },
         [pscustomobject]@{ Name = "CRLF"; Body = "This release is not`r`nyet published." },
@@ -234,6 +247,29 @@ try {
         Assert-Contract ($bodyMarker.ExitCode -ne 0) "A finalized release entry with a body-level $($bodyMarkerCase.Name) marker passed the changelog publication gate."
     }
 
+    $statementMarkerCases = @(
+        [pscustomobject]@{ Name = "bare Planned line"; Body = "Planned" },
+        [pscustomobject]@{ Name = "bare Unreleased line"; Body = "Unreleased" },
+        [pscustomobject]@{ Name = "bare TBD line"; Body = "TBD" },
+        [pscustomobject]@{ Name = "bare Draft line"; Body = "Draft" },
+        [pscustomobject]@{ Name = "bare Pending line"; Body = "Pending" },
+        [pscustomobject]@{ Name = "status label"; Body = "Status: Draft" },
+        [pscustomobject]@{ Name = "release state label"; Body = "Release state: TBD" },
+        [pscustomobject]@{ Name = "bullet marker"; Body = "### Notes`n`n- TBD" }
+    )
+    foreach ($statementMarkerCase in $statementMarkerCases) {
+        $statementMarker = Invoke-ChangelogContract @"
+# Changelog
+
+## [Unreleased]
+
+## [0.1.0] - $today
+
+$($statementMarkerCase.Body)
+"@
+        Assert-Contract ($statementMarker.ExitCode -ne 0) "A finalized release entry with a $($statementMarkerCase.Name) pre-release marker passed the changelog publication gate."
+    }
+
     $ordinaryProse = Invoke-ChangelogContract @"
 # Changelog
 
@@ -255,6 +291,24 @@ try {
 - The Draft API type is documented for a future release.
 "@
     Assert-Contract ($ordinaryProseWithDistantReleaseContext.ExitCode -eq 0) "Unrelated Draft API prose with a distant release reference was treated as a release marker: $($ordinaryProseWithDistantReleaseContext.Output)"
+
+    $boundaryProseBodies = @(
+        "- Added prerelease handling and tests.",
+        "- Tracks work in progress files during scanning.",
+        "- Lists features to be released in a later version."
+    )
+    foreach ($boundaryProseBody in $boundaryProseBodies) {
+        $boundaryProse = Invoke-ChangelogContract @"
+# Changelog
+
+## [Unreleased]
+
+## [0.1.0] - $today
+
+$boundaryProseBody
+"@
+        Assert-Contract ($boundaryProse.ExitCode -eq 0) "Ordinary prose '$boundaryProseBody' was treated as a release marker: $($boundaryProse.Output)"
+    }
 
     $markerAfterTargetBoundary = Invoke-ChangelogContract @"
 # Changelog
