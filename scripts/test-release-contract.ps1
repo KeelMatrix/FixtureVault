@@ -225,6 +225,24 @@ try {
         Assert-Contract ($splitMarker.ExitCode -ne 0) "A release marker split by $($splitWhitespaceCase.Name) passed the changelog publication gate."
     }
 
+    $markedUpSplitCases = @(
+        [pscustomobject]@{ Name = "list items"; Body = "- Release is not`n- yet published." },
+        [pscustomobject]@{ Name = "ordered list items"; Body = "1. Release is not`n2. yet published." },
+        [pscustomobject]@{ Name = "blockquote lines"; Body = "> Release is not`n> yet published." }
+    )
+    foreach ($markedUpSplitCase in $markedUpSplitCases) {
+        $markedUpSplit = Invoke-ChangelogContract @"
+# Changelog
+
+## [Unreleased]
+
+## [0.1.0] - $today
+
+$($markedUpSplitCase.Body)
+"@
+        Assert-Contract ($markedUpSplit.ExitCode -ne 0) "A release marker split across $($markedUpSplitCase.Name) passed the changelog publication gate."
+    }
+
     $bodyMarkerCases = @(
         [pscustomobject]@{ Name = "Planned"; Body = "Planned first public release notes." },
         [pscustomobject]@{ Name = "not yet published"; Body = "This release is not yet published." },

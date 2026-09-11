@@ -169,7 +169,11 @@ function Test-PreReleaseBodyMarker {
         [string]$ContextPattern
     )
 
-    $normalizedSection = [Text.RegularExpressions.Regex]::Replace($SectionText, '\s+', ' ').Trim()
+    $undecoratedSection = [Text.RegularExpressions.Regex]::Replace(
+        $SectionText,
+        '(?m)^[ \t]*(?:#{1,6}[ \t]*|>[ \t]*|[-*+][ \t]+|\d+[.)][ \t]+)+',
+        '')
+    $normalizedSection = [Text.RegularExpressions.Regex]::Replace($undecoratedSection, '\s+', ' ').Trim()
     if ([Text.RegularExpressions.Regex]::IsMatch($normalizedSection, $PhrasePattern)) {
         return $true
     }
