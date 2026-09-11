@@ -26,6 +26,20 @@ dotnet run --project src/KeelMatrix.FixtureVault -- init
 dotnet run --project src/KeelMatrix.FixtureVault -- scan --format json
 ```
 
+## Release preparation
+
+After finalizing the intended entry in `CHANGELOG.md`, run the same fail-closed contract used by the tag-triggered release workflow before creating a tag. The check must use the exact commit that will be tagged:
+
+```powershell
+$commit = (git rev-parse HEAD).Trim()
+pwsh -NoProfile -File ./scripts/test-changelog-contract.ps1 `
+  -ExpectedVersion 0.1.0 `
+  -ExpectedPackageVersion 0.1.0 `
+  -ExpectedCommit $commit
+```
+
+Do not create or push the release tag until this command passes on the finalized changelog commit.
+
 ## Invariants
 
 - The package is one `net8.0` .NET tool with command `fixturevault`; it has no supported library API.

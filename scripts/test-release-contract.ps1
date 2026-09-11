@@ -46,6 +46,7 @@ $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Pat
 $workflowPath = Join-Path $repositoryRoot ".github/workflows/release.yml"
 $ciWorkflowPath = Join-Path $repositoryRoot ".github/workflows/ci.yml"
 $tagScriptPath = Join-Path $repositoryRoot "scripts/validate-release-tag.ps1"
+$changelogScriptPath = Join-Path $repositoryRoot "scripts/test-changelog-contract.ps1"
 $workflow = [IO.File]::ReadAllText($workflowPath)
 $ciWorkflow = [IO.File]::ReadAllText($ciWorkflowPath)
 
@@ -73,6 +74,11 @@ Assert-Contract ($validation.Contains("dotnet restore", [StringComparison]::Ordi
 Assert-Contract ($validation.Contains("dotnet build", [StringComparison]::Ordinal)) "Release validation must build the solution."
 Assert-Contract ($validation.Contains("dotnet test", [StringComparison]::Ordinal)) "Release validation must test the solution."
 Assert-Contract ($validation.Contains("dotnet pack", [StringComparison]::Ordinal)) "Release validation must pack the tool."
+Assert-Contract ($validation.Contains("test-changelog-contract.ps1", [StringComparison]::Ordinal)) "Release validation must run the changelog/version contract."
+Assert-Contract ($validation.IndexOf("test-changelog-contract.ps1", [StringComparison]::Ordinal) -lt $validation.IndexOf("dotnet pack", [StringComparison]::Ordinal)) "The changelog/version contract must run before release packing."
+Assert-Contract ($validation.Contains('EXPECTED_COMMIT: ${{ github.sha }}', [StringComparison]::Ordinal)) "Release validation must bind changelog checks to the checked-out commit."
+Assert-Contract ($validation.Contains('-ExpectedPackageVersion', [StringComparison]::Ordinal)) "Release validation must pass the expected package version to the changelog contract."
+Assert-Contract ($validation.Contains('-ExpectedCommit $env:EXPECTED_COMMIT', [StringComparison]::Ordinal)) "Release validation must pass the expected commit to the changelog contract."
 Assert-Contract ($validation.Contains("inspect-package.ps1", [StringComparison]::Ordinal)) "Release validation must inspect the package archives."
 Assert-Contract ($validation.Contains("package-consumer-smoke.ps1", [StringComparison]::Ordinal)) "Release validation must run the package consumer smoke."
 Assert-Contract ($validation.Contains("audit-vulnerabilities.ps1", [StringComparison]::Ordinal)) "Release validation must run the repository vulnerability audit."
@@ -91,11 +97,41 @@ Assert-Contract (([Text.RegularExpressions.Regex]::Matches($publication, 'dotnet
 Assert-Contract ($publication.Contains("--no-symbols", [StringComparison]::Ordinal)) "The primary package push must not publish symbols implicitly."
 Assert-Contract ($publication.Contains(".snupkg", [StringComparison]::Ordinal)) "Publication must push the symbols package explicitly."
 Assert-Contract ($ciWorkflow.Contains("audit-vulnerabilities.ps1", [StringComparison]::Ordinal)) "Normal CI must run the repository vulnerability audit."
+Assert-Contract (Test-Path -LiteralPath $changelogScriptPath -PathType Leaf) "The changelog/version contract script is missing."
 Assert-AuditBeforePack "Normal CI" $ciWorkflow
 Assert-AuditBeforePack "Release validation" $workflow
 
 $previousTag = $env:RELEASE_TAG
 $previousOutput = $env:GITHUB_OUTPUT
+$script:RepositoryCommit = (& git -C $repositoryRoot rev-parse HEAD 2>&1 | Out-String).Trim()
+$gitExitCode = $LASTEXITCODE
+Assert-Contract ($gitExitCode -eq 0 -and $script:RepositoryCommit -match '^[0-9a-fA-F]{40,64}$') "Could not resolve the repository commit for changelog contract tests."
+$fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ("fixturevault-changelog-contract-" + [Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $fixtureRoot | Out-Null
+$fixtureChangelogPath = Join-Path $fixtureRoot "CHANGELOG.md"
+$today = [DateTime]::UtcNow.ToString("yyyy-MM-dd")
+
+function Invoke-ChangelogContract {
+    param(
+        [string]$Content,
+        [string]$Version = "0.1.0",
+        [string]$PackageVersion = "0.1.0",
+        [string]$Commit = $script:RepositoryCommit
+    )
+
+    [IO.File]::WriteAllText($fixtureChangelogPath, $Content, [Text.UTF8Encoding]::new($false))
+    $output = & pwsh -NoProfile -File $changelogScriptPath `
+        -ExpectedVersion $Version `
+        -ChangelogPath $fixtureChangelogPath `
+        -ExpectedPackageVersion $PackageVersion `
+        -ExpectedCommit $Commit `
+        -RepositoryRoot $repositoryRoot 2>&1
+    [pscustomobject]@{
+        ExitCode = $LASTEXITCODE
+        Output = ($output -join [Environment]::NewLine)
+    }
+}
+
 try {
     $env:GITHUB_OUTPUT = ""
     foreach ($invalidTag in @("v0.1", "v0.1.1", "release-v0.1.0", "v0.1.0\n")) {
@@ -109,8 +145,86 @@ try {
     $output = & pwsh -NoProfile -File $tagScriptPath 2>&1
     Assert-Contract ($LASTEXITCODE -eq 0) "Release tag validator rejected v0.1.0."
     Assert-Contract (($output -join [Environment]::NewLine).Contains("version=0.1.0", [StringComparison]::Ordinal)) "Release tag validator did not emit version 0.1.0."
+
+    $planned = Invoke-ChangelogContract @"
+# Changelog
+
+## [Unreleased]
+
+## [0.1.0] - Planned (not yet published)
+"@
+    Assert-Contract ($planned.ExitCode -ne 0) "A planned release entry passed the changelog publication gate."
+
+    $nestedUnreleased = Invoke-ChangelogContract @"
+# Changelog
+
+## [Unreleased]
+
+### [0.1.0] - $today
+"@
+    Assert-Contract ($nestedUnreleased.ExitCode -ne 0) "A release entry nested under Unreleased passed the changelog publication gate."
+
+    $finalized = Invoke-ChangelogContract @"
+# Changelog
+
+## [Unreleased]
+
+## [0.1.0] - $today
+
+### Added
+
+- Finalized release notes.
+"@
+    Assert-Contract ($finalized.ExitCode -eq 0) "A finalized, internally consistent release entry was rejected: $($finalized.Output)"
+
+    $changelogTagMismatch = Invoke-ChangelogContract @"
+# Changelog
+
+## [Unreleased]
+
+## [0.1.0] - $today
+"@ -Version "0.1.1" -PackageVersion "0.1.1"
+    Assert-Contract ($changelogTagMismatch.ExitCode -ne 0) "A changelog/tag version mismatch passed the publication gate."
+
+    $packageMismatch = Invoke-ChangelogContract @"
+# Changelog
+
+## [Unreleased]
+
+## [0.1.0] - $today
+"@ -PackageVersion "0.1.1"
+    Assert-Contract ($packageMismatch.ExitCode -ne 0) "A changelog/package version mismatch passed the publication gate."
+
+    $wrongCommit = ("0" * $script:RepositoryCommit.Length)
+    $commitMismatch = Invoke-ChangelogContract @"
+# Changelog
+
+## [Unreleased]
+
+## [0.1.0] - $today
+"@ -Commit $wrongCommit
+    Assert-Contract ($commitMismatch.ExitCode -ne 0) "A changelog contract check accepted a commit different from the checked-out commit."
+
+    $trackedChangelogPath = Join-Path $repositoryRoot "CHANGELOG.md"
+    $originalChangelog = [IO.File]::ReadAllText($trackedChangelogPath)
+    try {
+        [IO.File]::WriteAllText($trackedChangelogPath, $originalChangelog + "`n", [Text.UTF8Encoding]::new($false))
+        $trackedMismatch = & pwsh -NoProfile -File $changelogScriptPath `
+            -ExpectedVersion "0.1.0" `
+            -ExpectedPackageVersion "0.1.0" `
+            -ExpectedCommit $script:RepositoryCommit `
+            -RepositoryRoot $repositoryRoot 2>&1
+        Assert-Contract ($LASTEXITCODE -ne 0) "A tracked changelog modified after the checked-out commit passed the publication gate."
+    }
+    finally {
+        [IO.File]::WriteAllText($trackedChangelogPath, $originalChangelog, [Text.UTF8Encoding]::new($false))
+    }
 }
 finally {
+    if (Test-Path -LiteralPath $fixtureRoot) {
+        Remove-Item -LiteralPath $fixtureRoot -Recurse -Force
+    }
+
     if ($null -eq $previousTag) {
         Remove-Item Env:RELEASE_TAG -ErrorAction SilentlyContinue
     }
