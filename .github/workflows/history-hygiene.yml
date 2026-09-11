@@ -19,3 +19,7 @@ jobs:
       - name: Check all reachable commits
         shell: bash
         run: sh .githooks/check-history
+
+      - name: Check rejection of non-standard identities
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/test-history-gate.ps1

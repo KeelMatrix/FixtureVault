@@ -4,6 +4,8 @@ set -eu
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 temporary_file=$(mktemp "${TMPDIR:-/tmp}/commit-history.XXXXXX")
 trap 'rm -f "$temporary_file"' EXIT HUP INT TERM
+required_identity_name='KeelMatrix'
+required_identity_email='keelmatrix@gmail.com'
 
 if [ "$#" -eq 0 ]; then
   commits=$(git rev-list --all)
@@ -21,6 +23,25 @@ else
 fi
 
 for commit in $commits; do
+  identity=$(git show --no-patch --format='%an%n%ae%n%cn%n%ce' "$commit")
+  old_ifs=$IFS
+  IFS='
+'
+  set -- $identity
+  IFS=$old_ifs
+  author_name=$1
+  author_email=$2
+  committer_name=$3
+  committer_email=$4
+  if [ "$author_name" != "$required_identity_name" ] \
+    || [ "$author_email" != "$required_identity_email" ] \
+    || [ "$committer_name" != "$required_identity_name" ] \
+    || [ "$committer_email" != "$required_identity_email" ]; then
+    printf 'History check failed at %s: author and committer must be %s <%s>.\n' \
+      "$commit" "$required_identity_name" "$required_identity_email" >&2
+    exit 1
+  fi
+
   git show --no-patch --format=%B "$commit" > "$temporary_file"
   if ! "$script_dir/commit-msg" "$temporary_file" >/dev/null; then
     printf 'History check failed at %s.\n' "$commit" >&2
