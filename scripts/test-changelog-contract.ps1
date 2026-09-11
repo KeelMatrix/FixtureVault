@@ -114,17 +114,27 @@ $headingMatches = [Text.RegularExpressions.Regex]::Matches(
     $changelog,
     '(?m)^(?<level>#{1,6})[ \t]+(?<title>[^\r\n]+?)[ \t]*\r?$')
 $releaseHeadingPattern = '^[ ]*\[?(?<version>\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\]?(?:[ \t]+-[ \t]+(?<suffix>.*?))?[ \t]*$'
+$headingStack = [Collections.Generic.List[object]]::new()
 $headings = @(
     foreach ($headingMatch in $headingMatches) {
         $title = $headingMatch.Groups["title"].Value.Trim()
         $releaseMatch = [Text.RegularExpressions.Regex]::Match($title, $releaseHeadingPattern)
-        [pscustomobject]@{
+        $heading = [pscustomobject]@{
             Index = $headingMatch.Index
             Level = $headingMatch.Groups["level"].Value.Length
             Title = $title
             ReleaseVersion = if ($releaseMatch.Success) { $releaseMatch.Groups["version"].Value } else { $null }
             ReleaseSuffix = if ($releaseMatch.Success) { $releaseMatch.Groups["suffix"].Value.Trim() } else { $null }
+            Ancestors = @()
         }
+
+        while ($headingStack.Count -gt 0 -and $headingStack[$headingStack.Count - 1].Level -ge $heading.Level) {
+            $headingStack.RemoveAt($headingStack.Count - 1)
+        }
+
+        $heading.Ancestors = @($headingStack.ToArray())
+        $headingStack.Add($heading)
+        $heading
     }
 )
 
@@ -132,16 +142,47 @@ $targetHeadings = @($headings | Where-Object { $_.ReleaseVersion -ceq $ExpectedV
 Assert-Contract ($targetHeadings.Count -eq 1) "Expected exactly one release heading for version '$ExpectedVersion'."
 $targetHeading = $targetHeadings[0]
 
-$parentHeading = @($headings |
-    Where-Object { $_.Index -lt $targetHeading.Index -and $_.Level -lt $targetHeading.Level } |
-    Sort-Object Index |
-    Select-Object -Last 1)
-if ($parentHeading.Count -eq 1 -and $parentHeading[0].Title -match '^(?i:\[?unreleased\]?)$') {
-    Fail-Contract "Release version '$ExpectedVersion' is nested inside the Unreleased section."
-}
+$preReleaseMarkerPattern = '(?i)\b(?:planned|unreleased|tbd|draft|upcoming|pending|forthcoming)\b|not\s+yet\s+published|not\s+published|to\s+be\s+released|not\s+ready|work\s+in\s+progress|pre[\s-]?release|coming\s+soon'
+$ancestorWithMarker = @($targetHeading.Ancestors |
+    Where-Object { $_.Title -match $preReleaseMarkerPattern } |
+    Select-Object -First 1)
+Assert-Contract ($ancestorWithMarker.Count -eq 0) "Release version '$ExpectedVersion' is nested inside a pre-release section."
 
-$preReleaseMarkerPattern = '(?i)\b(?:planned|unreleased|tbd|draft|upcoming|pending)\b|not[ \t-]+yet[ \t-]+published|not[ \t-]+published|to[ \t-]+be[ \t-]+released'
 Assert-Contract ($targetHeading.Title -notmatch $preReleaseMarkerPattern) "Release heading for '$ExpectedVersion' is still marked as planned or unpublished."
+
+$releaseStatusContextPattern = '(?i)\b(?:release|publication|published|version|package|tag|notes|entry|ship(?:ped|ping)?|launch)\b'
+function Test-PreReleaseBodyMarker {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$NormalizedText,
+
+        [Parameter(Mandatory = $true)]
+        [string]$MarkerPattern,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ContextPattern
+    )
+
+    foreach ($sentence in ($NormalizedText -split '[.!?;:]+')) {
+        foreach ($markerMatch in [Text.RegularExpressions.Regex]::Matches($sentence, $MarkerPattern)) {
+            if ($markerMatch.Value -match '(?i)\s|pre[\s-]?release|coming\s+soon|work\s+in\s+progress') {
+                return $true
+            }
+
+            $beforeMarker = $sentence.Substring(0, $markerMatch.Index).Trim()
+            $afterMarkerStart = $markerMatch.Index + $markerMatch.Length
+            $afterMarker = $sentence.Substring($afterMarkerStart).Trim()
+            $beforeWords = @($beforeMarker -split '\s+' | Where-Object { $_ } | Select-Object -Last 4)
+            $afterWords = @($afterMarker -split '\s+' | Where-Object { $_ } | Select-Object -First 4)
+            $contextWindow = (@($beforeWords) + @($afterWords)) -join ' '
+            if ($contextWindow -match $ContextPattern) {
+                return $true
+            }
+        }
+    }
+
+    return $false
+}
 
 $nextSectionHeading = @($headings |
     Where-Object { $_.Index -gt $targetHeading.Index -and $_.Level -le $targetHeading.Level } |
@@ -154,7 +195,11 @@ else {
     $changelog.Length
 }
 $targetSection = $changelog.Substring($targetHeading.Index, $sectionEndIndex - $targetHeading.Index)
-Assert-Contract ($targetSection -notmatch $preReleaseMarkerPattern) "Release section for '$ExpectedVersion' is still marked as planned or unpublished."
+$normalizedTargetSection = [Text.RegularExpressions.Regex]::Replace($targetSection, '\s+', ' ').Trim()
+Assert-Contract (-not (Test-PreReleaseBodyMarker `
+        -NormalizedText $normalizedTargetSection `
+        -MarkerPattern $preReleaseMarkerPattern `
+        -ContextPattern $releaseStatusContextPattern)) "Release section for '$ExpectedVersion' is still marked as planned or unpublished."
 
 $releaseDateText = $targetHeading.ReleaseSuffix
 Assert-Contract (-not [string]::IsNullOrWhiteSpace($releaseDateText)) "Release date for '$ExpectedVersion' is missing."

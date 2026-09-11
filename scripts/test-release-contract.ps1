@@ -164,6 +164,54 @@ try {
 "@
     Assert-Contract ($nestedUnreleased.ExitCode -ne 0) "A release entry nested under Unreleased passed the changelog publication gate."
 
+    $nestedAncestorUnreleased = Invoke-ChangelogContract @"
+# Changelog
+
+# [Unreleased]
+
+## Release train
+
+### [0.1.0] - $today
+
+- Finalized release notes.
+"@
+    Assert-Contract ($nestedAncestorUnreleased.ExitCode -ne 0) "A release entry with an Unreleased ancestor above an intermediate heading passed the changelog publication gate."
+
+    $cleanNestedRelease = Invoke-ChangelogContract @"
+# Changelog
+
+# Release history
+
+## Release train
+
+### [0.1.0] - $today
+
+- Finalized release notes.
+"@
+    Assert-Contract ($cleanNestedRelease.ExitCode -eq 0) "A finalized release entry in a clean nested heading structure was rejected: $($cleanNestedRelease.Output)"
+
+    $splitWhitespaceCases = @(
+        [pscustomobject]@{ Name = "LF"; Body = "This release is not`nyet published." },
+        [pscustomobject]@{ Name = "CRLF"; Body = "This release is not`r`nyet published." },
+        [pscustomobject]@{ Name = "blank line"; Body = "This release is not`n`nyet published." },
+        [pscustomobject]@{ Name = "Markdown hard break"; Body = "This release is not  `nyet published." },
+        [pscustomobject]@{ Name = "tab and newline mixture"; Body = "This release is not`t`nyet`t published." },
+        [pscustomobject]@{ Name = "case-insensitive LF"; Body = "this release is NOT`n`nyet PUBLISHED." },
+        [pscustomobject]@{ Name = "equivalent wording"; Body = "This release is not`n`nready." }
+    )
+    foreach ($splitWhitespaceCase in $splitWhitespaceCases) {
+        $splitMarker = Invoke-ChangelogContract @"
+# Changelog
+
+## [Unreleased]
+
+## [0.1.0] - $today
+
+- $($splitWhitespaceCase.Body)
+"@
+        Assert-Contract ($splitMarker.ExitCode -ne 0) "A release marker split by $($splitWhitespaceCase.Name) passed the changelog publication gate."
+    }
+
     $bodyMarkerCases = @(
         [pscustomobject]@{ Name = "Planned"; Body = "Planned first public release notes." },
         [pscustomobject]@{ Name = "not yet published"; Body = "This release is not yet published." },
@@ -185,6 +233,43 @@ try {
 "@
         Assert-Contract ($bodyMarker.ExitCode -ne 0) "A finalized release entry with a body-level $($bodyMarkerCase.Name) marker passed the changelog publication gate."
     }
+
+    $ordinaryProse = Invoke-ChangelogContract @"
+# Changelog
+
+## [Unreleased]
+
+## [0.1.0] - $today
+
+- The Draft API type is documented and tested.
+"@
+    Assert-Contract ($ordinaryProse.ExitCode -eq 0) "Ordinary prose describing a Draft API type was treated as a release marker: $($ordinaryProse.Output)"
+
+    $ordinaryProseWithDistantReleaseContext = Invoke-ChangelogContract @"
+# Changelog
+
+## [Unreleased]
+
+## [0.1.0] - $today
+
+- The Draft API type is documented for a future release.
+"@
+    Assert-Contract ($ordinaryProseWithDistantReleaseContext.ExitCode -eq 0) "Unrelated Draft API prose with a distant release reference was treated as a release marker: $($ordinaryProseWithDistantReleaseContext.Output)"
+
+    $markerAfterTargetBoundary = Invoke-ChangelogContract @"
+# Changelog
+
+## [0.1.0] - $today
+
+### Added
+
+- Finalized release notes.
+
+## Future releases [Unreleased]
+
+- TBD.
+"@
+    Assert-Contract ($markerAfterTargetBoundary.ExitCode -eq 0) "A pre-release marker after the target section boundary changed the target result: $($markerAfterTargetBoundary.Output)"
 
     $readmePath = Join-Path $repositoryRoot "README.md"
     $originalReadme = [IO.File]::ReadAllText($readmePath)
