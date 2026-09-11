@@ -206,9 +206,10 @@ try {
     $splitWhitespaceCases = @(
         [pscustomobject]@{ Name = "LF"; Body = "This release is not`nyet published." },
         [pscustomobject]@{ Name = "CRLF"; Body = "This release is not`r`nyet published." },
-        [pscustomobject]@{ Name = "blank line"; Body = "This release is not`n`nyet published." },
+        [pscustomobject]@{ Name = "blank line"; Body = "This release is not`n`n`nyet published." },
         [pscustomobject]@{ Name = "Markdown hard break"; Body = "This release is not  `nyet published." },
         [pscustomobject]@{ Name = "tab and newline mixture"; Body = "This release is not`t`nyet`t published." },
+        [pscustomobject]@{ Name = "non-breaking spaces"; Body = "This release is not$([char]0x00a0)yet$([char]0x00a0)published." },
         [pscustomobject]@{ Name = "case-insensitive LF"; Body = "this release is NOT`n`nyet PUBLISHED." },
         [pscustomobject]@{ Name = "equivalent wording"; Body = "This release is not`n`nready." }
     )
@@ -228,7 +229,8 @@ try {
     $markedUpSplitCases = @(
         [pscustomobject]@{ Name = "list items"; Body = "- Release is not`n- yet published." },
         [pscustomobject]@{ Name = "ordered list items"; Body = "1. Release is not`n2. yet published." },
-        [pscustomobject]@{ Name = "blockquote lines"; Body = "> Release is not`n> yet published." }
+        [pscustomobject]@{ Name = "blockquote lines"; Body = "> Release is not`n> yet published." },
+        [pscustomobject]@{ Name = "emphasis markers"; Body = "**Release** is **not**`n`nyet **published**." }
     )
     foreach ($markedUpSplitCase in $markedUpSplitCases) {
         $markedUpSplit = Invoke-ChangelogContract @"
@@ -241,6 +243,27 @@ try {
 $($markedUpSplitCase.Body)
 "@
         Assert-Contract ($markedUpSplit.ExitCode -ne 0) "A release marker split across $($markedUpSplitCase.Name) passed the changelog publication gate."
+    }
+
+    $ancestorBodySplitCases = @(
+        [pscustomobject]@{ Name = "ancestor heading/body LF"; Body = "# Release is not`n`nyet published" },
+        [pscustomobject]@{ Name = "ancestor heading/body CRLF"; Body = "# Release is not`r`n`r`nyet published" },
+        [pscustomobject]@{ Name = "ancestor list items"; Body = "# Release is not`n`n- yet`n- published" },
+        [pscustomobject]@{ Name = "ancestor blockquote lines"; Body = "# Release is not`n`n> yet`n> published" }
+    )
+    foreach ($ancestorBodySplitCase in $ancestorBodySplitCases) {
+        $ancestorBodySplit = Invoke-ChangelogContract @"
+# Changelog
+
+$($ancestorBodySplitCase.Body)
+
+## Release train
+
+### [0.1.0] - $today
+
+- Finalized release notes.
+"@
+        Assert-Contract ($ancestorBodySplit.ExitCode -ne 0) "A pre-release marker split across the $($ancestorBodySplitCase.Name) passed the changelog publication gate."
     }
 
     $bodyMarkerCases = @(

@@ -142,75 +142,150 @@ $targetHeadings = @($headings | Where-Object { $_.ReleaseVersion -ceq $ExpectedV
 Assert-Contract ($targetHeadings.Count -eq 1) "Expected exactly one release heading for version '$ExpectedVersion'."
 $targetHeading = $targetHeadings[0]
 
-$preReleaseStatusWords = 'planned|unreleased|tbd|draft|upcoming|pending|forthcoming|pre-?release'
-$preReleaseStatusPhrases = 'not\s+yet\s+(?:published|released)'
-$preReleaseStatusTokens = "(?:$preReleaseStatusWords|not\s+(?:published|released)|to\s+be\s+(?:published|released)|not\s+ready|work\s+in\s+progress|coming\s+soon)"
-$preReleaseMarkerPattern = "(?i)(?<![A-Za-z])$preReleaseStatusTokens(?![A-Za-z])|(?i)\b$preReleaseStatusPhrases\b"
-$ancestorWithMarker = @($targetHeading.Ancestors |
-    Where-Object { $_.Title -match $preReleaseMarkerPattern } |
-    Select-Object -First 1)
-Assert-Contract ($ancestorWithMarker.Count -eq 0) "Release version '$ExpectedVersion' is nested inside a pre-release section."
-
-Assert-Contract ($targetHeading.Title -notmatch $preReleaseMarkerPattern) "Release heading for '$ExpectedVersion' is still marked as planned or unpublished."
-
-$releaseStatusContextPattern = '(?i)\b(?:release|released|publication|published|publish|package|tag|notes|entry|ship(?:ped|ping)?|launch(?:ed|ing)?)\b'
-function Test-PreReleaseBodyMarker {
+function Normalize-ChangelogText {
     param(
-        [Parameter(Mandatory = $true)]
-        [string]$SectionText,
-
-        [Parameter(Mandatory = $true)]
-        [string]$TokenPattern,
-
-        [Parameter(Mandatory = $true)]
-        [string]$PhrasePattern,
-
-        [Parameter(Mandatory = $true)]
-        [string]$ContextPattern
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Text
     )
 
-    $undecoratedSection = [Text.RegularExpressions.Regex]::Replace(
-        $SectionText,
-        '(?m)^[ \t]*(?:#{1,6}[ \t]*|>[ \t]*|[-*+][ \t]+|\d+[.)][ \t]+)+',
-        '')
-    $normalizedSection = [Text.RegularExpressions.Regex]::Replace($undecoratedSection, '\s+', ' ').Trim()
-    if ([Text.RegularExpressions.Regex]::IsMatch($normalizedSection, $PhrasePattern)) {
-        return $true
+    if ($null -eq $Text) {
+        return ""
     }
 
-    foreach ($sentence in ($normalizedSection -split '[.!?;:]+')) {
-        foreach ($tokenMatch in [Text.RegularExpressions.Regex]::Matches($sentence, $TokenPattern)) {
-            $beforeMarker = $sentence.Substring(0, $tokenMatch.Index).Trim()
-            $afterMarker = $sentence.Substring($tokenMatch.Index + $tokenMatch.Length).Trim()
-            $beforeWords = @($beforeMarker -split '\s+' | Where-Object { $_ } | Select-Object -Last 4)
-            $afterWords = @($afterMarker -split '\s+' | Where-Object { $_ } | Select-Object -First 4)
-            $contextWindow = (@($beforeWords) + @($afterWords)) -join ' '
-            if ($contextWindow -match $ContextPattern) {
+    $normalized = $Text.ToLowerInvariant()
+    $normalized = [Text.RegularExpressions.Regex]::Replace(
+        $normalized,
+        '(?m)^[\p{Zs}\t]*(?:(?:#{1,6}|[-*+])[\p{Zs}\t]+|\d+[.)][\p{Zs}\t]+|>[\p{Zs}\t]*)+',
+        '')
+    $normalized = [Text.RegularExpressions.Regex]::Replace(
+        $normalized,
+        '(?<![\p{L}\p{N}])[*_~`]+|[*_~`]+(?![\p{L}\p{N}])',
+        '')
+    $normalized = [Text.RegularExpressions.Regex]::Replace($normalized, '\s+', ' ').Trim()
+    return $normalized
+}
+
+function Get-NormalizedTokens {
+    param([AllowEmptyString()][string]$NormalizedText)
+
+    return @(
+        [Text.RegularExpressions.Regex]::Matches($NormalizedText, '[\p{L}\p{N}]+') |
+            ForEach-Object { $_.Value }
+    )
+}
+
+function Test-TokenSequence {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Tokens,
+
+        [Parameter(Mandatory = $true)]
+        [string[]]$MarkerTokens,
+
+        [int]$StartIndex
+    )
+
+    if ($StartIndex + $MarkerTokens.Count -gt $Tokens.Count) {
+        return $false
+    }
+
+    for ($offset = 0; $offset -lt $MarkerTokens.Count; $offset++) {
+        if ($Tokens[$StartIndex + $offset] -cne $MarkerTokens[$offset]) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
+function Test-PreReleaseMarkerScan {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Text,
+
+        [Parameter(Mandatory = $true)]
+        [object[]]$MarkerDefinitions
+    )
+
+    $normalizedText = Normalize-ChangelogText $Text
+    $tokens = @(Get-NormalizedTokens $normalizedText)
+    if ($tokens.Count -eq 0) {
+        return $false
+    }
+
+    $releaseContextTokens = @(
+        'release', 'released', 'publication', 'published', 'publish',
+        'package', 'tag', 'note', 'notes', 'entry', 'ship', 'shipped',
+        'shipping', 'launch', 'launched', 'launching', 'status', 'state'
+    )
+
+    foreach ($marker in $MarkerDefinitions) {
+        $markerTokens = @(Get-NormalizedTokens (Normalize-ChangelogText $marker.Phrase))
+        if ($markerTokens.Count -eq 0) {
+            continue
+        }
+
+        for ($index = 0; $index -le $tokens.Count - $markerTokens.Count; $index++) {
+            if (-not (Test-TokenSequence -Tokens $tokens -MarkerTokens $markerTokens -StartIndex $index)) {
+                continue
+            }
+
+            $windowStart = [Math]::Max(0, $index - 4)
+            $windowEnd = [Math]::Min($tokens.Count - 1, $index + $markerTokens.Count + 3)
+            $contextWindow = @($tokens[$windowStart..$windowEnd])
+            $hasReleaseContext = @($contextWindow | Where-Object {
+                    $releaseContextTokens -contains $_ -and
+                    $_ -notin $markerTokens
+                }).Count -gt 0
+
+            # "Draft API type" is ordinary changelog prose, not a release state.
+            # Keep this exclusion narrow: a nearby release/status word still wins.
+            $isDraftApiProse = $marker.Phrase -eq 'draft' -and
+                $index + $markerTokens.Count -lt $tokens.Count -and
+                $tokens[$index + $markerTokens.Count] -eq 'api' -and
+                -not $hasReleaseContext
+            if ($isDraftApiProse) {
+                continue
+            }
+
+            if (-not $marker.RequiresReleaseContext) {
+                return $true
+            }
+
+            $isStandaloneStatus = $index + $markerTokens.Count -eq $tokens.Count
+            if ($hasReleaseContext -or $isStandaloneStatus) {
                 return $true
             }
         }
     }
 
-    foreach ($rawLine in ($SectionText -split "\r?\n")) {
-        $statusLine = $rawLine.Trim()
-        $statusLine = [Text.RegularExpressions.Regex]::Replace($statusLine, '^(?:#{1,6}[ \t]*|>[ \t]*|[-*+][ \t]+|\d+[.)][ \t]+)+', '')
-        $statusLine = $statusLine.Trim('*', '_', '`', ' ', "`t")
-        $statusLine = $statusLine.TrimEnd('.', '!', ';', ':', '-', '*', '_', '`', ' ', "`t")
-        if ([string]::IsNullOrWhiteSpace($statusLine)) {
-            continue
-        }
-
-        if ([Text.RegularExpressions.Regex]::IsMatch($statusLine, "^$TokenPattern$")) {
-            return $true
-        }
-
-        if ([Text.RegularExpressions.Regex]::IsMatch($statusLine, "^(?<label>[^:]{0,60}):[ \t]*$TokenPattern$")) {
-            return $true
-        }
-    }
-
     return $false
 }
+
+# These are deliberately narrow, normalized token sequences for release states that
+# must not pass the publication gate. Contextual legacy entries preserve useful prose
+# such as "work in progress files"; the narrow Draft/API boundary below does the
+# same for "Draft API type" while explicit release-status wording still fails.
+$preReleaseMarkerDefinitions = @(
+    [pscustomobject]@{ Phrase = 'unreleased'; RequiresReleaseContext = $false },
+    [pscustomobject]@{ Phrase = 'planned'; RequiresReleaseContext = $false },
+    [pscustomobject]@{ Phrase = 'not yet published'; RequiresReleaseContext = $false },
+    [pscustomobject]@{ Phrase = 'not yet released'; RequiresReleaseContext = $false },
+    [pscustomobject]@{ Phrase = 'tbd'; RequiresReleaseContext = $false },
+    [pscustomobject]@{ Phrase = 'draft'; RequiresReleaseContext = $false },
+    [pscustomobject]@{ Phrase = 'pending'; RequiresReleaseContext = $false },
+    [pscustomobject]@{ Phrase = 'not ready'; RequiresReleaseContext = $true },
+    [pscustomobject]@{ Phrase = 'not published'; RequiresReleaseContext = $true },
+    [pscustomobject]@{ Phrase = 'to be published'; RequiresReleaseContext = $true },
+    [pscustomobject]@{ Phrase = 'to be released'; RequiresReleaseContext = $true },
+    [pscustomobject]@{ Phrase = 'upcoming'; RequiresReleaseContext = $true },
+    [pscustomobject]@{ Phrase = 'forthcoming'; RequiresReleaseContext = $true },
+    [pscustomobject]@{ Phrase = 'pre-release'; RequiresReleaseContext = $true },
+    [pscustomobject]@{ Phrase = 'work in progress'; RequiresReleaseContext = $true },
+    [pscustomobject]@{ Phrase = 'coming soon'; RequiresReleaseContext = $true }
+)
 
 $nextSectionHeading = @($headings |
     Where-Object { $_.Index -gt $targetHeading.Index -and $_.Level -le $targetHeading.Level } |
@@ -223,11 +298,42 @@ else {
     $changelog.Length
 }
 $targetSection = $changelog.Substring($targetHeading.Index, $sectionEndIndex - $targetHeading.Index)
-Assert-Contract (-not (Test-PreReleaseBodyMarker `
-        -SectionText $targetSection `
-        -TokenPattern "(?i)(?<![A-Za-z])$preReleaseStatusTokens(?![A-Za-z])" `
-        -PhrasePattern "(?i)\b$preReleaseStatusPhrases\b" `
-        -ContextPattern $releaseStatusContextPattern)) "Release section for '$ExpectedVersion' is still marked as planned or unpublished."
+Assert-Contract (-not (Test-PreReleaseMarkerScan `
+        -Text $targetSection `
+        -MarkerDefinitions $preReleaseMarkerDefinitions)) "Release section for '$ExpectedVersion' is still marked as planned or unpublished."
+
+function Get-HeadingDirectScope {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Heading,
+
+        [Parameter(Mandatory = $true)]
+        [object[]]$AllHeadings,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Document
+    )
+
+    $nextHeading = @($AllHeadings |
+        Where-Object { $_.Index -gt $Heading.Index } |
+        Sort-Object Index |
+        Select-Object -First 1)
+    $endIndex = if ($nextHeading.Count -eq 1) {
+        $nextHeading[0].Index
+    }
+    else {
+        $Document.Length
+    }
+
+    return $Document.Substring($Heading.Index, $endIndex - $Heading.Index)
+}
+
+foreach ($ancestor in @($targetHeading.Ancestors)) {
+    $ancestorScope = Get-HeadingDirectScope -Heading $ancestor -AllHeadings $headings -Document $changelog
+    Assert-Contract (-not (Test-PreReleaseMarkerScan `
+            -Text $ancestorScope `
+            -MarkerDefinitions $preReleaseMarkerDefinitions)) "Release version '$ExpectedVersion' is nested inside a pre-release section."
+}
 
 $releaseDateText = $targetHeading.ReleaseSuffix
 Assert-Contract (-not [string]::IsNullOrWhiteSpace($releaseDateText)) "Release date for '$ExpectedVersion' is missing."
