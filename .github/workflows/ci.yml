@@ -60,6 +60,14 @@ jobs:
           path: artifacts/test-results
           if-no-files-found: error
 
+      - name: Check for vulnerable dependencies
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/audit-vulnerabilities.ps1 -SolutionPath KeelMatrix.FixtureVault.sln
+
+      - name: Test vulnerability audit fail-closed behavior
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/test-vulnerability-audit.ps1
+
       - name: Pack tool
         run: >
           dotnet pack src/KeelMatrix.FixtureVault/KeelMatrix.FixtureVault.csproj
@@ -82,14 +90,6 @@ jobs:
             artifacts/packages/*.nupkg
             artifacts/packages/*.snupkg
           if-no-files-found: error
-
-      - name: Check for vulnerable dependencies
-        shell: pwsh
-        run: pwsh -NoProfile -File ./scripts/audit-vulnerabilities.ps1 -SolutionPath KeelMatrix.FixtureVault.sln
-
-      - name: Test vulnerability audit fail-closed behavior
-        shell: pwsh
-        run: pwsh -NoProfile -File ./scripts/test-vulnerability-audit.ps1
 
   package-consumer-smoke:
     needs: validate

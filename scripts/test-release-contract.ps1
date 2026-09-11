@@ -29,6 +29,19 @@ function Assert-JobTimeout {
     Assert-Contract ([int]$timeoutMatch.Groups[1].Value -eq $ExpectedMinutes) "$JobName must use timeout-minutes: $ExpectedMinutes."
 }
 
+function Assert-AuditBeforePack {
+    param(
+        [string]$WorkflowName,
+        [string]$WorkflowText
+    )
+
+    $auditIndex = $WorkflowText.IndexOf("audit-vulnerabilities.ps1", [StringComparison]::Ordinal)
+    $packIndex = $WorkflowText.IndexOf("dotnet pack", [StringComparison]::Ordinal)
+    Assert-Contract ($auditIndex -ge 0) "$WorkflowName must run the repository vulnerability audit."
+    Assert-Contract ($packIndex -ge 0) "$WorkflowName must pack the tool."
+    Assert-Contract ($auditIndex -lt $packIndex) "$WorkflowName must audit vulnerable dependencies before packing."
+}
+
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $workflowPath = Join-Path $repositoryRoot ".github/workflows/release.yml"
 $ciWorkflowPath = Join-Path $repositoryRoot ".github/workflows/ci.yml"
@@ -78,6 +91,8 @@ Assert-Contract (([Text.RegularExpressions.Regex]::Matches($publication, 'dotnet
 Assert-Contract ($publication.Contains("--no-symbols", [StringComparison]::Ordinal)) "The primary package push must not publish symbols implicitly."
 Assert-Contract ($publication.Contains(".snupkg", [StringComparison]::Ordinal)) "Publication must push the symbols package explicitly."
 Assert-Contract ($ciWorkflow.Contains("audit-vulnerabilities.ps1", [StringComparison]::Ordinal)) "Normal CI must run the repository vulnerability audit."
+Assert-AuditBeforePack "Normal CI" $ciWorkflow
+Assert-AuditBeforePack "Release validation" $workflow
 
 $previousTag = $env:RELEASE_TAG
 $previousOutput = $env:GITHUB_OUTPUT
