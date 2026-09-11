@@ -220,11 +220,14 @@ if (Test-Path -LiteralPath $centralVersionsPath -PathType Leaf) {
 $readmePath = Join-Path $script:ResolvedRepositoryRoot "README.md"
 if (Test-Path -LiteralPath $readmePath -PathType Leaf) {
     $readme = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $readmePath).Path)
-    $installVersionMatches = [Text.RegularExpressions.Regex]::Matches(
-        $readme,
-        '(?im)\bKeelMatrix\.FixtureVault\b[^\r\n]*?--version\s+(?<version>[^\s`"''<>]+)')
-    foreach ($match in $installVersionMatches) {
-        Assert-VersionMatches $match.Groups["version"].Value $ExpectedVersion "README install example"
+    $installVersionPatterns = @(
+        '(?im)\bKeelMatrix\.FixtureVault\b[^\r\n]*?--version\s+(?<version>[^\s`"''<>]+)',
+        '(?im)\bKeelMatrix\.FixtureVault\b[^\r\n]*(?:(?:\\|`)[ \t]*)?\r?\n[ \t]*--version\s+(?<version>[^\s`"''<>]+)'
+    )
+    foreach ($installVersionPattern in $installVersionPatterns) {
+        foreach ($match in [Text.RegularExpressions.Regex]::Matches($readme, $installVersionPattern)) {
+            Assert-VersionMatches $match.Groups["version"].Value $ExpectedVersion "README install example"
+        }
     }
 
     $artifactVersionMatches = [Text.RegularExpressions.Regex]::Matches(

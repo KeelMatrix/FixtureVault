@@ -158,9 +158,9 @@ try {
     $nestedUnreleased = Invoke-ChangelogContract @"
 # Changelog
 
-## [Unreleased]
+# [Unreleased]
 
-### [0.1.0] - $today
+## [0.1.0] - $today
 "@
     Assert-Contract ($nestedUnreleased.ExitCode -ne 0) "A release entry nested under Unreleased passed the changelog publication gate."
 
@@ -186,7 +186,15 @@ try {
         Assert-Contract ($bodyMarker.ExitCode -ne 0) "A finalized release entry with a body-level $($bodyMarkerCase.Name) marker passed the changelog publication gate."
     }
 
-    $finalized = Invoke-ChangelogContract @"
+    $readmePath = Join-Path $repositoryRoot "README.md"
+    $originalReadme = [IO.File]::ReadAllText($readmePath)
+    try {
+        [IO.File]::WriteAllText($readmePath, @"
+dotnet tool install --global KeelMatrix.FixtureVault \
+  --version 0.1.0
+"@, [Text.UTF8Encoding]::new($false))
+
+        $finalized = Invoke-ChangelogContract @"
 # Changelog
 
 ## [Unreleased]
@@ -199,7 +207,26 @@ try {
 
 - Finalized release notes.
 "@
-    Assert-Contract ($finalized.ExitCode -eq 0) "A finalized, internally consistent release entry was rejected: $($finalized.Output)"
+        Assert-Contract ($finalized.ExitCode -eq 0) "A finalized, internally consistent multiline install example was rejected: $($finalized.Output)"
+
+        [IO.File]::WriteAllText($readmePath, @"
+dotnet tool install --global KeelMatrix.FixtureVault `
+  --version 0.1.1
+"@, [Text.UTF8Encoding]::new($false))
+        $multilineInstallMismatch = Invoke-ChangelogContract @"
+# Changelog
+
+## [Unreleased]
+
+## [0.1.0] - $today
+
+- Finalized release notes.
+"@
+        Assert-Contract ($multilineInstallMismatch.ExitCode -ne 0) "A multiline install-example/version mismatch passed the publication gate."
+    }
+    finally {
+        [IO.File]::WriteAllText($readmePath, $originalReadme, [Text.UTF8Encoding]::new($false))
+    }
 
     $trackedChangelogPath = Join-Path $repositoryRoot "CHANGELOG.md"
     $realContractParameters = @{
