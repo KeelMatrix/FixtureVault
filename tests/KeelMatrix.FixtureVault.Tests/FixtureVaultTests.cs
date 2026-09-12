@@ -342,20 +342,32 @@ public sealed class FixtureVaultTests
         Assert.Equal(before, repository.HashTree());
     }
 
-    [Theory]
-    [InlineData("mismatch")]
-    [InlineData("__mismatch__")]
-    public void Snapshooter_mismatch_artifacts_are_blocking_findings(string mismatchDirectory)
+    [Fact]
+    public void Snapshooter_mismatch_artifacts_are_blocking_findings()
     {
         using var repository = new TemporaryRepository();
         repository.WritePolicy();
-        repository.WriteText($"tests/Orders/__snapshots__/{mismatchDirectory}/OrderTests.snap", "{\"id\":2}");
+        repository.WriteText("tests/Orders/__snapshots__/__mismatch__/OrderTests.snap", "{\"id\":2}");
 
         ScanResult result = repository.Scan();
 
         Assert.Equal(1, result.ExitCode);
         Finding finding = Assert.Single(result.Report.Findings, item => item.RuleId == "FV001");
-        Assert.Equal($"tests/Orders/__snapshots__/{mismatchDirectory}/OrderTests.snap", finding.Path);
+        Assert.Equal("tests/Orders/__snapshots__/__mismatch__/OrderTests.snap", finding.Path);
+    }
+
+    [Fact]
+    public void Snapshooter_plain_mismatch_directory_is_an_audited_baseline_without_received_finding()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/Orders/__snapshots__/mismatch/OrderTests.snap", "{\"id\":2}");
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(1, result.Report.FilesInspected);
+        Assert.DoesNotContain(result.Report.Findings, item => item.RuleId == "FV001");
     }
 
     [Fact]

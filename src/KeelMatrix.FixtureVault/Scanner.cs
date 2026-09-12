@@ -575,8 +575,7 @@ internal sealed class FixtureScanner
         for (int index = 0; index < segments.Length - 2; index++)
         {
             if (segments[index].Equals("__snapshots__", StringComparison.OrdinalIgnoreCase) &&
-                (segments[index + 1].Equals("mismatch", StringComparison.OrdinalIgnoreCase) ||
-                 segments[index + 1].Equals("__mismatch__", StringComparison.OrdinalIgnoreCase)))
+                segments[index + 1].Equals("__mismatch__", StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }

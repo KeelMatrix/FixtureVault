@@ -100,6 +100,7 @@ try {
     Assert-Contract ($metadata.id -eq "KeelMatrix.FixtureVault") "Package id is not KeelMatrix.FixtureVault."
     Assert-Contract ($metadata.version -eq $ExpectedVersion) "Package version is $($metadata.version), expected $ExpectedVersion."
     Assert-Contract ($metadata.authors -eq "KeelMatrix") "Package authors must be KeelMatrix."
+    Assert-Contract ($null -ne $metadata.copyright -and ([string]$metadata.copyright) -ceq "KeelMatrix") "Package copyright must be exactly KeelMatrix."
     Assert-Contract ($metadata.license.type -eq "expression" -and $metadata.license.InnerText -eq "MIT") "Package license must be the MIT expression."
     Assert-Contract ($metadata.readme -eq "README.md") "NuGet README metadata must point to README.md."
     Assert-Contract ($metadata.icon -eq "icon.png") "NuGet icon metadata must point to icon.png."

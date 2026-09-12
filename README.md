@@ -75,7 +75,7 @@ When `ci.strict` is `true`, findings block the scan with exit code `1`. When it 
 The built-in hints are:
 
 - `verify`: detects common `*.received.*` artifacts and split-mode `*.received/<file>` artifacts, and audits `*.verified.*` and split-mode `*.verified/<file>` baselines. Binary `*.verified.*` and split-mode baselines are accepted and remain subject to `maxFileBytes`; binary `*.received.*` artifacts produce `FV001` without an additional `FV005`. For Verify text fixtures, FixtureVault accepts UTF-8 with or without a BOM and requires LF-only bytes with no trailing newline.
-- `snapshooter`: audits ordinary `*.snap` files and treats `.snap` files below `__snapshots__/mismatch/` or the documented `__snapshots__/__mismatch__/` directory as received/unapproved artifacts.
+- `snapshooter`: audits ordinary `*.snap` files and treats `.snap` files below the documented `__snapshots__/__mismatch__/` directory as received/unapproved artifacts. Other `.snap` paths are audited as ordinary baselines; FixtureVault does not infer a mismatch convention from an ambiguous directory name.
 - `generic`: audits files matching `allowedExtensions`, including `.golden` files.
 - `fixturevault-manifest`: enables the explicit orphan proof described below. When enabled, the manifest is required; a missing manifest is a configuration error (exit code `2`).
 
@@ -229,4 +229,4 @@ FixtureVault is not a snapshot assertion framework, serializer, mutation/fix com
 
 ## License
 
-FixtureVault is released under the [MIT License](LICENSE).
+FixtureVault is released under the [MIT License](LICENSE). Package copyright metadata identifies KeelMatrix.

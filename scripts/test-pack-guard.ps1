@@ -27,6 +27,85 @@ function Invoke-Pack {
     }
 }
 
+function New-PackageWithCopyright {
+    param(
+        [string]$SourcePackagePath,
+        [string]$DestinationPackagePath,
+        [AllowNull()]
+        [string]$Copyright
+    )
+
+    Copy-Item -LiteralPath $SourcePackagePath -Destination $DestinationPackagePath
+    $archive = [IO.Compression.ZipFile]::Open($DestinationPackagePath, [IO.Compression.ZipArchiveMode]::Update)
+    try {
+        $entry = $archive.Entries | Where-Object { $_.FullName -eq "KeelMatrix.FixtureVault.nuspec" } | Select-Object -First 1
+        Assert-Contract ($null -ne $entry) "The package copyright probe could not find the nuspec entry."
+
+        $reader = [IO.StreamReader]::new($entry.Open())
+        try {
+            [xml]$nuspec = $reader.ReadToEnd()
+        }
+        finally {
+            $reader.Dispose()
+        }
+
+        $copyrightNode = $nuspec.SelectSingleNode("/*[local-name()='package']/*[local-name()='metadata']/*[local-name()='copyright']")
+        if ($null -eq $Copyright) {
+            Assert-Contract ($null -ne $copyrightNode) "The package copyright probe source is missing its copyright node."
+            $copyrightNode.ParentNode.RemoveChild($copyrightNode) | Out-Null
+        }
+        else {
+            Assert-Contract ($null -ne $copyrightNode) "The package copyright probe source is missing its copyright node."
+            $copyrightNode.InnerText = $Copyright
+        }
+
+        $settings = [Xml.XmlWriterSettings]::new()
+        $settings.Encoding = [Text.UTF8Encoding]::new($false)
+        $settings.Indent = $true
+        $xmlStream = [IO.MemoryStream]::new()
+        try {
+            $writer = [Xml.XmlWriter]::Create($xmlStream, $settings)
+            try {
+                $nuspec.Save($writer)
+            }
+            finally {
+                $writer.Dispose()
+            }
+
+            $nuspecBytes = $xmlStream.ToArray()
+        }
+        finally {
+            $xmlStream.Dispose()
+        }
+
+        $entry.Delete()
+        $replacement = $archive.CreateEntry("KeelMatrix.FixtureVault.nuspec")
+        $replacementStream = $replacement.Open()
+        try {
+            $replacementStream.Write($nuspecBytes, 0, $nuspecBytes.Length)
+        }
+        finally {
+            $replacementStream.Dispose()
+        }
+    }
+    finally {
+        $archive.Dispose()
+    }
+}
+
+function Invoke-PackageInspection {
+    param(
+        [string]$InspectionScriptPath,
+        [string]$PackagePath
+    )
+
+    $output = @(& pwsh -NoProfile -File $InspectionScriptPath -PackagePath $PackagePath -ExpectedVersion "0.1.0" 2>&1)
+    [PSCustomObject]@{
+        ExitCode = $LASTEXITCODE
+        Output = ($output -join [Environment]::NewLine)
+    }
+}
+
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $projectPath = Join-Path $repositoryRoot "src/KeelMatrix.FixtureVault/KeelMatrix.FixtureVault.csproj"
 $workRoot = Join-Path ([IO.Path]::GetTempPath()) ("fixturevault-pack-guard-" + [Guid]::NewGuid().ToString("N"))
@@ -126,6 +205,21 @@ try {
     $inspectionScriptPath = Join-Path $repositoryRoot "scripts/inspect-package.ps1"
     & pwsh -NoProfile -File $inspectionScriptPath -PackagePath $normalPackagePath -SymbolsPackagePath $normalSymbolsPackagePath -ExpectedVersion "0.1.0"
     Assert-Contract ($LASTEXITCODE -eq 0) "Normal pack archives failed package-content inspection."
+
+    $copyrightProbes = [ordered]@{
+        "missing" = $null
+        "wrong" = "Other"
+        "differently-cased" = "keelmatrix"
+    }
+    foreach ($probe in $copyrightProbes.GetEnumerator()) {
+        $probePackagePath = Join-Path $workRoot ("copyright-" + $probe.Key + ".nupkg")
+        New-PackageWithCopyright $normalPackagePath $probePackagePath $probe.Value
+        $probeResult = Invoke-PackageInspection $inspectionScriptPath $probePackagePath
+        Assert-Contract ($probeResult.ExitCode -ne 0) "Package inspection unexpectedly accepted a $($probe.Key) copyright."
+        Assert-Contract ($probeResult.Output.Contains("Package copyright must be exactly KeelMatrix.", [StringComparison]::Ordinal)) "Package inspection rejected a $($probe.Key) copyright without the copyright contract error."
+        Write-Host "Package inspection rejected $($probe.Key) copyright as expected."
+    }
+
     Write-Host "Normal pack passed after both real and synthetic pack-guard trip files were removed; both archives passed inspection."
 }
 finally {
