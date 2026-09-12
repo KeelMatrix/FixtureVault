@@ -446,6 +446,21 @@ dotnet tool install --global KeelMatrix.FixtureVault \
 - Finalized release notes.
 "@
         Assert-Contract ($continuationEqualsMismatch.ExitCode -ne 0) "A continuation-line equals-form install-example/version mismatch passed the publication gate."
+
+        foreach ($quote in @([char]34, [char]39, [char]96)) {
+            $quotedVersion = [string]$quote + "0.2.0" + [string]$quote
+            [IO.File]::WriteAllText($readmePath, "dotnet tool install --global KeelMatrix.FixtureVault --version $quotedVersion`n", [Text.UTF8Encoding]::new($false))
+            $quotedInstallMismatch = Invoke-ChangelogContract @"
+# Changelog
+
+## [Unreleased]
+
+## [0.1.0] - $today
+
+- Finalized release notes.
+"@
+            Assert-Contract ($quotedInstallMismatch.ExitCode -ne 0) "A quoted install-example/version mismatch passed the publication gate."
+        }
     }
     finally {
         [IO.File]::WriteAllText($readmePath, $originalReadme, [Text.UTF8Encoding]::new($false))

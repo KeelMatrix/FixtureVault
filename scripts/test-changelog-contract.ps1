@@ -37,6 +37,14 @@ function Normalize-Version {
     param([string]$Value)
 
     $normalized = $Value.Trim()
+    if ($normalized.Length -ge 2) {
+        $openingQuote = $normalized[0]
+        $closingQuote = $normalized[$normalized.Length - 1]
+        if ($openingQuote -in @([char]34, [char]39, [char]96) -and $closingQuote -eq $openingQuote) {
+            $normalized = $normalized.Substring(1, $normalized.Length - 2).Trim()
+        }
+    }
+
     if ($normalized.StartsWith("[") -and $normalized.EndsWith("]")) {
         $normalized = $normalized.Substring(1, $normalized.Length - 2).Trim()
     }
@@ -400,8 +408,8 @@ $readmePath = Join-Path $script:ResolvedRepositoryRoot "README.md"
 if (Test-Path -LiteralPath $readmePath -PathType Leaf) {
     $readme = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $readmePath).Path)
     $installVersionPatterns = @(
-        '(?im)\bKeelMatrix\.FixtureVault\b[^\r\n]*?--version(?:\s+|=)(?<version>[^\s`"''<>]+)',
-        '(?im)\bKeelMatrix\.FixtureVault\b[^\r\n]*(?:(?:\\|`)[ \t]*)?\r?\n[ \t]*--version(?:\s+|=)(?<version>[^\s`"''<>]+)'
+        '(?im)\bKeelMatrix\.FixtureVault\b[^\r\n]*?--version(?:\s+|=)(?<version>"[^"\r\n]*"|''[^''\r\n]*''|`[^`\r\n]*`|[^\s"''`<>]+)',
+        '(?im)\bKeelMatrix\.FixtureVault\b[^\r\n]*(?:(?:\\|`)[ \t]*)?\r?\n[ \t]*--version(?:\s+|=)(?<version>"[^"\r\n]*"|''[^''\r\n]*''|`[^`\r\n]*`|[^\s"''`<>]+)'
     )
     foreach ($installVersionPattern in $installVersionPatterns) {
         foreach ($match in [Text.RegularExpressions.Regex]::Matches($readme, $installVersionPattern)) {
