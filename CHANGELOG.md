@@ -18,5 +18,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - Packaging, archive-contract, and consumer-smoke hardening for the planned first public release.
 - Sensitive-data policy values now fail closed, and repository-root fallback scans no longer classify ordinary binary assets as fixtures.
+- Verify binary `*.verified.*` baselines and explicitly allowed known-binary extensions are accepted without text decoding; binary `*.received.*` artifacts report `FV001` without a duplicate `FV005`, while unexpected binaries remain blocked.
 - Release validation now accepts only the fixed first-release tag `v0.1.0` and inspects the exact tag-built packages before publication.
 - Dependency vulnerability auditing now fails closed when applicable advisories are reported or advisory data is unavailable.

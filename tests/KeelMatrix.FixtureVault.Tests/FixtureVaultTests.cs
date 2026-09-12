@@ -297,6 +297,51 @@ public sealed class FixtureVaultTests
         Assert.Empty(result.Report.Findings);
     }
 
+    [Fact]
+    public void Verify_binary_verified_baseline_is_accepted_without_text_analysis()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/Orders/OrderTests.verified.png", PngBytes());
+        IReadOnlyDictionary<string, string> before = repository.HashTree();
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.Report.Findings);
+        Assert.Equal(before, repository.HashTree());
+    }
+
+    [Fact]
+    public void Accepted_binary_baseline_skips_encoding_and_sensitive_data_analysis()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/Orders/OrderTests.verified.png", [0xFF, 0xFE, 0x00, 0x01]);
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.Report.Findings);
+    }
+
+    [Fact]
+    public void Verify_binary_received_artifact_is_only_an_unapproved_finding()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/Orders/OrderTests.received.png", PngBytes());
+        IReadOnlyDictionary<string, string> before = repository.HashTree();
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(1, result.ExitCode);
+        Finding finding = Assert.Single(result.Report.Findings);
+        Assert.Equal("FV001", finding.RuleId);
+        Assert.Equal("tests/Orders/OrderTests.received.png", finding.Path);
+        Assert.Equal(before, repository.HashTree());
+    }
+
     [Theory]
     [InlineData("mismatch")]
     [InlineData("__mismatch__")]
@@ -433,6 +478,109 @@ public sealed class FixtureVaultTests
         ScanResult result = repository.Scan();
 
         Assert.Contains(result.Report.Findings, item => item.RuleId == "FV005");
+    }
+
+    [Fact]
+    public void Unexpected_binary_asset_under_fixture_root_is_blocked()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/assets/photo.png", PngBytes());
+        IReadOnlyDictionary<string, string> before = repository.HashTree();
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(1, result.ExitCode);
+        Finding finding = Assert.Single(result.Report.Findings);
+        Assert.Equal("FV005", finding.RuleId);
+        Assert.Equal("tests/assets/photo.png", finding.Path);
+        Assert.Equal(before, repository.HashTree());
+    }
+
+    [Fact]
+    public void Explicitly_allowed_binary_extension_is_accepted()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.AllowedExtensions!.Add(".png"));
+        repository.WriteBytes("tests/assets/photo.png", PngBytes());
+        IReadOnlyDictionary<string, string> before = repository.HashTree();
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.Report.Findings);
+        Assert.Equal(before, repository.HashTree());
+    }
+
+    [Fact]
+    public void Verify_binary_baseline_is_unexpected_when_verify_convention_is_disabled()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Conventions = ["generic"]);
+        repository.WriteBytes("tests/Orders/OrderTests.verified.png", PngBytes());
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(1, result.ExitCode);
+        Finding finding = Assert.Single(result.Report.Findings);
+        Assert.Equal("FV005", finding.RuleId);
+    }
+
+    [Fact]
+    public void Verify_binary_baseline_is_unexpected_without_an_allowed_binary_extension()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy =>
+        {
+            policy.AllowedExtensions = [".golden"];
+            policy.Conventions = ["generic"];
+        });
+        repository.WriteBytes("tests/assets/photo.png", PngBytes());
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(1, result.ExitCode);
+        Finding finding = Assert.Single(result.Report.Findings);
+        Assert.Equal("FV005", finding.RuleId);
+    }
+
+    [Fact]
+    public void Repository_root_fallback_still_audits_convention_shaped_unexpected_binary()
+    {
+        using var repository = new TemporaryRepository(createTestsDirectory: false);
+        repository.WritePolicy(policy =>
+        {
+            policy.Roots = ["."];
+            policy.Conventions = ["generic"];
+        });
+        repository.WriteBytes("tests/assets/photo.verified.png", PngBytes());
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(1, result.ExitCode);
+        Finding finding = Assert.Single(result.Report.Findings);
+        Assert.Equal("FV005", finding.RuleId);
+        Assert.Equal("tests/assets/photo.verified.png", finding.Path);
+    }
+
+    [Fact]
+    public void Binary_verify_baseline_is_checked_by_manifest_and_size_policy()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy =>
+        {
+            policy.MaxFileBytes = 4;
+            policy.Conventions = ["verify", "fixturevault-manifest"];
+        });
+        repository.WriteBytes("tests/Orders/OrderTests.verified.png", PngBytes());
+        repository.WriteText(FixtureVaultContract.ManifestFileName, "{\"version\":1,\"activeBaselines\":[]}\n");
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains(result.Report.Findings, item => item.RuleId == "FV002");
+        Assert.Contains(result.Report.Findings, item => item.RuleId == "FV004");
+        Assert.DoesNotContain(result.Report.Findings, item => item.RuleId == "FV005");
     }
 
     [Fact]
@@ -998,4 +1146,7 @@ public sealed class FixtureVaultTests
 
     private static byte[] Utf8Bom(string text) =>
         [.. Encoding.UTF8.GetPreamble(), .. Encoding.UTF8.GetBytes(text)];
+
+    private static byte[] PngBytes() =>
+        [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0xFF];
 }

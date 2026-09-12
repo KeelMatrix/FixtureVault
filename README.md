@@ -62,9 +62,9 @@ The supported policy file name is `.fixturevault.json`. Its schema version is `1
 }
 ```
 
-Roots are repository-relative directories. Allowed extensions are suffixes, so `.golden` matches nested names such as `Orders/Create.golden`. `maxFileBytes` is bounded to 64 MiB; the default is 1 MiB. Ignored paths use `*` for one path segment and `**` for any number of segments; matching is deterministic across operating systems and ignores path-separator and casing differences.
+Roots are repository-relative directories. Allowed extensions are suffixes, so `.golden` matches nested names such as `Orders/Create.golden`. Adding a known binary extension such as `.png` makes matching files inside an active root governed, accepted fixtures; they do not produce `FV005`. Unlisted binary files remain unexpected. `maxFileBytes` is bounded to 64 MiB; the default is 1 MiB. Ignored paths use `*` for one path segment and `**` for any number of segments; matching is deterministic across operating systems and ignores path-separator and casing differences.
 
-Candidates are files matching an allowed fixture extension or a supported fixture convention; known binary extensions are additionally inspected only under a configured fixture root other than the repository-root fallback. When `init` uses `.` because no `tests` directory exists, ordinary repository assets such as documentation images, PDFs, and ZIP archives remain outside the governed fixture set; fixture-looking extensions and supported convention names are still audited.
+Candidates are files matching an allowed fixture extension or a supported fixture convention; unexpected known binary extensions are additionally inspected under a configured fixture root other than the repository-root fallback. A Verify `*.verified.*` baseline is an accepted binary fixture, while a Verify `*.received.*` artifact is reported only as `FV001`; neither is decoded as text. When `init` uses `.` because no `tests` directory exists, ordinary repository assets such as documentation images, PDFs, and ZIP archives remain outside the governed fixture set; fixture-looking extensions and supported convention names are still audited.
 
 The v1 `sensitiveDataRules` policy supports only `high-confidence` (case-insensitive), which is also the default. An unknown value is invalid configuration and returns exit code `2`; it never disables sensitive-data detection silently.
 
@@ -74,7 +74,7 @@ When `ci.strict` is `true`, findings block the scan with exit code `1`. When it 
 
 The built-in hints are:
 
-- `verify`: detects common `*.received.*` artifacts and split-mode `*.received/<file>` artifacts, and audits `*.verified.*` and split-mode `*.verified/<file>` baselines. For Verify text fixtures, FixtureVault accepts UTF-8 with or without a BOM and requires LF-only bytes with no trailing newline.
+- `verify`: detects common `*.received.*` artifacts and split-mode `*.received/<file>` artifacts, and audits `*.verified.*` and split-mode `*.verified/<file>` baselines. Binary `*.verified.*` and split-mode baselines are accepted and remain subject to `maxFileBytes`; binary `*.received.*` artifacts produce `FV001` without an additional `FV005`. For Verify text fixtures, FixtureVault accepts UTF-8 with or without a BOM and requires LF-only bytes with no trailing newline.
 - `snapshooter`: audits ordinary `*.snap` files and treats `.snap` files below `__snapshots__/mismatch/` or the documented `__snapshots__/__mismatch__/` directory as received/unapproved artifacts.
 - `generic`: audits files matching `allowedExtensions`, including `.golden` files.
 - `fixturevault-manifest`: enables the explicit orphan proof described below. When enabled, the manifest is required; a missing manifest is a configuration error (exit code `2`).
@@ -106,7 +106,7 @@ The rule IDs below are the frozen v1 report contract. Every finding has a rule I
 | `FV002` | A baseline is absent from an explicit FixtureVault manifest. | Add it to the manifest or remove the stale baseline. |
 | `FV003` | Two fixture paths differ only by case after Unicode normalization. | Rename one path so it is unique on all supported filesystems. |
 | `FV004` | A fixture exceeds `maxFileBytes`. | Reduce the fixture or deliberately raise the policy limit. |
-| `FV005` | An unexpected binary asset is present under a fixture root. | Remove it or keep only supported text fixtures. |
+| `FV005` | An unexpected binary asset is present under a fixture root; accepted Verify baselines and files covered by an explicitly allowed known-binary extension are excluded. | Remove the binary asset, configure its extension deliberately, or keep it as a supported Verify baseline. |
 | `FV006` | A fixture is not valid UTF-8, uses a non-UTF-8 encoding, or violates a proven newline convention. UTF-8 BOMs are accepted. Verify text fixtures must use LF-only bytes and no trailing newline. Other supported conventions have no asserted newline style. | Save non-Verify text as valid UTF-8. Regenerate or save Verify text as UTF-8 with optional BOM, LF-only newlines, and no trailing newline. |
 | `FV007` | A high-confidence sensitive-data pattern was detected. | Remove the sensitive value from the fixture. The value is never printed. |
 | `FV008` | A fixture-looking file is outside the approved roots. | Move it below an approved root or update `roots`. |

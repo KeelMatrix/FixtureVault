@@ -370,6 +370,29 @@ internal sealed class FixtureScanner
                                                   bytes[2] == 0xFE && bytes[3] == 0xFF) ||
                                                  (bytes.Length >= 4 && bytes[0] == 0xFF && bytes[1] == 0xFE &&
                                                   bytes[2] == 0x00 && bytes[3] == 0x00));
+        bool isBinary = IsKnownBinaryExtension(file.RelativePath) || (!hasOtherBom && bytes.Contains((byte)0));
+        if (isBinary)
+        {
+            if (HasConvention(policy, "verify") && IsVerifyReceivedPath(file.RelativePath))
+            {
+                return;
+            }
+
+            if (IsAcceptedBinaryFixture(file.RelativePath, policy))
+            {
+                return;
+            }
+
+            AddFinding(
+                findings,
+                policy,
+                "FV005",
+                file.RelativePath,
+                "An unexpected binary asset is present in the fixture tree.",
+                "Remove the binary asset or keep only supported text fixtures.");
+            return;
+        }
+
         if (hasOtherBom)
         {
             AddFinding(
@@ -379,18 +402,6 @@ internal sealed class FixtureScanner
                 file.RelativePath,
                 "The fixture uses a non-UTF-8 encoding.",
                 "Save the fixture as UTF-8 text. A UTF-8 byte-order mark is supported where the fixture convention permits it.");
-            return;
-        }
-
-        if (IsKnownBinaryExtension(file.RelativePath) || bytes.Contains((byte)0))
-        {
-            AddFinding(
-                findings,
-                policy,
-                "FV005",
-                file.RelativePath,
-                "An unexpected binary asset is present in the fixture tree.",
-                "Remove the binary asset or keep only supported text fixtures.");
             return;
         }
 
@@ -498,20 +509,34 @@ internal sealed class FixtureScanner
         bool snapshooter = HasConvention(policy, "snapshooter") &&
                            fileName.EndsWith(".snap", StringComparison.OrdinalIgnoreCase);
         return allowedExtension || verify || snapshooter ||
-               (insideActiveRoot && !isRepositoryRoot && IsKnownBinaryExtension(relativePath));
+               (insideActiveRoot &&
+                ((IsKnownBinaryExtension(relativePath) && !isRepositoryRoot) ||
+                 (isRepositoryRoot && IsKnownBinaryConventionPath(relativePath))));
     }
 
     private static bool IsBaselineCandidate(string relativePath, FixtureVaultPolicy policy)
     {
         string fileName = Path.GetFileName(relativePath);
-        return !IsKnownBinaryExtension(relativePath) &&
-               ((HasConvention(policy, "verify") && IsVerifyVerifiedPath(relativePath)) ||
+        return (HasConvention(policy, "verify") && IsVerifyVerifiedPath(relativePath)) ||
                 (HasConvention(policy, "snapshooter") &&
                  fileName.EndsWith(".snap", StringComparison.OrdinalIgnoreCase) &&
                  !IsSnapshooterMismatchPath(relativePath)) ||
                 (HasConvention(policy, "generic") &&
-                 (policy.AllowedExtensions ?? []).Any(extension => fileName.EndsWith(extension, StringComparison.OrdinalIgnoreCase))));
+                 HasAllowedExtension(fileName, policy));
     }
+
+    private static bool IsAcceptedBinaryFixture(string relativePath, FixtureVaultPolicy policy)
+    {
+        return (HasConvention(policy, "verify") && IsVerifyVerifiedPath(relativePath)) ||
+               (IsKnownBinaryExtension(relativePath) && HasAllowedExtension(Path.GetFileName(relativePath), policy));
+    }
+
+    private static bool IsKnownBinaryConventionPath(string relativePath) =>
+        IsVerifySnapshotPath(relativePath);
+
+    private static bool HasAllowedExtension(string fileName, FixtureVaultPolicy policy) =>
+        (policy.AllowedExtensions ?? []).Any(extension =>
+            fileName.EndsWith(extension, StringComparison.OrdinalIgnoreCase));
 
     private static bool IsVerifySnapshotPath(string relativePath) =>
         IsVerifyReceivedPath(relativePath) || IsVerifyVerifiedPath(relativePath);
