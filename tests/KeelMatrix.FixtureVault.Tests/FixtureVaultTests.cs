@@ -542,6 +542,33 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
+    public void Large_ignored_directory_subtrees_are_pruned_without_weakening_entry_limit()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/clean.golden", "clean\n");
+        repository.WriteText("tests/OrderTests.received.json", "received\n");
+        repository.WriteEmptyFiles(".git", 33_334);
+        repository.WriteEmptyFiles("bin", 33_334);
+        repository.WriteEmptyFiles("obj", 33_333);
+
+        ScanResult ignored = repository.Scan();
+
+        Assert.Equal(1, ignored.ExitCode);
+        Assert.DoesNotContain(ignored.Report.Errors, item => item.Code == "FV-E003");
+        Assert.Equal(2, ignored.Report.FilesInspected);
+        Assert.Contains(ignored.Report.Findings, item =>
+            item.RuleId == "FV001" && item.Path == "tests/OrderTests.received.json");
+
+        repository.WritePolicy(policy => policy.IgnoredPaths = []);
+
+        ScanResult unignored = repository.Scan();
+
+        Assert.Equal(2, unignored.ExitCode);
+        Assert.Contains(unignored.Report.Errors, item => item.Code == "FV-E003");
+    }
+
+    [Fact]
     public void Multiple_roots_and_root_override_are_enforced()
     {
         using var repository = new TemporaryRepository();
@@ -836,6 +863,16 @@ public sealed class FixtureVaultTests
             string path = GetPath(relativePath);
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllBytes(path, bytes);
+        }
+
+        internal void WriteEmptyFiles(string relativeDirectory, int count)
+        {
+            string directory = GetPath(relativeDirectory);
+            Directory.CreateDirectory(directory);
+            for (int index = 0; index < count; index++)
+            {
+                File.WriteAllBytes(Path.Combine(directory, $"entry-{index:D6}"), []);
+            }
         }
 
         internal ScanResult Scan(IReadOnlyList<string>? options = null)

@@ -62,7 +62,11 @@ internal sealed class FixtureScanner
             OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
         foreach (ResolvedRoot root in activeRoots)
         {
-            WalkResult walk = SafeFileWalker.Walk(repositoryRoot, root.FullPath, failOnAccessErrors: true);
+            WalkResult walk = SafeFileWalker.Walk(
+                repositoryRoot,
+                root.FullPath,
+                failOnAccessErrors: true,
+                shouldPruneDirectory: relativePath => IsIgnoredDirectory(relativePath, ignoredMatchers));
             AddReparseSkips(walk, skipped);
             if (walk.Error is not null)
             {
@@ -205,7 +209,11 @@ internal sealed class FixtureScanner
         ICollection<SkippedDiagnostic> skipped,
         List<ScanError> errors)
     {
-        WalkResult walk = SafeFileWalker.Walk(repositoryRoot, repositoryRoot, failOnAccessErrors: false);
+        WalkResult walk = SafeFileWalker.Walk(
+            repositoryRoot,
+            repositoryRoot,
+            failOnAccessErrors: false,
+            shouldPruneDirectory: relativePath => IsIgnoredDirectory(relativePath, ignoredMatchers));
         AddReparseSkips(walk, skipped);
         if (walk.Error is not null)
         {
@@ -565,6 +573,12 @@ internal sealed class FixtureScanner
     private static bool IsIgnored(string relativePath, IReadOnlyList<GlobMatcher> matchers)
     {
         return matchers.Any(matcher => matcher.IsMatch(relativePath));
+    }
+
+    private static bool IsIgnoredDirectory(string relativePath, IReadOnlyList<GlobMatcher> matchers)
+    {
+        string directoryPath = relativePath.TrimEnd('/', '\\') + "/";
+        return IsIgnored(relativePath, matchers) || IsIgnored(directoryPath, matchers);
     }
 
     private static void AddFinding(

@@ -208,12 +208,22 @@ internal static class SafeFileWalker
 {
     private const int MaximumEntries = 100_000;
 
-    internal static WalkResult Walk(string repositoryRoot, string root, bool failOnAccessErrors)
+    internal static WalkResult Walk(
+        string repositoryRoot,
+        string root,
+        bool failOnAccessErrors,
+        Func<string, bool>? shouldPruneDirectory = null)
     {
         var files = new List<SafeFileEntry>();
         var reparsePaths = new List<string>();
         var pending = new Stack<DirectoryInfo>();
-        pending.Push(new DirectoryInfo(root));
+        DirectoryInfo startingDirectory = new(root);
+        if (shouldPruneDirectory?.Invoke(PathUtilities.NormalizeRelative(repositoryRoot, startingDirectory.FullName)) == true)
+        {
+            return new WalkResult(files, reparsePaths, null);
+        }
+
+        pending.Push(startingDirectory);
         int entriesSeen = 0;
 
         while (pending.Count > 0)
@@ -238,14 +248,6 @@ internal static class SafeFileWalker
 
             foreach (FileSystemInfo entry in entries)
             {
-                entriesSeen++;
-                if (entriesSeen > MaximumEntries)
-                {
-                    return new WalkResult(files, reparsePaths, new ScanError(
-                        "FV-E003",
-                        "The scan exceeded its filesystem entry safety limit."));
-                }
-
                 FileAttributes attributes;
                 try
                 {
@@ -255,6 +257,13 @@ internal static class SafeFileWalker
                 {
                     if (!failOnAccessErrors)
                     {
+                        if (!IsWithinEntryLimit(ref entriesSeen))
+                        {
+                            return new WalkResult(files, reparsePaths, new ScanError(
+                                "FV-E003",
+                                "The scan exceeded its filesystem entry safety limit."));
+                        }
+
                         continue;
                     }
 
@@ -266,16 +275,42 @@ internal static class SafeFileWalker
                 string relativePath = PathUtilities.NormalizeRelative(repositoryRoot, entry.FullName);
                 if ((attributes & FileAttributes.ReparsePoint) != 0)
                 {
+                    if (!IsWithinEntryLimit(ref entriesSeen))
+                    {
+                        return new WalkResult(files, reparsePaths, new ScanError(
+                            "FV-E003",
+                            "The scan exceeded its filesystem entry safety limit."));
+                    }
+
                     reparsePaths.Add(relativePath);
                     continue;
                 }
 
                 if (entry is DirectoryInfo childDirectory)
                 {
+                    if (shouldPruneDirectory?.Invoke(relativePath) == true)
+                    {
+                        continue;
+                    }
+
+                    if (!IsWithinEntryLimit(ref entriesSeen))
+                    {
+                        return new WalkResult(files, reparsePaths, new ScanError(
+                            "FV-E003",
+                            "The scan exceeded its filesystem entry safety limit."));
+                    }
+
                     pending.Push(childDirectory);
                 }
                 else
                 {
+                    if (!IsWithinEntryLimit(ref entriesSeen))
+                    {
+                        return new WalkResult(files, reparsePaths, new ScanError(
+                            "FV-E003",
+                            "The scan exceeded its filesystem entry safety limit."));
+                    }
+
                     files.Add(new SafeFileEntry(entry.FullName, relativePath));
                 }
             }
@@ -283,6 +318,8 @@ internal static class SafeFileWalker
 
         return new WalkResult(files, reparsePaths, null);
     }
+
+    private static bool IsWithinEntryLimit(ref int entriesSeen) => ++entriesSeen <= MaximumEntries;
 }
 
 internal sealed class GlobMatcher
