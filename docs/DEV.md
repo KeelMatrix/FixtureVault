@@ -1,6 +1,6 @@
 # FixtureVault Development
 
-This guide covers repository-local validation and package-consumer checks for FixtureVault contributors and maintainers. Consumer installation and tool usage are documented in the [README](https://github.com/KeelMatrix/FixtureVault#readme).
+This guide covers repository-local validation and package-consumer checks for FixtureVault contributors and maintainers. Consumer installation and tool usage are documented in the [README](https://github.com/KeelMatrix/FixtureVault#readme). For vulnerability reporting, see [SECURITY.md](../SECURITY.md).
 
 ## Prerequisites
 
