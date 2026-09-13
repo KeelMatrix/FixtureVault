@@ -9,6 +9,8 @@ If you discover a security vulnerability in FixtureVault, report it privately by
 
 Do **not** disclose vulnerabilities publicly or create a public issue containing sensitive fixture contents.
 
+For ordinary bugs and feature requests, use the [public GitHub issue tracker](https://github.com/KeelMatrix/FixtureVault/issues). This security route is not for ordinary support or community-conduct reports.
+
 Useful report details:
 
 - affected package and version;

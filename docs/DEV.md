@@ -1,0 +1,48 @@
+# FixtureVault Development
+
+This guide covers repository-local validation and package-consumer checks for FixtureVault contributors and maintainers. Consumer installation and tool usage are documented in the [README](https://github.com/KeelMatrix/FixtureVault#readme).
+
+## Prerequisites
+
+- .NET SDK 8.0 or later
+- PowerShell 7 (`pwsh`) for repository-owned validation scripts
+
+Run the commands below from the repository root. They write disposable build and package output under `artifacts/`, which is ignored by Git.
+
+## Validate the Solution
+
+```powershell
+dotnet restore KeelMatrix.FixtureVault.sln
+dotnet build KeelMatrix.FixtureVault.sln -c Release --no-restore
+dotnet test KeelMatrix.FixtureVault.sln -c Release --no-build
+dotnet format KeelMatrix.FixtureVault.sln --verify-no-changes
+```
+
+Use `KEELMATRIX_NO_TELEMETRY=1` during local validation when a command runs the tool and should not emit telemetry.
+
+## Run the Tool from Source
+
+```powershell
+dotnet run --project src/KeelMatrix.FixtureVault -- init
+dotnet run --project src/KeelMatrix.FixtureVault -- scan --format json
+```
+
+## Audit Dependencies
+
+The repository-owned audit checks direct and transitive dependencies and fails closed when applicable advisory data is unavailable or unrecognized:
+
+```powershell
+pwsh -NoProfile -File ./scripts/audit-vulnerabilities.ps1 -SolutionPath KeelMatrix.FixtureVault.sln
+```
+
+## Build and Inspect the Package
+
+After a successful Release build, create the package and symbols, inspect the actual archives, and run the isolated consumer smoke:
+
+```powershell
+dotnet pack src/KeelMatrix.FixtureVault/KeelMatrix.FixtureVault.csproj -c Release --no-build --include-symbols --p:SymbolPackageFormat=snupkg --output ./artifacts/packages
+pwsh -NoProfile -File ./scripts/inspect-package.ps1 -PackagePath ./artifacts/packages/KeelMatrix.FixtureVault.0.1.0.nupkg -SymbolsPackagePath ./artifacts/packages/KeelMatrix.FixtureVault.0.1.0.snupkg -ExpectedVersion 0.1.0
+pwsh -NoProfile -File ./scripts/package-consumer-smoke.ps1 -PackagePath ./artifacts/packages/KeelMatrix.FixtureVault.0.1.0.nupkg -ExpectedVersion 0.1.0
+```
+
+The smoke script installs only the built `.nupkg` from an isolated local feed and verifies `--help`, `init`, a clean scan, a blocking scan, exit codes, and JSON output. For contract changes, use the [Durable Contract Change Checklist](SCHEMA_CHANGE_CHECKLIST.md).

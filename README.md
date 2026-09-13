@@ -8,10 +8,10 @@ FixtureVault is a .NET tool for repositories that use Verify, Snapshooter, appro
 
 ## Install
 
-Install the global tool:
+After the package is published, install the global tool:
 
 ```bash
-dotnet tool install --global KeelMatrix.FixtureVault --version 0.1.0
+dotnet tool install --global KeelMatrix.FixtureVault
 ```
 
 Update or uninstall it with:
@@ -21,7 +21,7 @@ dotnet tool update --global KeelMatrix.FixtureVault
 dotnet tool uninstall --global KeelMatrix.FixtureVault
 ```
 
-## Quick start
+## Quick Start
 
 From a repository root, create the policy file and scan the configured roots:
 
@@ -42,6 +42,13 @@ fixturevault scan --root tests --format json
 ```
 
 `scan` never creates, modifies, or deletes fixture files.
+
+## Documentation
+
+- [Policy and report contract](https://github.com/KeelMatrix/FixtureVault/blob/main/docs/SCHEMA_CHANGE_CHECKLIST.md)
+- [Privacy](https://github.com/KeelMatrix/FixtureVault/blob/main/PRIVACY.md)
+- [Security Policy](https://github.com/KeelMatrix/FixtureVault/blob/main/SECURITY.md)
+- [Developer Guide](https://github.com/KeelMatrix/FixtureVault/blob/main/docs/DEV.md)
 
 ## Policy
 
@@ -70,7 +77,7 @@ The v1 `sensitiveDataRules` policy supports only `high-confidence` (case-insensi
 
 When `ci.strict` is `true`, findings block the scan with exit code `1`. When it is `false`, findings are reported as warnings and the scan exits `0`; configuration and execution errors always exit `2`. `--strict` is a convenience override that turns strict behavior on for the current scan.
 
-## Supported conventions
+## Supported Conventions
 
 The built-in hints are:
 
@@ -111,7 +118,7 @@ The rule IDs below are the frozen v1 report contract. Every finding has a rule I
 | `FV007` | A high-confidence sensitive-data pattern was detected. | Remove the sensitive value from the fixture. The value is never printed. |
 | `FV008` | A fixture-looking file is outside the approved roots. | Move it below an approved root or update `roots`. |
 
-### Conservative orphan detection
+### Conservative Orphan Detection
 
 Ordinary Verify, Snapshooter, and generic file names do not prove that a baseline is orphaned. FixtureVault therefore reports orphan detection as skipped for those conventions and never makes a heuristic orphan claim.
 
@@ -129,7 +136,7 @@ Teams that maintain an explicit complete baseline inventory can opt in to the `f
 
 With that hint enabled, a supported baseline not listed in `activeBaselines` produces `FV002`. The manifest is an explicit user-maintained proof boundary; FixtureVault does not create or update it.
 
-## JSON output
+## JSON Output
 
 Use `--format json` for CI and automation. JSON report schema version `1` is stable and findings are the same findings shown by console output:
 
@@ -155,7 +162,7 @@ Use `--format json` for CI and automation. JSON report schema version `1` is sta
 
 Sensitive findings contain only the path and rule information. No matched value, fixture content, file hash, or secret category is included.
 
-## Exit codes
+## Exit Codes
 
 - `0`: the scan completed without policy-blocking findings;
 - `1`: the scan completed and policy-blocking findings exist;
@@ -172,7 +179,9 @@ Malformed `.fixturevault.json`, a missing configured root, an unsafe root path, 
 - **Unsupported or skipped checks:** unknown convention hints appear as `FV-SKIP-CONVENTION`. Orphan checks for Verify, Snapshooter, and generic files appear as `FV-SKIP-ORPHAN` because no relationship was proved. Reparse points appear as `FV-SKIP-REPARSE`; their targets are not read.
 - **Exit codes:** `0` means a completed scan has no blocking findings, `1` means a completed scan has blocking findings, and `2` means an error prevented a trustworthy scan. Use `--format json` to inspect structured `findings`, `skipped`, and `errors`.
 
-## Security and privacy
+## Security and Privacy
+
+See the [Privacy](https://github.com/KeelMatrix/FixtureVault/blob/main/PRIVACY.md) and [Security Policy](https://github.com/KeelMatrix/FixtureVault/blob/main/SECURITY.md) documents for the canonical product-specific policies.
 
 Configured roots are hard boundaries. Relative roots and `--root` overrides must remain inside the repository root; traversal outside that boundary is rejected. Every directory component from the repository root to a selected root is checked for links and reparse points before scanning, so a root beneath an intermediate link fails conservatively. Repository-relative paths are used in reports. Symbolic links and Windows reparse points are never followed, including links that point outside an approved root. Link entries are reported as skipped without reading their targets.
 
@@ -188,17 +197,7 @@ $env:KEELMATRIX_NO_TELEMETRY = "1"
 
 The shared telemetry package also supports repository-local opt-out through `keelmatrix.telemetry.json`, `.env.local`, or `.env`.
 
-## Dependency vulnerability gate
-
-The repository-owned audit runs the .NET package vulnerability check with both direct and transitive dependencies:
-
-```powershell
-pwsh -NoProfile -File ./scripts/audit-vulnerabilities.ps1 -SolutionPath KeelMatrix.FixtureVault.sln
-```
-
-The gate fails when an applicable vulnerability is reported, when the audit command fails, or when advisory data is empty, unavailable, or unrecognized. Normal CI and tag validation run this same command before packaging.
-
-## CI example
+## CI Example
 
 Run the built-in CLI directly; no Action is required:
 
@@ -207,21 +206,13 @@ Run the built-in CLI directly; no Action is required:
   run: fixturevault scan --format json
 ```
 
-For a global tool installation, install it in an earlier step with `dotnet tool install --global KeelMatrix.FixtureVault --version 0.1.0` and add the .NET tools directory to the runner `PATH` as required by that runner.
+For a global tool installation, install it in an earlier step and add the .NET tools directory to the runner `PATH` as required by that runner:
 
-## Package verification
-
-After building the package, inspect the actual archive and run the consumer smoke from a clean temporary package cache:
-
-```powershell
-dotnet pack src/KeelMatrix.FixtureVault/KeelMatrix.FixtureVault.csproj -c Release --no-build --include-symbols --p:SymbolPackageFormat=snupkg --output ./artifacts/packages
-pwsh -NoProfile -File ./scripts/inspect-package.ps1 -PackagePath ./artifacts/packages/KeelMatrix.FixtureVault.0.1.0.nupkg -SymbolsPackagePath ./artifacts/packages/KeelMatrix.FixtureVault.0.1.0.snupkg -ExpectedVersion 0.1.0
-pwsh -NoProfile -File ./scripts/package-consumer-smoke.ps1 -PackagePath ./artifacts/packages/KeelMatrix.FixtureVault.0.1.0.nupkg -ExpectedVersion 0.1.0
+```bash
+dotnet tool install --global KeelMatrix.FixtureVault
 ```
 
-The smoke script stages only that `.nupkg` in a local feed, uses a controlled `NuGet.config` with cleared sources and explicit source mapping, sets fresh `NUGET_PACKAGES` and HTTP-cache directories, and then proves `--help`, `init` in a no-tests repository containing ordinary binary assets, clean scan exit `0`, and blocking JSON scan exit `1`.
-
-## Platform behavior and limitations
+## Platform Behavior and Limitations
 
 The tool targets .NET 8 and uses platform-neutral .NET filesystem and encoding APIs. It is designed for Windows, Linux, and macOS. The public GitHub Actions CI matrix validates the tool on all three operating systems. Case-colliding paths are reported using a case-insensitive, Unicode-normalized comparison so repositories can catch cross-filesystem hazards. Unsupported conventions and inaccessible linked paths are skipped conservatively.
 
@@ -229,4 +220,4 @@ FixtureVault is not a snapshot assertion framework, serializer, mutation/fix com
 
 ## License
 
-FixtureVault is released under the [MIT License](LICENSE). Package copyright metadata identifies KeelMatrix.
+FixtureVault is released under the [MIT License](https://github.com/KeelMatrix/FixtureVault/blob/main/LICENSE). Package copyright metadata identifies KeelMatrix.

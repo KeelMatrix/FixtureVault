@@ -1,4 +1,4 @@
-# Commit checks
+# Commit Checks
 
 Run `git config core.hooksPath .githooks` once per clone to enable the repository's local commit checks.
 

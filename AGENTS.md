@@ -1,17 +1,18 @@
-# FixtureVault development guide
+# FixtureVault Development Guide
 
 ## Navigation
 
 - `src/KeelMatrix.FixtureVault` contains the executable tool, policy loader, safe filesystem traversal, scanner rules, report contract, and telemetry adapter.
 - `tests/KeelMatrix.FixtureVault.Tests` contains unit, fixture-repository, security, non-mutation, report, and CLI contract tests.
 - `README.md` is the user-facing contract for policy, rules, output, and exit codes.
+- `docs/DEV.md` contains contributor validation and package-consumer checks.
 - `artifacts/` is disposable local build and package output and is ignored by Git.
 
 ## Commands
 
 Restore and build the solution:
 
-```text
+```powershell
 dotnet restore KeelMatrix.FixtureVault.sln
 dotnet build KeelMatrix.FixtureVault.sln -c Release --no-restore
 dotnet test KeelMatrix.FixtureVault.sln -c Release --no-build
@@ -21,12 +22,12 @@ dotnet pack src/KeelMatrix.FixtureVault/KeelMatrix.FixtureVault.csproj -c Releas
 
 Run the tool from source during focused development:
 
-```text
+```powershell
 dotnet run --project src/KeelMatrix.FixtureVault -- init
 dotnet run --project src/KeelMatrix.FixtureVault -- scan --format json
 ```
 
-## Release preparation
+## Release Preparation
 
 After finalizing the intended entry in `CHANGELOG.md`, run the same fail-closed contract used by the tag-triggered release workflow before creating a tag. The check must use the exact commit that will be tagged:
 
@@ -51,6 +52,6 @@ Do not create or push the release tag until this command passes on the finalized
 - Keep convention detection conservative. Do not turn an ambiguous file relationship into an orphan claim.
 - Telemetry runs only after a completed scan and is best-effort; `KEELMATRIX_NO_TELEMETRY=1` is used for local validation.
 
-## Validation strategy
+## Validation Strategy
 
 Start with the matching test class for a scanner change, then run the test project, Release build, format verification, package inspection, and isolated package-consumer smoke. Use synthetic fixture repositories for filesystem behavior and compare their file bytes before and after scans to preserve the non-mutation guarantee. Record platform or network checks that cannot run locally rather than inferring their results.
