@@ -93,7 +93,7 @@ internal static class PolicyLoader
             !rule.Equals(FixtureVaultContract.HighConfidenceSensitiveDataRule, StringComparison.OrdinalIgnoreCase));
         if (unsupportedRule is not null)
         {
-            validationError = $"Unsupported sensitiveDataRules value '{unsupportedRule}'. Supported value: '{FixtureVaultContract.HighConfidenceSensitiveDataRule}'.";
+            validationError = $"Unsupported sensitiveDataRules entry. Supported value: '{FixtureVaultContract.HighConfidenceSensitiveDataRule}'.";
             return false;
         }
 

@@ -624,9 +624,9 @@ internal sealed class FixtureScanner
             {
                 skipped.Add(new SkippedDiagnostic(
                     "FV-SKIP-CONVENTION",
-                    convention,
+                    FixtureVaultContract.UnsupportedConventionDiagnosticValue,
                     null,
-                    "This convention hint is not supported by this version and was not guessed."));
+                    "This convention hint is not supported by this version and was not guessed; the unsupported value is not shown."));
             }
         }
     }

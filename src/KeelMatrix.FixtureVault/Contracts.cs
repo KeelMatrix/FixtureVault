@@ -9,6 +9,7 @@ internal static class FixtureVaultContract
     internal const int ReportSchemaVersion = 1;
     internal const string ToolVersion = "0.1.0";
     internal const string HighConfidenceSensitiveDataRule = "high-confidence";
+    internal const string UnsupportedConventionDiagnosticValue = "unsupported";
     internal const string PolicyFileName = ".fixturevault.json";
     internal const string ManifestFileName = ".fixturevault.manifest.json";
 
@@ -72,6 +73,9 @@ internal sealed class CiPolicy
     public bool Strict { get; set; }
 }
 
+// Diagnostics are a safe-rendering boundary: never include raw untrusted CLI
+// arguments or policy values. Use positions, fixed categories, or bounded
+// contract values so console and JSON output cannot echo caller-controlled data.
 internal sealed record Finding(
     [property: JsonPropertyName("ruleId")] string RuleId,
     [property: JsonPropertyName("severity")] string Severity,

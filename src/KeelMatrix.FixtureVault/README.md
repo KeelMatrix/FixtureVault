@@ -1,6 +1,6 @@
 # KeelMatrix.FixtureVault
 
-Keep your existing snapshot framework. FixtureVault is a read-only .NET tool that audits the snapshot and golden files around Verify, Snapshooter, approval tests, or configured golden-file workflows. It complements those frameworks; it does not replace them or provide snapshot assertions.
+Keep your existing snapshot framework. FixtureVault is a .NET tool whose `scan` command is read-only while it audits the snapshot and golden files around Verify, Snapshooter, approval tests, or configured golden-file workflows. It complements those frameworks; it does not replace them or provide snapshot assertions.
 
 ## Install
 

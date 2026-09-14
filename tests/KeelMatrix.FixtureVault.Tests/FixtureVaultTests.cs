@@ -168,7 +168,139 @@ public sealed class FixtureVaultTests
 
         Assert.Equal(2, exitCode);
         Assert.Empty(output);
-        Assert.Contains("Unknown option '--unknown'", error, StringComparison.Ordinal);
+        Assert.Contains("Unknown option at argument 1", error, StringComparison.Ordinal);
+        Assert.DoesNotContain("--unknown", error, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("--token=CLI_CANARY_EQUALS", "CLI_CANARY_EQUALS", null, "console")]
+    [InlineData("--token=CLI_CANARY_EQUALS_JSON", "CLI_CANARY_EQUALS_JSON", null, "json")]
+    [InlineData("--api-key=CLI_CANARY_API_KEY", "CLI_CANARY_API_KEY", null, "console")]
+    [InlineData("--password=CLI_CANARY_PASSWORD", "CLI_CANARY_PASSWORD", null, "json")]
+    [InlineData("--token:CLI_CANARY_COLON", "CLI_CANARY_COLON", null, "console")]
+    [InlineData("--token:CLI_CANARY_COLON_JSON", "CLI_CANARY_COLON_JSON", null, "json")]
+    [InlineData("--token=\"CLI_CANARY_DOUBLE_QUOTED\"", "CLI_CANARY_DOUBLE_QUOTED", null, "console")]
+    [InlineData("--token='CLI_CANARY_SINGLE_QUOTED'", "CLI_CANARY_SINGLE_QUOTED", null, "json")]
+    [InlineData("-tCLI_CANARY_SHORT_ATTACHED", "CLI_CANARY_SHORT_ATTACHED", null, "console")]
+    [InlineData("-tCLI_CANARY_SHORT_ATTACHED_JSON", "CLI_CANARY_SHORT_ATTACHED_JSON", null, "json")]
+    [InlineData("--password", "CLI_CANARY_SEPARATE", "CLI_CANARY_SEPARATE", "console")]
+    [InlineData("--password", "CLI_CANARY_SEPARATE_JSON", "CLI_CANARY_SEPARATE_JSON", "json")]
+    [InlineData("-t", "CLI_CANARY_SHORT_SEPARATE", "CLI_CANARY_SHORT_SEPARATE", "console")]
+    [InlineData("-t", "CLI_CANARY_SHORT_SEPARATE_JSON", "CLI_CANARY_SHORT_SEPARATE_JSON", "json")]
+    public void Sensitive_shaped_cli_arguments_are_not_echoed_in_any_output(
+        string option,
+        string canary,
+        string? separateValue,
+        string format)
+    {
+        using var repository = new TemporaryRepository(createTestsDirectory: false);
+        string[] args = separateValue is null
+            ? ["scan", "--format", format, option]
+            : ["scan", "--format", format, option, separateValue];
+
+        int exitCode = repository.Run(args, new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        AssertNoCanary(canary, output, error);
+        Assert.Contains("Unknown option at argument", error, StringComparison.Ordinal);
+        Assert.Contains("fixturevault --help", error, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("--format", "CLI_CANARY_INVALID_FORMAT")]
+    [InlineData("--format=CLI_CANARY_INVALID_FORMAT_ATTACHED", "CLI_CANARY_INVALID_FORMAT_ATTACHED")]
+    public void Invalid_format_values_are_not_echoed_in_any_output(string option, string canary)
+    {
+        using var repository = new TemporaryRepository(createTestsDirectory: false);
+        string[] args = option == "--format"
+            ? ["scan", option, canary]
+            : ["scan", option];
+
+        int exitCode = repository.Run(args, new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        AssertNoCanary(canary, output, error);
+        Assert.Contains("--format option must be 'console' or 'json'", error, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("console", "--root", "CLI_CANARY_ROOT_SEPARATE")]
+    [InlineData("json", "--root=CLI_CANARY_ROOT_ATTACHED", "CLI_CANARY_ROOT_ATTACHED")]
+    public void Invalid_root_values_are_not_echoed_in_any_output(string format, string option, string canary)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        string[] args = option == "--root"
+            ? ["scan", option, canary, "--format", format]
+            : ["scan", option, "--format", format];
+
+        int exitCode = repository.Run(args, new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        AssertNoCanary(canary, output, error);
+        if (format == "json")
+        {
+            ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
+            Assert.Equal("FV-E008", Assert.Single(report.Errors).Code);
+        }
+        else
+        {
+            Assert.Empty(output);
+            Assert.Contains("FV-E008", error, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("console")]
+    [InlineData("json")]
+    public void Unsupported_sensitive_data_policy_values_are_not_echoed_in_any_output(string format)
+    {
+        const string canary = "CLI_CANARY_POLICY_SENSITIVE_RULE";
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.SensitiveDataRules = [$"unsupported-{canary}"]);
+
+        int exitCode = repository.Run(["scan", "--format", format], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        AssertNoCanary(canary, output, error);
+        if (format == "json")
+        {
+            ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
+            Assert.Equal("FV-E005", Assert.Single(report.Errors).Code);
+        }
+        else
+        {
+            Assert.Empty(output);
+            Assert.Contains("FV-E005", error, StringComparison.Ordinal);
+            Assert.Contains("Unsupported sensitiveDataRules entry", error, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("console")]
+    [InlineData("json")]
+    public void Unsupported_convention_policy_values_are_not_echoed_in_any_output(string format)
+    {
+        const string canary = "CLI_CANARY_POLICY_CONVENTION";
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Conventions = [$"future-{canary}"]);
+
+        int exitCode = repository.Run(["scan", "--format", format], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(0, exitCode);
+        AssertNoCanary(canary, output, error);
+        if (format == "json")
+        {
+            ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
+            SkippedDiagnostic skipped = Assert.Single(report.Skipped);
+            Assert.Equal("FV-SKIP-CONVENTION", skipped.Code);
+            Assert.Equal("unsupported", skipped.Convention);
+        }
+        else
+        {
+            Assert.Empty(error);
+            Assert.Contains("check(s) skipped conservatively", output, StringComparison.Ordinal);
+        }
     }
 
     [Theory]
@@ -684,7 +816,8 @@ public sealed class FixtureVaultTests
         Assert.Equal(2, exitCode);
         Assert.Empty(output);
         Assert.Contains("sensitiveDataRules", error, StringComparison.Ordinal);
-        Assert.Contains("high-confidance", error, StringComparison.Ordinal);
+        Assert.DoesNotContain("high-confidance", error, StringComparison.Ordinal);
+        Assert.Contains("Unsupported sensitiveDataRules entry", error, StringComparison.Ordinal);
         Assert.Contains("high-confidence", error, StringComparison.Ordinal);
     }
 
@@ -1161,4 +1294,10 @@ public sealed class FixtureVaultTests
 
     private static byte[] PngBytes() =>
         [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0xFF];
+
+    private static void AssertNoCanary(string canary, string output, string error)
+    {
+        Assert.DoesNotContain(canary, output, StringComparison.Ordinal);
+        Assert.DoesNotContain(canary, error, StringComparison.Ordinal);
+    }
 }

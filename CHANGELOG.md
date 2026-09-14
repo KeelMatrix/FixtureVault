@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 
 - Clarified installation, documentation navigation, security-reporting guidance, and contract-change review requirements.
+- Diagnostics no longer echo raw untrusted CLI arguments or policy values.
 
 ## [0.1.0] - Planned (not yet published)
 

@@ -162,6 +162,8 @@ Use `--format json` for CI and automation. JSON report schema version `1` is sta
 
 Sensitive findings contain only the path and rule information. No matched value, fixture content, file hash, or secret category is included.
 
+Diagnostics do not echo raw untrusted CLI arguments or policy values. They use an argument position, a fixed category, or another bounded contract value instead.
+
 ## Exit Codes
 
 - `0`: the scan completed without policy-blocking findings;
