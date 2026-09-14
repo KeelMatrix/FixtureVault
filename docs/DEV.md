@@ -4,7 +4,7 @@ This guide covers repository-local validation and package-consumer checks for Fi
 
 ## Prerequisites
 
-- .NET SDK 8.0 or later
+- The .NET SDK selected by [`global.json`](../global.json): currently `8.0.424`, with `rollForward` set to `latestPatch` and `allowPrerelease` set to `false`. Install `8.0.424` or a compatible patch accepted by that policy; an arbitrary later feature-band SDK or a .NET 9, .NET 10, or .NET 11 SDK does not satisfy this repository prerequisite.
 - PowerShell 7 (`pwsh`) for repository-owned validation scripts
 
 Run the commands below from the repository root. They write disposable build and package output under `artifacts/`, which is ignored by Git.
