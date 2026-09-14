@@ -8,7 +8,7 @@ FixtureVault is a .NET tool for repositories that use Verify, Snapshooter, appro
 
 ## Install
 
-After the package is published, install the global tool:
+Install the global tool from NuGet.org:
 
 ```bash
 dotnet tool install --global KeelMatrix.FixtureVault
