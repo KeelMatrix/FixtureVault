@@ -24,6 +24,10 @@ function Assert-Contract {
 
 $resolvedPackage = (Resolve-Path -LiteralPath $PackagePath).Path
 Assert-Contract ([IO.Path]::GetExtension($resolvedPackage) -eq ".nupkg") "Package inspection requires a .nupkg file."
+$repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+$projectReadmePath = Join-Path $repositoryRoot "src/KeelMatrix.FixtureVault/README.md"
+Assert-Contract (Test-Path -LiteralPath $projectReadmePath -PathType Leaf) "Project-local package README is missing: $projectReadmePath"
+$expectedReadmeBytes = [IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $projectReadmePath).Path)
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive = [IO.Compression.ZipFile]::OpenRead($resolvedPackage)
@@ -41,6 +45,33 @@ try {
         "tools/net8.0/any/KeelMatrix.Telemetry.dll")) {
     Assert-Contract ($entries -contains $requiredEntry) "Expected package entry is missing: $requiredEntry"
     }
+
+    $readmeEntry = $archive.Entries | Where-Object { $_.FullName -eq "README.md" } | Select-Object -First 1
+    $readmeStream = $readmeEntry.Open()
+    try {
+        $packedReadmeBytes = [IO.MemoryStream]::new()
+        try {
+            $readmeStream.CopyTo($packedReadmeBytes)
+            $actualReadmeBytes = $packedReadmeBytes.ToArray()
+        }
+        finally {
+            $packedReadmeBytes.Dispose()
+        }
+    }
+    finally {
+        $readmeStream.Dispose()
+    }
+
+    $readmeMatches = $expectedReadmeBytes.Length -eq $actualReadmeBytes.Length
+    if ($readmeMatches) {
+        for ($index = 0; $index -lt $expectedReadmeBytes.Length; $index++) {
+            if ($expectedReadmeBytes[$index] -ne $actualReadmeBytes[$index]) {
+                $readmeMatches = $false
+                break
+            }
+        }
+    }
+    Assert-Contract $readmeMatches "Packed README.md does not match the project-local README at $projectReadmePath."
 
     $toolSettingsEntry = $archive.Entries | Where-Object { $_.FullName -eq "tools/net8.0/any/DotnetToolSettings.xml" } | Select-Object -First 1
     $toolSettingsReader = [IO.StreamReader]::new($toolSettingsEntry.Open())

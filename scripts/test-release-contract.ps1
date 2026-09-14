@@ -466,6 +466,28 @@ dotnet tool install --global KeelMatrix.FixtureVault \
         [IO.File]::WriteAllText($readmePath, $originalReadme, [Text.UTF8Encoding]::new($false))
     }
 
+    $projectReadmePath = Join-Path $repositoryRoot "src/KeelMatrix.FixtureVault/README.md"
+    Assert-Contract (Test-Path -LiteralPath $projectReadmePath -PathType Leaf) "The project-local README is required for the version-consistency contract test."
+    $originalProjectReadme = [IO.File]::ReadAllText($projectReadmePath)
+    try {
+        [IO.File]::WriteAllText($projectReadmePath, @"
+dotnet tool install --global KeelMatrix.FixtureVault --version 0.2.0
+"@, [Text.UTF8Encoding]::new($false))
+        $projectReadmeInstallMismatch = Invoke-ChangelogContract @"
+# Changelog
+
+## [Unreleased]
+
+## [0.1.0] - $today
+
+- Finalized release notes.
+"@
+        Assert-Contract ($projectReadmeInstallMismatch.ExitCode -ne 0) "A project-local README install-example/version mismatch passed the publication gate."
+    }
+    finally {
+        [IO.File]::WriteAllText($projectReadmePath, $originalProjectReadme, [Text.UTF8Encoding]::new($false))
+    }
+
     $trackedChangelogPath = Join-Path $repositoryRoot "CHANGELOG.md"
     $realContractParameters = @{
         ExpectedVersion = "0.1.0"

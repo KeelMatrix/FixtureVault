@@ -93,6 +93,53 @@ function New-PackageWithCopyright {
     }
 }
 
+function New-PackageWithReadme {
+    param(
+        [string]$SourcePackagePath,
+        [string]$DestinationPackagePath,
+        [string]$ReadmeContent
+    )
+
+    Copy-Item -LiteralPath $SourcePackagePath -Destination $DestinationPackagePath
+    $archive = [IO.Compression.ZipFile]::Open($DestinationPackagePath, [IO.Compression.ZipArchiveMode]::Update)
+    try {
+        $entry = $archive.Entries | Where-Object { $_.FullName -eq "README.md" } | Select-Object -First 1
+        Assert-Contract ($null -ne $entry) "The package README probe source is missing its README.md entry."
+        $entry.Delete()
+
+        $replacement = $archive.CreateEntry("README.md")
+        $replacementStream = $replacement.Open()
+        try {
+            $readmeBytes = [Text.UTF8Encoding]::new($false).GetBytes($ReadmeContent)
+            $replacementStream.Write($readmeBytes, 0, $readmeBytes.Length)
+        }
+        finally {
+            $replacementStream.Dispose()
+        }
+    }
+    finally {
+        $archive.Dispose()
+    }
+}
+
+function New-PackageWithoutReadme {
+    param(
+        [string]$SourcePackagePath,
+        [string]$DestinationPackagePath
+    )
+
+    Copy-Item -LiteralPath $SourcePackagePath -Destination $DestinationPackagePath
+    $archive = [IO.Compression.ZipFile]::Open($DestinationPackagePath, [IO.Compression.ZipArchiveMode]::Update)
+    try {
+        $entry = $archive.Entries | Where-Object { $_.FullName -eq "README.md" } | Select-Object -First 1
+        Assert-Contract ($null -ne $entry) "The package README probe source is missing its README.md entry."
+        $entry.Delete()
+    }
+    finally {
+        $archive.Dispose()
+    }
+}
+
 function Invoke-PackageInspection {
     param(
         [string]$InspectionScriptPath,
@@ -219,6 +266,20 @@ try {
         Assert-Contract ($probeResult.Output.Contains("Package copyright must be exactly KeelMatrix.", [StringComparison]::Ordinal)) "Package inspection rejected a $($probe.Key) copyright without the copyright contract error."
         Write-Host "Package inspection rejected $($probe.Key) copyright as expected."
     }
+
+    $missingReadmePackagePath = Join-Path $workRoot "missing-readme.nupkg"
+    New-PackageWithoutReadme $normalPackagePath $missingReadmePackagePath
+    $missingReadmeResult = Invoke-PackageInspection $inspectionScriptPath $missingReadmePackagePath
+    Assert-Contract ($missingReadmeResult.ExitCode -ne 0) "Package inspection unexpectedly accepted a package without README.md."
+    Assert-Contract ($missingReadmeResult.Output.Contains("Expected package entry is missing: README.md", [StringComparison]::Ordinal)) "Package inspection rejected a package without README.md without the README contract error."
+    Write-Host "Package inspection rejected a package without README.md as expected."
+
+    $mismatchedReadmePackagePath = Join-Path $workRoot "mismatched-readme.nupkg"
+    New-PackageWithReadme $normalPackagePath $mismatchedReadmePackagePath "This is not the project-local package README."
+    $mismatchedReadmeResult = Invoke-PackageInspection $inspectionScriptPath $mismatchedReadmePackagePath
+    Assert-Contract ($mismatchedReadmeResult.ExitCode -ne 0) "Package inspection unexpectedly accepted a README.md from another source."
+    Assert-Contract ($mismatchedReadmeResult.Output.Contains("Packed README.md does not match the project-local README", [StringComparison]::Ordinal)) "Package inspection rejected a mismatched README.md without the provenance contract error."
+    Write-Host "Package inspection rejected a mismatched README.md as expected."
 
     Write-Host "Normal pack passed after both real and synthetic pack-guard trip files were removed; both archives passed inspection."
 }

@@ -404,24 +404,35 @@ if (Test-Path -LiteralPath $centralVersionsPath -PathType Leaf) {
     }
 }
 
-$readmePath = Join-Path $script:ResolvedRepositoryRoot "README.md"
-if (Test-Path -LiteralPath $readmePath -PathType Leaf) {
-    $readme = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $readmePath).Path)
-    $installVersionPatterns = @(
-        '(?im)\bKeelMatrix\.FixtureVault\b[^\r\n]*?--version(?:\s+|=)(?<version>"[^"\r\n]*"|''[^''\r\n]*''|`[^`\r\n]*`|[^\s"''`<>]+)',
-        '(?im)\bKeelMatrix\.FixtureVault\b[^\r\n]*(?:(?:\\|`)[ \t]*)?\r?\n[ \t]*--version(?:\s+|=)(?<version>"[^"\r\n]*"|''[^''\r\n]*''|`[^`\r\n]*`|[^\s"''`<>]+)'
-    )
-    foreach ($installVersionPattern in $installVersionPatterns) {
-        foreach ($match in [Text.RegularExpressions.Regex]::Matches($readme, $installVersionPattern)) {
-            Assert-VersionMatches $match.Groups["version"].Value $ExpectedVersion "README install example"
-        }
+$readmePaths = @(
+    [pscustomobject]@{
+        Path = Join-Path $script:ResolvedRepositoryRoot "README.md"
+        Label = "README"
+    },
+    [pscustomobject]@{
+        Path = Join-Path $script:ResolvedRepositoryRoot "src/KeelMatrix.FixtureVault/README.md"
+        Label = "project-local README"
     }
+)
+foreach ($readmeLocation in $readmePaths) {
+    if (Test-Path -LiteralPath $readmeLocation.Path -PathType Leaf) {
+        $readme = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $readmeLocation.Path).Path)
+        $installVersionPatterns = @(
+            '(?im)\bKeelMatrix\.FixtureVault\b[^\r\n]*?--version(?:\s+|=)(?<version>"[^"\r\n]*"|''[^''\r\n]*''|`[^`\r\n]*`|[^\s"''`<>]+)',
+            '(?im)\bKeelMatrix\.FixtureVault\b[^\r\n]*(?:(?:\\|`)[ \t]*)?\r?\n[ \t]*--version(?:\s+|=)(?<version>"[^"\r\n]*"|''[^''\r\n]*''|`[^`\r\n]*`|[^\s"''`<>]+)'
+        )
+        foreach ($installVersionPattern in $installVersionPatterns) {
+            foreach ($match in [Text.RegularExpressions.Regex]::Matches($readme, $installVersionPattern)) {
+                Assert-VersionMatches $match.Groups["version"].Value $ExpectedVersion "$($readmeLocation.Label) install example"
+            }
+        }
 
-    $artifactVersionMatches = [Text.RegularExpressions.Regex]::Matches(
-        $readme,
-        '(?i)\bKeelMatrix\.FixtureVault\.(?<version>\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\.(?:nupkg|snupkg)\b')
-    foreach ($match in $artifactVersionMatches) {
-        Assert-VersionMatches $match.Groups["version"].Value $ExpectedVersion "README package example"
+        $artifactVersionMatches = [Text.RegularExpressions.Regex]::Matches(
+            $readme,
+            '(?i)\bKeelMatrix\.FixtureVault\.(?<version>\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\.(?:nupkg|snupkg)\b')
+        foreach ($match in $artifactVersionMatches) {
+            Assert-VersionMatches $match.Groups["version"].Value $ExpectedVersion "$($readmeLocation.Label) package example"
+        }
     }
 }
 
