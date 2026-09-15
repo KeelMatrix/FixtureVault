@@ -828,6 +828,56 @@ public sealed class FixtureVaultTests
         Assert.Equal(0, telemetry.SuccessfulScans);
     }
 
+    [Theory]
+    [InlineData("null", "")]
+    [InlineData("{}", "")]
+    [InlineData("{\"strcit\": true}", "strcit")]
+    [InlineData("{\"Strict\": true}", "Strict")]
+    [InlineData("{\"strict\": \"yes\"}", "yes")]
+    public void Missing_or_malformed_ci_strict_fails_closed(string ciJson, string rawMemberName)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicyWithCi(ciJson);
+        repository.WriteText("tests/OrderTests.received.json", "received\n");
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", "json"], telemetry, out string output, out string error);
+        using JsonDocument report = JsonDocument.Parse(output);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains(report.RootElement.GetProperty("errors").EnumerateArray(), item =>
+            item.GetProperty("code").GetString() == "FV-E005");
+        Assert.Contains("ci.strict", output, StringComparison.Ordinal);
+        Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
+        Assert.Empty(error);
+        Assert.Equal(0, telemetry.SuccessfulScans);
+        Assert.DoesNotContain(ciJson, output, StringComparison.Ordinal);
+        if (rawMemberName.Length > 0)
+        {
+            Assert.DoesNotContain(rawMemberName, output, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, 0, "warn")]
+    [InlineData(true, 1, "block")]
+    public void Explicit_ci_strict_values_preserve_documented_finding_behavior(
+        bool strict,
+        int expectedExitCode,
+        string expectedDisposition)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Ci!.Strict = strict);
+        repository.WriteText("tests/OrderTests.received.json", "received\n");
+
+        int exitCode = repository.Run(["scan", "--format", "json"], new RecordingTelemetry(), out string output, out string error);
+        using JsonDocument report = JsonDocument.Parse(output);
+
+        Assert.Equal(expectedExitCode, exitCode);
+        Assert.Empty(error);
+        Assert.Equal(expectedDisposition, report.RootElement.GetProperty("findings")[0].GetProperty("disposition").GetString());
+    }
+
     [Fact]
     public void Console_and_json_reports_contain_the_same_findings()
     {
@@ -852,13 +902,25 @@ public sealed class FixtureVaultTests
         repository.WritePolicy(policy => policy.Ci!.Strict = false);
         repository.WriteText("tests/OrderTests.received.json", "received");
 
-        ScanResult warning = repository.Scan();
-        ScanResult strict = repository.Scan(["--strict"]);
+        int warningExitCode = repository.Run(
+            ["scan", "--format", "json"],
+            new RecordingTelemetry(),
+            out string warningOutput,
+            out string warningError);
+        int strictExitCode = repository.Run(
+            ["scan", "--format", "json", "--strict"],
+            new RecordingTelemetry(),
+            out string strictOutput,
+            out string strictError);
+        using JsonDocument warningReport = JsonDocument.Parse(warningOutput);
+        using JsonDocument strictReport = JsonDocument.Parse(strictOutput);
 
-        Assert.Equal(0, warning.ExitCode);
-        Assert.Equal("warn", Assert.Single(warning.Report.Findings).Disposition);
-        Assert.Equal(1, strict.ExitCode);
-        Assert.Equal("block", Assert.Single(strict.Report.Findings).Disposition);
+        Assert.Equal(0, warningExitCode);
+        Assert.Equal("warn", warningReport.RootElement.GetProperty("findings")[0].GetProperty("disposition").GetString());
+        Assert.Equal(1, strictExitCode);
+        Assert.Equal("block", strictReport.RootElement.GetProperty("findings")[0].GetProperty("disposition").GetString());
+        Assert.Empty(warningError);
+        Assert.Empty(strictError);
     }
 
     [Fact]
@@ -1009,6 +1071,17 @@ public sealed class FixtureVaultTests
             FixtureVaultPolicy policy = FixtureVaultPolicy.CreateDefault(testsDirectoryExists: true);
             customize?.Invoke(policy);
             WriteText(FixtureVaultContract.PolicyFileName, FixtureVaultContract.SerializePolicy(policy));
+        }
+
+        internal void WritePolicyWithCi(string ciJson)
+        {
+            FixtureVaultPolicy policy = FixtureVaultPolicy.CreateDefault(testsDirectoryExists: true);
+            string json = FixtureVaultContract.SerializePolicy(policy);
+            const string defaultCiJson = "  \"ci\": {\n    \"strict\": true\n  }";
+            Assert.Contains(defaultCiJson, json, StringComparison.Ordinal);
+            WriteText(
+                FixtureVaultContract.PolicyFileName,
+                json.Replace(defaultCiJson, $"  \"ci\": {ciJson}", StringComparison.Ordinal));
         }
 
         internal void WriteText(string relativePath, string content)

@@ -69,7 +69,7 @@ internal sealed class FixtureVaultPolicy
 internal sealed class CiPolicy
 {
     [JsonPropertyName("strict")]
-    public bool Strict { get; set; }
+    public bool? Strict { get; set; }
 }
 
 internal sealed record Finding(

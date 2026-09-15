@@ -179,7 +179,7 @@ internal sealed class FixtureScanner
             InspectContent(file, bytes, policy, findings);
         }
 
-        bool strict = strictOverride || policy.Ci!.Strict;
+        bool strict = strictOverride || policy.Ci!.Strict == true;
         if (!strict)
         {
             findings = findings
