@@ -860,6 +860,11 @@ public sealed class FixtureVaultTests
     [InlineData("tests/*.golden", "tests/nested/result.golden", false)]
     [InlineData("tests/?.golden", "tests/a.golden", true)]
     [InlineData("tests/?.golden", "tests/ab.golden", false)]
+    [InlineData("tests?foo.received.json", "tests/foo.received.json", false)]
+    [InlineData("tests?foo.received.json", "tests\\foo.received.json", false)]
+    [InlineData("tests?foo.received.json", "testsAfoo.received.json", true)]
+    [InlineData("tests/??.golden", "tests/ab.golden", true)]
+    [InlineData("tests/??.golden", "tests/a/b.golden", false)]
     [InlineData("tests/*/result.golden", "tests/a/result.golden", true)]
     [InlineData("tests/*/result.golden", "tests/a/b/result.golden", false)]
     [InlineData("tests/**/result.golden", "tests/result.golden", true)]
@@ -890,12 +895,49 @@ public sealed class FixtureVaultTests
 
     [Theory]
     [InlineData("/tests/**")]
+    [InlineData("\\tests\\**")]
+    [InlineData("\\\\server\\share\\tests\\**")]
+    [InlineData("//server/share/tests/**")]
+    [InlineData("C:\\tests\\**")]
+    [InlineData("C:/tests/**")]
+    [InlineData("C:tests/**")]
     [InlineData("../tests/**")]
     [InlineData("..\\tests\\**")]
     [InlineData("..")]
+    [InlineData("tests/../**")]
+    [InlineData("tests\\..\\**")]
     public void Ignored_glob_validation_rejects_rooted_and_parent_patterns(string pattern)
     {
         Assert.False(GlobMatcher.TryCreate(pattern, out _));
+    }
+
+    [Fact]
+    public void Ignored_glob_validation_rejects_nul_and_over_length_patterns()
+    {
+        Assert.False(GlobMatcher.TryCreate("tests/\0/**", out _));
+        Assert.False(GlobMatcher.TryCreate(new string('a', 257), out _));
+    }
+
+    [Theory]
+    [InlineData("/tests/**")]
+    [InlineData("\\tests\\**")]
+    [InlineData("\\\\server\\share\\tests\\**")]
+    [InlineData("//server/share/tests/**")]
+    [InlineData("C:\\tests\\**")]
+    [InlineData("C:/tests/**")]
+    [InlineData("C:tests/**")]
+    public void Rooted_ignored_glob_patterns_fail_closed_with_fv_e007(string pattern)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.IgnoredPaths = [pattern]);
+        repository.WriteText("tests/ignored.received.json", "received\n");
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.False(result.Completed);
+        Assert.Contains(result.Report.Errors, item => item.Code == "FV-E007");
+        Assert.Empty(result.Report.Findings);
     }
 
     [Fact]

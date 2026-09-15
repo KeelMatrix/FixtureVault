@@ -413,8 +413,13 @@ internal sealed class GlobMatcher
             return false;
         }
 
-        string normalized = PathUtilities.NormalizeComparisonPath(pattern.Replace('\\', '/').TrimStart('/'));
-        if (Path.IsPathRooted(pattern) || normalized.StartsWith("../", StringComparison.Ordinal) || normalized == "..")
+        if (IsRootedOrDriveQualified(pattern))
+        {
+            return false;
+        }
+
+        string normalized = PathUtilities.NormalizeComparisonPath(pattern.Replace('\\', '/'));
+        if (normalized.Split('/').Any(segment => segment == ".."))
         {
             return false;
         }
@@ -456,6 +461,18 @@ internal sealed class GlobMatcher
 
         matcher = new GlobMatcher(tokens.ToArray(), globStarSlashOrdinals.ToArray());
         return true;
+    }
+
+    private static bool IsRootedOrDriveQualified(string pattern)
+    {
+        if (pattern[0] is '/' or '\\')
+        {
+            return true;
+        }
+
+        return pattern.Length >= 2 &&
+               pattern[1] == ':' &&
+               ((pattern[0] >= 'A' && pattern[0] <= 'Z') || (pattern[0] >= 'a' && pattern[0] <= 'z'));
     }
 
     internal int StateCount => stateCount;
@@ -513,7 +530,7 @@ internal sealed class GlobMatcher
                     switch (token.Kind)
                     {
                         case GlobTokenKind.Literal when token.Value == pathCharacter:
-                        case GlobTokenKind.SingleCharacter:
+                        case GlobTokenKind.SingleCharacter when pathCharacter != '/':
                             nextStates[state + 1] = true;
                             break;
                         case GlobTokenKind.SegmentStar when pathCharacter != '/':
