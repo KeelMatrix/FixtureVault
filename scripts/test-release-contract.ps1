@@ -132,6 +132,26 @@ function Invoke-ChangelogContract {
     }
 }
 
+function Assert-ChangelogCase {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Content,
+        [switch]$ShouldPass
+    )
+
+    $result = Invoke-ChangelogContract $Content
+    $passed = if ($ShouldPass) {
+        $result.ExitCode -eq 0
+    }
+    else {
+        $result.ExitCode -ne 0
+    }
+
+    $expectedOutcome = if ($ShouldPass) { "pass" } else { "fail" }
+    Write-Host "Changelog case '$Name': expected $expectedOutcome, exit code $($result.ExitCode)."
+    Assert-Contract $passed "Changelog case '$Name' had the wrong exit code. Output: $($result.Output)"
+}
+
 try {
     $env:GITHUB_OUTPUT = ""
     foreach ($invalidTag in @("v0.1", "v0.1.1", "release-v0.1.0", "v0.1.0\n")) {
@@ -185,6 +205,8 @@ try {
 ## Release train
 
 ### [0.1.0] - $today
+
+#### Added
 
 - Finalized release notes.
 "@
@@ -318,6 +340,8 @@ $($statementMarkerCase.Body)
 
 ## [0.1.0] - $today
 
+### Added
+
 - The Draft API type is documented and tested.
 "@
     Assert-Contract ($ordinaryProse.ExitCode -eq 0) "Ordinary prose describing a Draft API type was treated as a release marker: $($ordinaryProse.Output)"
@@ -328,6 +352,8 @@ $($statementMarkerCase.Body)
 ## [Unreleased]
 
 ## [0.1.0] - $today
+
+### Added
 
 - The Draft API type is documented for a future release.
 "@
@@ -345,6 +371,8 @@ $($statementMarkerCase.Body)
 ## [Unreleased]
 
 ## [0.1.0] - $today
+
+### Added
 
 $boundaryProseBody
 "@
@@ -365,6 +393,92 @@ $boundaryProseBody
 - TBD.
 "@
     Assert-Contract ($markerAfterTargetBoundary.ExitCode -eq 0) "A pre-release marker after the target section boundary changed the target result: $($markerAfterTargetBoundary.Output)"
+
+    $firstReleaseHeadingCases = @(
+        [pscustomobject]@{ Name = "first release rejects Changed heading"; Body = "### Changed`n`n- Describes a release difference." },
+        [pscustomobject]@{ Name = "first release rejects Fixed heading"; Body = "### Fixed`n`n- Describes a release difference." },
+        [pscustomobject]@{ Name = "first release rejects Deprecated heading"; Body = "### Deprecated`n`n- Describes a release difference." },
+        [pscustomobject]@{ Name = "first release rejects Removed heading"; Body = "### Removed`n`n- Describes a release difference." },
+        [pscustomobject]@{ Name = "first release rejects Security heading"; Body = "### Security`n`n- Describes a release difference." },
+        [pscustomobject]@{ Name = "first release rejects Improved heading"; Body = "### Improved`n`n- Describes a release difference." },
+        [pscustomobject]@{ Name = "first release rejects Notes heading"; Body = "### Notes`n`n- Describes a release difference." },
+        [pscustomobject]@{ Name = "first release rejects decorated Changed heading"; Body = "### **Changed**`n`n- Describes a release difference." },
+        [pscustomobject]@{ Name = "first release rejects uppercase CHANGED heading"; Body = "### CHANGED`n`n- Describes a release difference." },
+        [pscustomobject]@{ Name = "first release rejects missing Added heading"; Body = "- A bare release bullet is not categorized." },
+        [pscustomobject]@{ Name = "first release rejects Added plus Changed headings"; Body = "### Added`n`n- Provides the initial capability.`n`n### Changed`n`n- Describes a release difference." }
+    )
+    foreach ($headingCase in $firstReleaseHeadingCases) {
+        Assert-ChangelogCase -Name $headingCase.Name -Content @"
+# Changelog
+
+## [0.1.0] - $today
+
+$($headingCase.Body)
+"@
+    }
+
+    $firstReleaseBannedWordingCases = @(
+        [pscustomobject]@{ Name = "first release rejects wording now"; Phrase = "now" },
+        [pscustomobject]@{ Name = "first release rejects wording no longer"; Phrase = "no longer" },
+        [pscustomobject]@{ Name = "first release rejects wording previously"; Phrase = "previously" },
+        [pscustomobject]@{ Name = "first release rejects wording formerly"; Phrase = "formerly" },
+        [pscustomobject]@{ Name = "first release rejects wording used to"; Phrase = "used to" },
+        [pscustomobject]@{ Name = "first release rejects wording fixed"; Phrase = "fixed" },
+        [pscustomobject]@{ Name = "first release rejects wording fixes"; Phrase = "fixes" },
+        [pscustomobject]@{ Name = "first release rejects wording corrected"; Phrase = "corrected" },
+        [pscustomobject]@{ Name = "first release rejects wording resolved"; Phrase = "resolved" },
+        [pscustomobject]@{ Name = "first release rejects wording addressed"; Phrase = "addressed" },
+        [pscustomobject]@{ Name = "first release rejects wording this removes"; Phrase = "this removes" },
+        [pscustomobject]@{ Name = "first release rejects wording this fixes"; Phrase = "this fixes" },
+        [pscustomobject]@{ Name = "first release rejects wording changed from"; Phrase = "changed from" }
+    )
+    foreach ($wordingCase in $firstReleaseBannedWordingCases) {
+        Assert-ChangelogCase -Name $wordingCase.Name -Content @"
+# Changelog
+
+## [0.1.0] - $today
+
+### Added
+
+- The initial release $($wordingCase.Phrase) provides the documented capability.
+"@
+    }
+
+    Assert-ChangelogCase -Name "first release accepts valid Added-only entry" -ShouldPass -Content @"
+# Changelog
+
+## [0.1.0] - $today
+
+### Added
+
+- Provides read-only snapshot and golden-file auditing with stable reports.
+"@
+
+    Assert-ChangelogCase -Name "first release accepts whole-token near misses" -ShouldPass -Content @"
+# Changelog
+
+## [0.1.0] - $today
+
+### Added
+
+- Documents known and unknown behavior for renewed inputs found nowhere else, including fixedness and prefixes controls.
+"@
+
+    Assert-ChangelogCase -Name "later release permits Changed and transition wording" -ShouldPass -Content @"
+# Changelog
+
+## [0.0.9] - $today
+
+### Added
+
+- Provides the initial capability.
+
+## [0.1.0] - $today
+
+### Changed
+
+- The scanner now supports the updated release behavior.
+"@
 
     $readmePath = Join-Path $repositoryRoot "README.md"
     $originalReadme = [IO.File]::ReadAllText($readmePath)
@@ -413,6 +527,8 @@ dotnet tool install --global KeelMatrix.FixtureVault --version=0.1.0
 ## [Unreleased]
 
 ## [0.1.0] - $today
+
+### Added
 
 - Finalized release notes.
 "@
