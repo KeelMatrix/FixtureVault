@@ -207,6 +207,180 @@ function Test-TokenSequence {
     return $true
 }
 
+function Test-AsciiDigits {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    if ($Value.Length -eq 0) {
+        return $false
+    }
+
+    for ($index = 0; $index -lt $Value.Length; $index++) {
+        $codePoint = [int][char]$Value[$index]
+        if ($codePoint -lt 48 -or $codePoint -gt 57) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
+function Test-SemanticIdentifiers {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    foreach ($identifier in @($Value.Split('.'))) {
+        if ($identifier.Length -eq 0) {
+            return $false
+        }
+
+        for ($index = 0; $index -lt $identifier.Length; $index++) {
+            $codePoint = [int][char]$identifier[$index]
+            $isDigit = $codePoint -ge 48 -and $codePoint -le 57
+            $isUpper = $codePoint -ge 65 -and $codePoint -le 90
+            $isLower = $codePoint -ge 97 -and $codePoint -le 122
+            if (-not ($isDigit -or $isUpper -or $isLower -or $codePoint -eq 45)) {
+                return $false
+            }
+        }
+    }
+
+    return $true
+}
+
+function ConvertTo-SemanticVersion {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    $trimmedValue = $Value.Trim()
+    $buildSeparator = $trimmedValue.IndexOf('+')
+    $withoutBuild = $trimmedValue
+    if ($buildSeparator -ge 0) {
+        if ($trimmedValue.IndexOf('+', $buildSeparator + 1) -ge 0 -or $buildSeparator -eq $trimmedValue.Length - 1) {
+            return $null
+        }
+
+        $withoutBuild = $trimmedValue.Substring(0, $buildSeparator)
+        if (-not (Test-SemanticIdentifiers $trimmedValue.Substring($buildSeparator + 1))) {
+            return $null
+        }
+    }
+
+    $preReleaseSeparator = $withoutBuild.IndexOf('-')
+    $coreText = if ($preReleaseSeparator -ge 0) {
+        $withoutBuild.Substring(0, $preReleaseSeparator)
+    }
+    else {
+        $withoutBuild
+    }
+    $coreParts = @($coreText.Split('.'))
+    if ($coreParts.Count -ne 3 -or @($coreParts | Where-Object { -not (Test-AsciiDigits $_) }).Count -gt 0) {
+        return $null
+    }
+
+    $preRelease = @()
+    if ($preReleaseSeparator -ge 0) {
+        $preReleaseText = $withoutBuild.Substring($preReleaseSeparator + 1)
+        if (-not (Test-SemanticIdentifiers $preReleaseText)) {
+            return $null
+        }
+
+        $preRelease = @($preReleaseText.Split('.'))
+    }
+
+    return [pscustomobject]@{
+        Major = [Numerics.BigInteger]::Parse($coreParts[0], [Globalization.CultureInfo]::InvariantCulture)
+        Minor = [Numerics.BigInteger]::Parse($coreParts[1], [Globalization.CultureInfo]::InvariantCulture)
+        Patch = [Numerics.BigInteger]::Parse($coreParts[2], [Globalization.CultureInfo]::InvariantCulture)
+        PreRelease = $preRelease
+    }
+}
+
+function Compare-SemanticVersions {
+    param(
+        [Parameter(Mandatory = $true)][object]$Left,
+        [Parameter(Mandatory = $true)][object]$Right
+    )
+
+    foreach ($component in @("Major", "Minor", "Patch")) {
+        $comparison = $Left.$component.CompareTo($Right.$component)
+        if ($comparison -ne 0) {
+            return $comparison
+        }
+    }
+
+    $leftPreRelease = @($Left.PreRelease)
+    $rightPreRelease = @($Right.PreRelease)
+    if ($leftPreRelease.Count -eq 0 -and $rightPreRelease.Count -eq 0) {
+        return 0
+    }
+    if ($leftPreRelease.Count -eq 0) {
+        return 1
+    }
+    if ($rightPreRelease.Count -eq 0) {
+        return -1
+    }
+
+    $identifierCount = [Math]::Min($leftPreRelease.Count, $rightPreRelease.Count)
+    for ($index = 0; $index -lt $identifierCount; $index++) {
+        $leftIdentifier = $leftPreRelease[$index]
+        $rightIdentifier = $rightPreRelease[$index]
+        if ($leftIdentifier -ceq $rightIdentifier) {
+            continue
+        }
+
+        $leftIsNumeric = Test-AsciiDigits $leftIdentifier
+        $rightIsNumeric = Test-AsciiDigits $rightIdentifier
+        if ($leftIsNumeric -and $rightIsNumeric) {
+            return ([Numerics.BigInteger]::Parse($leftIdentifier, [Globalization.CultureInfo]::InvariantCulture)).CompareTo(
+                [Numerics.BigInteger]::Parse($rightIdentifier, [Globalization.CultureInfo]::InvariantCulture))
+        }
+        if ($leftIsNumeric) {
+            return -1
+        }
+        if ($rightIsNumeric) {
+            return 1
+        }
+
+        return [string]::Compare($leftIdentifier, $rightIdentifier, [StringComparison]::Ordinal)
+    }
+
+    return $leftPreRelease.Count.CompareTo($rightPreRelease.Count)
+}
+
+function Find-FirstReleaseBannedWording {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Text
+    )
+
+    $tokens = @(Get-NormalizedTokens (Normalize-ChangelogText $Text))
+    $bannedWordings = @(
+        'now', 'no longer', 'previously', 'formerly', 'used to',
+        'fixed', 'fixes', 'corrected', 'resolved', 'addressed',
+        'this removes', 'this fixes', 'changed from'
+    ) | ForEach-Object {
+        [pscustomobject]@{
+            Phrase = $_
+            Tokens = @(Get-NormalizedTokens (Normalize-ChangelogText $_))
+        }
+    }
+
+    # The wording list is fixed and small; each token position is visited once
+    # for a bounded number of normalized token sequences.
+    for ($index = 0; $index -lt $tokens.Count; $index++) {
+        foreach ($bannedWording in $bannedWordings) {
+            if ($tokens[$index] -cne $bannedWording.Tokens[0]) {
+                continue
+            }
+
+            if (Test-TokenSequence -Tokens $tokens -MarkerTokens $bannedWording.Tokens -StartIndex $index) {
+                return $bannedWording.Phrase
+            }
+        }
+    }
+
+    return $null
+}
+
 function Test-PreReleaseMarkerScan {
     param(
         [Parameter(Mandatory = $true)]
@@ -309,6 +483,35 @@ $targetSection = $changelog.Substring($targetHeading.Index, $sectionEndIndex - $
 Assert-Contract (-not (Test-PreReleaseMarkerScan `
         -Text $targetSection `
         -MarkerDefinitions $preReleaseMarkerDefinitions)) "Release section for '$ExpectedVersion' is still marked as planned or unpublished."
+
+$targetSemanticVersion = ConvertTo-SemanticVersion $targetHeading.ReleaseVersion
+Assert-Contract ($null -ne $targetSemanticVersion) "Release heading version '$($targetHeading.ReleaseVersion)' is not a valid semantic version."
+$hasLowerRelease = $false
+foreach ($releaseHeading in @($headings | Where-Object { $null -ne $_.ReleaseVersion })) {
+    $releaseSemanticVersion = ConvertTo-SemanticVersion $releaseHeading.ReleaseVersion
+    if ($null -ne $releaseSemanticVersion -and
+        (Compare-SemanticVersions -Left $releaseSemanticVersion -Right $targetSemanticVersion) -lt 0) {
+        $hasLowerRelease = $true
+        break
+    }
+}
+
+if (-not $hasLowerRelease) {
+    $targetSectionHeadings = @($headings | Where-Object {
+            $_.Index -gt $targetHeading.Index -and $_.Index -lt $sectionEndIndex
+        })
+    $addedHeadingCount = 0
+    foreach ($sectionHeading in $targetSectionHeadings) {
+        $normalizedHeadingTitle = Normalize-ChangelogText $sectionHeading.Title
+        Assert-Contract ($normalizedHeadingTitle -ceq "added") "First release '$ExpectedVersion' contains non-Added heading '$($sectionHeading.Title)'."
+        $addedHeadingCount++
+    }
+
+    Assert-Contract ($addedHeadingCount -gt 0) "First release '$ExpectedVersion' must contain a non-empty Added section."
+
+    $bannedWording = Find-FirstReleaseBannedWording $targetSection
+    Assert-Contract ($null -eq $bannedWording) "First release '$ExpectedVersion' contains unpublished transition/remediation wording '$bannedWording'."
+}
 
 function Get-HeadingDirectScope {
     param(
