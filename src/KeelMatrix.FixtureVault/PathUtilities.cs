@@ -1,5 +1,4 @@
 ﻿using System.Text;
-using System.Text.RegularExpressions;
 
 namespace KeelMatrix.FixtureVault;
 
@@ -204,6 +203,47 @@ internal sealed record WalkResult(
     IReadOnlyList<string> ReparsePaths,
     ScanError? Error);
 
+internal enum GlobMatchStatus
+{
+    NoMatch,
+    Match,
+    Failure
+}
+
+internal readonly record struct GlobMatchResult(
+    GlobMatchStatus Status,
+    long Steps,
+    long WorkBound);
+
+internal sealed class GlobMatchBudget
+{
+    // This budget is shared by every ignored-path comparison in one scan, including
+    // active-root traversal, directory pruning, and repository path-policy discovery.
+    internal const long MaximumAggregateSteps = 50_000_000;
+
+    internal GlobMatchBudget(long maximumSteps = MaximumAggregateSteps)
+    {
+        MaximumSteps = maximumSteps > 0
+            ? maximumSteps
+            : throw new ArgumentOutOfRangeException(nameof(maximumSteps));
+    }
+
+    internal long MaximumSteps { get; }
+
+    internal long Steps { get; private set; }
+
+    internal bool TryConsume()
+    {
+        if (Steps >= MaximumSteps)
+        {
+            return false;
+        }
+
+        Steps++;
+        return true;
+    }
+}
+
 internal static class SafeFileWalker
 {
     private const int MaximumEntries = 100_000;
@@ -212,13 +252,23 @@ internal static class SafeFileWalker
         string repositoryRoot,
         string root,
         bool failOnAccessErrors,
-        Func<string, bool>? shouldPruneDirectory = null)
+        Func<string, GlobMatchStatus>? shouldPruneDirectory = null)
     {
         var files = new List<SafeFileEntry>();
         var reparsePaths = new List<string>();
         var pending = new Stack<DirectoryInfo>();
         DirectoryInfo startingDirectory = new(root);
-        if (shouldPruneDirectory?.Invoke(PathUtilities.NormalizeRelative(repositoryRoot, startingDirectory.FullName)) == true)
+        GlobMatchStatus startingDirectoryStatus = shouldPruneDirectory?.Invoke(
+            PathUtilities.NormalizeRelative(repositoryRoot, startingDirectory.FullName)) ?? GlobMatchStatus.NoMatch;
+        if (startingDirectoryStatus == GlobMatchStatus.Failure)
+        {
+            return new WalkResult(
+                files,
+                reparsePaths,
+                new ScanError(FixtureVaultContract.IgnoredPathMatchingErrorCode, "Ignored path matching could not be completed safely."));
+        }
+
+        if (startingDirectoryStatus == GlobMatchStatus.Match)
         {
             return new WalkResult(files, reparsePaths, null);
         }
@@ -288,7 +338,16 @@ internal static class SafeFileWalker
 
                 if (entry is DirectoryInfo childDirectory)
                 {
-                    if (shouldPruneDirectory?.Invoke(relativePath) == true)
+                    GlobMatchStatus directoryStatus = shouldPruneDirectory?.Invoke(relativePath) ?? GlobMatchStatus.NoMatch;
+                    if (directoryStatus == GlobMatchStatus.Failure)
+                    {
+                        return new WalkResult(
+                            files,
+                            reparsePaths,
+                            new ScanError(FixtureVaultContract.IgnoredPathMatchingErrorCode, "Ignored path matching could not be completed safely."));
+                    }
+
+                    if (directoryStatus == GlobMatchStatus.Match)
                     {
                         continue;
                     }
@@ -324,11 +383,26 @@ internal static class SafeFileWalker
 
 internal sealed class GlobMatcher
 {
-    private readonly Regex regex;
+    private readonly GlobToken[] tokens;
+    private readonly int[] globStarSlashOrdinals;
+    private readonly int[] globStarSlashNextStates;
+    private readonly int stateCount;
 
-    private GlobMatcher(Regex regex)
+    private GlobMatcher(GlobToken[] tokens, int[] globStarSlashOrdinals)
     {
-        this.regex = regex;
+        this.tokens = tokens;
+        this.globStarSlashOrdinals = globStarSlashOrdinals;
+        globStarSlashNextStates = new int[globStarSlashOrdinals.Count(ordinal => ordinal >= 0)];
+        for (int tokenIndex = 0; tokenIndex < globStarSlashOrdinals.Length; tokenIndex++)
+        {
+            int ordinal = globStarSlashOrdinals[tokenIndex];
+            if (ordinal >= 0)
+            {
+                globStarSlashNextStates[ordinal] = tokenIndex + 1;
+            }
+        }
+
+        stateCount = tokens.Length + 1 + globStarSlashNextStates.Length;
     }
 
     internal static bool TryCreate(string pattern, out GlobMatcher? matcher)
@@ -345,58 +419,191 @@ internal sealed class GlobMatcher
             return false;
         }
 
-        var expression = new StringBuilder("^");
+        var tokens = new List<GlobToken>(normalized.Length);
+        var globStarSlashOrdinals = new List<int>(normalized.Length);
+        int globStarSlashCount = 0;
         for (int i = 0; i < normalized.Length; i++)
         {
             char character = normalized[i];
             if (character == '*' && i + 2 < normalized.Length && normalized[i + 1] == '*' && normalized[i + 2] == '/')
             {
-                expression.Append("(?:.*/)?");
+                tokens.Add(new GlobToken(GlobTokenKind.GlobStarSlash, '\0'));
+                globStarSlashOrdinals.Add(globStarSlashCount++);
                 i += 2;
             }
             else if (character == '*' && i + 1 < normalized.Length && normalized[i + 1] == '*')
             {
-                expression.Append(".*");
+                tokens.Add(new GlobToken(GlobTokenKind.GlobStar, '\0'));
+                globStarSlashOrdinals.Add(-1);
                 i++;
             }
             else if (character == '*')
             {
-                expression.Append("[^/]*");
+                tokens.Add(new GlobToken(GlobTokenKind.SegmentStar, '\0'));
+                globStarSlashOrdinals.Add(-1);
             }
             else if (character == '?')
             {
-                expression.Append("[^/]");
+                tokens.Add(new GlobToken(GlobTokenKind.SingleCharacter, '\0'));
+                globStarSlashOrdinals.Add(-1);
             }
             else
             {
-                expression.Append(Regex.Escape(character.ToString()));
+                tokens.Add(new GlobToken(GlobTokenKind.Literal, character));
+                globStarSlashOrdinals.Add(-1);
             }
         }
 
-        expression.Append('$');
-        try
-        {
-            matcher = new GlobMatcher(new Regex(
-                expression.ToString(),
-                RegexOptions.CultureInvariant | RegexOptions.Compiled,
-                TimeSpan.FromMilliseconds(100)));
-            return true;
-        }
-        catch (ArgumentException)
-        {
-            return false;
-        }
+        matcher = new GlobMatcher(tokens.ToArray(), globStarSlashOrdinals.ToArray());
+        return true;
     }
 
-    internal bool IsMatch(string relativePath)
+    internal int StateCount => stateCount;
+
+    internal int TokenCount => tokens.Length;
+
+    internal GlobMatchResult Match(string relativePath, GlobMatchBudget? budget = null)
     {
-        try
+        string normalizedPath = PathUtilities.NormalizeComparisonPath(relativePath);
+        // Each path character performs one clear pass, one state pass, and one epsilon pass.
+        // Therefore workBound = (2 * stateCount + tokenCount) * (pathLength + 1), with no backtracking.
+        long workBound = checked((2L * stateCount + tokens.Length) * ((long)normalizedPath.Length + 1));
+        long steps = 0;
+        bool[] activeStates = new bool[stateCount];
+        bool[] nextStates = new bool[stateCount];
+        activeStates[0] = true;
+
+        if (!TryCloseEpsilon(activeStates, ref steps, workBound, budget))
         {
-            return regex.IsMatch(PathUtilities.NormalizeComparisonPath(relativePath));
+            return new GlobMatchResult(GlobMatchStatus.Failure, steps, workBound);
         }
-        catch (RegexMatchTimeoutException)
+
+        foreach (char pathCharacter in normalizedPath)
+        {
+            for (int state = 0; state < nextStates.Length; state++)
+            {
+                if (!TryConsume(ref steps, workBound, budget))
+                {
+                    return new GlobMatchResult(GlobMatchStatus.Failure, steps, workBound);
+                }
+
+                nextStates[state] = false;
+            }
+
+            for (int state = 0; state < activeStates.Length; state++)
+            {
+                if (!TryConsume(ref steps, workBound, budget))
+                {
+                    return new GlobMatchResult(GlobMatchStatus.Failure, steps, workBound);
+                }
+
+                if (!activeStates[state])
+                {
+                    continue;
+                }
+
+                if (state == tokens.Length)
+                {
+                    continue;
+                }
+
+                if (state < tokens.Length)
+                {
+                    GlobToken token = tokens[state];
+                    switch (token.Kind)
+                    {
+                        case GlobTokenKind.Literal when token.Value == pathCharacter:
+                        case GlobTokenKind.SingleCharacter:
+                            nextStates[state + 1] = true;
+                            break;
+                        case GlobTokenKind.SegmentStar when pathCharacter != '/':
+                            nextStates[state] = true;
+                            break;
+                        case GlobTokenKind.GlobStar:
+                            nextStates[state] = true;
+                            break;
+                        case GlobTokenKind.GlobStarSlash:
+                            nextStates[GetInsideState(state)] = true;
+                            if (pathCharacter == '/')
+                            {
+                                nextStates[state + 1] = true;
+                            }
+
+                            break;
+                    }
+
+                    continue;
+                }
+
+                int ordinal = state - tokens.Length - 1;
+                nextStates[state] = true;
+                if (pathCharacter == '/')
+                {
+                    nextStates[globStarSlashNextStates[ordinal]] = true;
+                }
+            }
+
+            if (!TryCloseEpsilon(nextStates, ref steps, workBound, budget))
+            {
+                return new GlobMatchResult(GlobMatchStatus.Failure, steps, workBound);
+            }
+
+            (activeStates, nextStates) = (nextStates, activeStates);
+        }
+
+        GlobMatchStatus status = activeStates[tokens.Length]
+            ? GlobMatchStatus.Match
+            : GlobMatchStatus.NoMatch;
+        return new GlobMatchResult(status, steps, workBound);
+    }
+
+    private int GetInsideState(int tokenIndex)
+    {
+        int ordinal = globStarSlashOrdinals[tokenIndex];
+        return tokens.Length + 1 + ordinal;
+    }
+
+    private bool TryCloseEpsilon(
+        bool[] states,
+        ref long steps,
+        long workBound,
+        GlobMatchBudget? budget)
+    {
+        for (int state = 0; state < tokens.Length; state++)
+        {
+            if (!TryConsume(ref steps, workBound, budget))
+            {
+                return false;
+            }
+
+            if (states[state] && tokens[state].Kind is GlobTokenKind.SegmentStar or GlobTokenKind.GlobStar or GlobTokenKind.GlobStarSlash)
+            {
+                states[state + 1] = true;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool TryConsume(ref long steps, long workBound, GlobMatchBudget? budget)
+    {
+        if (steps >= workBound || budget is not null && !budget.TryConsume())
         {
             return false;
         }
+
+        steps++;
+        return true;
+    }
+
+    private readonly record struct GlobToken(GlobTokenKind Kind, char Value);
+
+    private enum GlobTokenKind
+    {
+        Literal,
+        SingleCharacter,
+        SegmentStar,
+        GlobStar,
+        GlobStarSlash
     }
 }

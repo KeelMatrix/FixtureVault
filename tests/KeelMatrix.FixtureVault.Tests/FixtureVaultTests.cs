@@ -835,6 +835,117 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
+    public void Adversarial_valid_ignored_path_patterns_do_not_fail_open()
+    {
+        using var repository = new TemporaryRepository();
+        string pattern = "tests/ignored/" + string.Concat(Enumerable.Repeat("*i", 30)) + "*n.received.json";
+        string relativePath = "tests/ignored/" + new string('i', 210) + "n.received.json";
+        Assert.True(GlobMatcher.TryCreate(pattern, out GlobMatcher? matcher));
+        Assert.Equal(GlobMatchStatus.Match, matcher!.Match(relativePath).Status);
+        repository.WritePolicy(policy => policy.IgnoredPaths = [pattern]);
+        repository.WriteText(relativePath, "received\n");
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.Report.Errors);
+        Assert.Equal(0, result.Report.FilesInspected);
+        Assert.DoesNotContain(result.Report.Findings, item => item.Path.Contains("ignored", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("*.golden", "result.golden", true)]
+    [InlineData("*.golden", "nested/result.golden", false)]
+    [InlineData("tests/*.golden", "tests/result.golden", true)]
+    [InlineData("tests/*.golden", "tests/nested/result.golden", false)]
+    [InlineData("tests/?.golden", "tests/a.golden", true)]
+    [InlineData("tests/?.golden", "tests/ab.golden", false)]
+    [InlineData("tests/*/result.golden", "tests/a/result.golden", true)]
+    [InlineData("tests/*/result.golden", "tests/a/b/result.golden", false)]
+    [InlineData("tests/**/result.golden", "tests/result.golden", true)]
+    [InlineData("tests/**/result.golden", "tests/a/b/result.golden", true)]
+    [InlineData("tests/**.golden", "tests/a/result.golden", true)]
+    [InlineData("tests/**", "tests", false)]
+    [InlineData("tests/**", "tests/", true)]
+    [InlineData("tests/**/", "tests/", true)]
+    [InlineData("tests/**/", "tests/a/", true)]
+    [InlineData("tests/**/", "tests/a", false)]
+    [InlineData("TESTS\\BIN\\**", "tests/bin/thing.golden", true)]
+    [InlineData("tests/bin/**", "TESTS\\BIN\\THING.GOLDEN", true)]
+    [InlineData("tests/bin/*", "tests/bin/a/b", false)]
+    [InlineData("tests/**/file?", "tests/a/file1", true)]
+    [InlineData("tests/**/file?", "tests/a/file12", false)]
+    [InlineData("**/bin/**", "bin/file", true)]
+    public void Ignored_globs_preserve_documented_matching_semantics(
+        string pattern,
+        string path,
+        bool expectedMatch)
+    {
+        Assert.True(GlobMatcher.TryCreate(pattern, out GlobMatcher? matcher));
+
+        GlobMatchResult result = matcher!.Match(path);
+
+        Assert.Equal(expectedMatch ? GlobMatchStatus.Match : GlobMatchStatus.NoMatch, result.Status);
+    }
+
+    [Theory]
+    [InlineData("/tests/**")]
+    [InlineData("../tests/**")]
+    [InlineData("..\\tests\\**")]
+    [InlineData("..")]
+    public void Ignored_glob_validation_rejects_rooted_and_parent_patterns(string pattern)
+    {
+        Assert.False(GlobMatcher.TryCreate(pattern, out _));
+    }
+
+    [Fact]
+    public void Malformed_ignored_glob_fails_with_fv_e007()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.IgnoredPaths = ["/tests/**"]);
+        repository.WriteText("tests/ignored.received.json", "received\n");
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.False(result.Completed);
+        Assert.Contains(result.Report.Errors, item => item.Code == "FV-E007");
+        Assert.Empty(result.Report.Findings);
+    }
+
+    [Fact]
+    public void Adversarial_glob_matching_reports_steps_within_its_deterministic_bound()
+    {
+        string pattern = "tests/ignored/" + string.Concat(Enumerable.Repeat("*i", 30)) + "*n.received.json";
+        string path = "tests/ignored/" + new string('i', 210) + "n.received.json";
+        Assert.True(GlobMatcher.TryCreate(pattern, out GlobMatcher? matcher));
+
+        GlobMatchResult result = matcher!.Match(path);
+
+        Assert.Equal(GlobMatchStatus.Match, result.Status);
+        Assert.InRange(result.Steps, 1, result.WorkBound);
+        Assert.Equal(
+            (2L * matcher.StateCount + matcher.TokenCount) * (path.Length + 1L),
+            result.WorkBound);
+    }
+
+    [Fact]
+    public void Ignore_matching_budget_exhaustion_fails_closed_before_inspection()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.IgnoredPaths = ["**"]);
+        repository.WriteText("tests/ignored.received.json", "received\n");
+
+        ScanResult result = repository.Scan(matcherBudget: new GlobMatchBudget(1));
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.False(result.Completed);
+        Assert.Contains(result.Report.Errors, item => item.Code == "FV-E013");
+        Assert.Empty(result.Report.Findings);
+        Assert.Equal(0, result.Report.FilesInspected);
+    }
+
+    [Fact]
     public void Large_ignored_directory_subtrees_are_pruned_without_weakening_entry_limit()
     {
         using var repository = new TemporaryRepository();
@@ -1241,7 +1352,9 @@ public sealed class FixtureVaultTests
             }
         }
 
-        internal ScanResult Scan(IReadOnlyList<string>? options = null)
+        internal ScanResult Scan(
+            IReadOnlyList<string>? options = null,
+            GlobMatchBudget? matcherBudget = null)
         {
             PolicyLoadResult policy = PolicyLoader.Load(Root);
             Assert.Null(policy.Error);
@@ -1254,7 +1367,12 @@ public sealed class FixtureVaultTests
                 }
             }
 
-            return FixtureScanner.Scan(Root, policy.Policy!, roots, strictOverride: options?.Contains("--strict") == true);
+            return FixtureScanner.Scan(
+                Root,
+                policy.Policy!,
+                roots,
+                strictOverride: options?.Contains("--strict") == true,
+                matcherBudget: matcherBudget);
         }
 
         internal int Run(

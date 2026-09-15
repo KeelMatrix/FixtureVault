@@ -12,6 +12,7 @@ internal static class FixtureVaultContract
     internal const string UnsupportedConventionDiagnosticValue = "unsupported";
     internal const string PolicyFileName = ".fixturevault.json";
     internal const string ManifestFileName = ".fixturevault.manifest.json";
+    internal const string IgnoredPathMatchingErrorCode = "FV-E013";
 
     internal static readonly JsonSerializerOptions JsonOptions = new()
     {
