@@ -19,11 +19,13 @@ internal sealed class FixtureScanner
         string repositoryRoot,
         FixtureVaultPolicy policy,
         IReadOnlyList<string> rootOverrides,
-        bool strictOverride)
+        bool strictOverride,
+        GlobMatchBudget? matcherBudget = null)
     {
         var findings = new List<Finding>();
         var skipped = new List<SkippedDiagnostic>();
         var errors = new List<ScanError>();
+        GlobMatchBudget ignoreBudget = matcherBudget ?? new GlobMatchBudget();
 
         var ignoredMatchers = new List<GlobMatcher>();
         foreach (string ignoredPath in policy.IgnoredPaths ?? [])
@@ -66,7 +68,7 @@ internal sealed class FixtureScanner
                 repositoryRoot,
                 root.FullPath,
                 failOnAccessErrors: true,
-                shouldPruneDirectory: relativePath => IsIgnoredDirectory(relativePath, ignoredMatchers));
+                shouldPruneDirectory: relativePath => IsIgnoredDirectory(relativePath, ignoredMatchers, ignoreBudget));
             AddReparseSkips(walk, skipped);
             if (walk.Error is not null)
             {
@@ -76,7 +78,16 @@ internal sealed class FixtureScanner
 
             foreach (SafeFileEntry file in walk.Files)
             {
-                if (IsIgnored(file.RelativePath, ignoredMatchers))
+                GlobMatchStatus ignoredStatus = IsIgnored(file.RelativePath, ignoredMatchers, ignoreBudget);
+                if (ignoredStatus == GlobMatchStatus.Failure)
+                {
+                    errors.Add(new ScanError(
+                        FixtureVaultContract.IgnoredPathMatchingErrorCode,
+                        "Ignored path matching could not be completed safely."));
+                    return CompleteWithErrors(errors, fixtureFiles.Count);
+                }
+
+                if (ignoredStatus == GlobMatchStatus.Match)
                 {
                     continue;
                 }
@@ -93,7 +104,7 @@ internal sealed class FixtureScanner
             }
         }
 
-        AddPathPolicyFindings(repositoryRoot, policy, activeRoots, ignoredMatchers, findings, skipped, errors);
+        AddPathPolicyFindings(repositoryRoot, policy, activeRoots, ignoredMatchers, ignoreBudget, findings, skipped, errors);
         if (errors.Count > 0)
         {
             return CompleteWithErrors(errors, fixtureFiles.Count);
@@ -205,6 +216,7 @@ internal sealed class FixtureScanner
         FixtureVaultPolicy policy,
         IReadOnlyList<ResolvedRoot> activeRoots,
         IReadOnlyList<GlobMatcher> ignoredMatchers,
+        GlobMatchBudget matcherBudget,
         ICollection<Finding> findings,
         ICollection<SkippedDiagnostic> skipped,
         List<ScanError> errors)
@@ -213,7 +225,7 @@ internal sealed class FixtureScanner
             repositoryRoot,
             repositoryRoot,
             failOnAccessErrors: false,
-            shouldPruneDirectory: relativePath => IsIgnoredDirectory(relativePath, ignoredMatchers));
+            shouldPruneDirectory: relativePath => IsIgnoredDirectory(relativePath, ignoredMatchers, matcherBudget));
         AddReparseSkips(walk, skipped);
         if (walk.Error is not null)
         {
@@ -223,7 +235,16 @@ internal sealed class FixtureScanner
 
         foreach (SafeFileEntry file in walk.Files)
         {
-            if (IsIgnored(file.RelativePath, ignoredMatchers) ||
+            GlobMatchStatus ignoredStatus = IsIgnored(file.RelativePath, ignoredMatchers, matcherBudget);
+            if (ignoredStatus == GlobMatchStatus.Failure)
+            {
+                errors.Add(new ScanError(
+                    FixtureVaultContract.IgnoredPathMatchingErrorCode,
+                    "Ignored path matching could not be completed safely."));
+                return;
+            }
+
+            if (ignoredStatus == GlobMatchStatus.Match ||
                 !IsFixtureCandidate(file.RelativePath, policy, insideActiveRoot: false) ||
                 activeRoots.Any(root => PathUtilities.IsWithin(root.FullPath, file.FullPath)))
             {
@@ -594,15 +615,33 @@ internal sealed class FixtureScanner
         return KnownBinaryExtensions.Contains(Path.GetExtension(relativePath), StringComparer.OrdinalIgnoreCase);
     }
 
-    private static bool IsIgnored(string relativePath, IReadOnlyList<GlobMatcher> matchers)
+    private static GlobMatchStatus IsIgnored(
+        string relativePath,
+        IReadOnlyList<GlobMatcher> matchers,
+        GlobMatchBudget matcherBudget)
     {
-        return matchers.Any(matcher => matcher.IsMatch(relativePath));
+        foreach (GlobMatcher matcher in matchers)
+        {
+            GlobMatchResult result = matcher.Match(relativePath, matcherBudget);
+            if (result.Status != GlobMatchStatus.NoMatch)
+            {
+                return result.Status;
+            }
+        }
+
+        return GlobMatchStatus.NoMatch;
     }
 
-    private static bool IsIgnoredDirectory(string relativePath, IReadOnlyList<GlobMatcher> matchers)
+    private static GlobMatchStatus IsIgnoredDirectory(
+        string relativePath,
+        IReadOnlyList<GlobMatcher> matchers,
+        GlobMatchBudget matcherBudget)
     {
         string directoryPath = relativePath.TrimEnd('/', '\\') + "/";
-        return IsIgnored(relativePath, matchers) || IsIgnored(directoryPath, matchers);
+        GlobMatchStatus status = IsIgnored(relativePath, matchers, matcherBudget);
+        return status == GlobMatchStatus.NoMatch
+            ? IsIgnored(directoryPath, matchers, matcherBudget)
+            : status;
     }
 
     private static void AddFinding(

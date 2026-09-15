@@ -11,6 +11,7 @@ internal static class FixtureVaultContract
     internal const string HighConfidenceSensitiveDataRule = "high-confidence";
     internal const string PolicyFileName = ".fixturevault.json";
     internal const string ManifestFileName = ".fixturevault.manifest.json";
+    internal const string IgnoredPathMatchingErrorCode = "FV-E013";
 
     internal static readonly JsonSerializerOptions JsonOptions = new()
     {
