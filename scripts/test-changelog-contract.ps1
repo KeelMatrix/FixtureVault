@@ -19,7 +19,11 @@ $ErrorActionPreference = "Stop"
 function Fail-Contract {
     param([string]$Message)
 
-    throw "Changelog/version contract failed: $Message"
+    $failure = "Changelog/version contract failed: $Message"
+    # Keep a single unwrapped diagnostic available to machine callers before the
+    # throw remains visible through the normal PowerShell error channel.
+    [Console]::Out.WriteLine($failure)
+    throw $failure
 }
 
 function Assert-Contract {

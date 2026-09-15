@@ -111,6 +111,51 @@ New-Item -ItemType Directory -Force -Path $fixtureRoot | Out-Null
 $fixtureChangelogPath = Join-Path $fixtureRoot "CHANGELOG.md"
 $today = [DateTime]::UtcNow.ToString("yyyy-MM-dd")
 
+# Keep child output on separate raw streams. PowerShell's 2>&1 conversion renders
+# ErrorRecords using the host width, which can split assertion fragments on CI.
+function Invoke-PwshScript {
+    param(
+        [Parameter(Mandatory = $true)][string]$ScriptPath,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$Arguments
+    )
+
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = "pwsh"
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    [void]$startInfo.ArgumentList.Add("-NoProfile")
+    [void]$startInfo.ArgumentList.Add("-File")
+    [void]$startInfo.ArgumentList.Add($ScriptPath)
+    foreach ($argument in $Arguments) {
+        [void]$startInfo.ArgumentList.Add($argument)
+    }
+
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) {
+            throw "Could not start PowerShell script '$ScriptPath'."
+        }
+
+        $standardOutputTask = $process.StandardOutput.ReadToEndAsync()
+        $standardErrorTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        $standardOutput = $standardOutputTask.GetAwaiter().GetResult()
+        $standardError = $standardErrorTask.GetAwaiter().GetResult()
+        [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            StandardOutput = $standardOutput
+            StandardError = $standardError
+            Output = $standardOutput + $standardError
+        }
+    }
+    finally {
+        $process.Dispose()
+    }
+}
+
 function Invoke-ChangelogContract {
     param(
         [string]$Content,
@@ -120,16 +165,13 @@ function Invoke-ChangelogContract {
     )
 
     [IO.File]::WriteAllText($fixtureChangelogPath, $Content, [Text.UTF8Encoding]::new($false))
-    $output = & pwsh -NoProfile -File $changelogScriptPath `
-        -ExpectedVersion $Version `
-        -ChangelogPath $fixtureChangelogPath `
-        -ExpectedPackageVersion $PackageVersion `
-        -ExpectedCommit $Commit `
-        -RepositoryRoot $repositoryRoot 2>&1
-    [pscustomobject]@{
-        ExitCode = $LASTEXITCODE
-        Output = ($output -join [Environment]::NewLine)
-    }
+    Invoke-PwshScript -ScriptPath $changelogScriptPath -Arguments @(
+        "-ExpectedVersion", $Version,
+        "-ChangelogPath", $fixtureChangelogPath,
+        "-ExpectedPackageVersion", $PackageVersion,
+        "-ExpectedCommit", $Commit,
+        "-RepositoryRoot", $repositoryRoot
+    )
 }
 
 function Assert-ChangelogCase {
@@ -156,15 +198,14 @@ try {
     $env:GITHUB_OUTPUT = ""
     foreach ($invalidTag in @("v0.1", "v0.1.1", "release-v0.1.0", "v0.1.0\n")) {
         $env:RELEASE_TAG = $invalidTag
-        $output = & pwsh -NoProfile -File $tagScriptPath 2>&1
-        $exitCode = $LASTEXITCODE
-        Assert-Contract ($exitCode -ne 0) "Release tag validator accepted invalid tag '$invalidTag'. Output: $($output -join [Environment]::NewLine)"
+        $tagResult = Invoke-PwshScript -ScriptPath $tagScriptPath -Arguments @()
+        Assert-Contract ($tagResult.ExitCode -ne 0) "Release tag validator accepted invalid tag '$invalidTag'. Output: $($tagResult.Output)"
     }
 
     $env:RELEASE_TAG = "v0.1.0"
-    $output = & pwsh -NoProfile -File $tagScriptPath 2>&1
-    Assert-Contract ($LASTEXITCODE -eq 0) "Release tag validator rejected v0.1.0."
-    Assert-Contract (($output -join [Environment]::NewLine).Contains("version=0.1.0", [StringComparison]::Ordinal)) "Release tag validator did not emit version 0.1.0."
+    $tagResult = Invoke-PwshScript -ScriptPath $tagScriptPath -Arguments @()
+    Assert-Contract ($tagResult.ExitCode -eq 0) "Release tag validator rejected v0.1.0."
+    Assert-Contract ($tagResult.StandardOutput.Contains("version=0.1.0", [StringComparison]::Ordinal)) "Release tag validator did not emit version 0.1.0."
 
     $planned = Invoke-ChangelogContract @"
 # Changelog
@@ -506,10 +547,10 @@ $($headingCase.Body)
 "@
         Write-Host "Changelog case '$($invalidSemVerHeadingCase.Name)': expected fail, exit code $($invalidSemVer.ExitCode)."
         Assert-Contract ($invalidSemVer.ExitCode -ne 0) "Changelog case '$($invalidSemVerHeadingCase.Name)' unexpectedly passed."
-        Assert-Contract ($invalidSemVer.Output.Contains("Release heading", [StringComparison]::Ordinal) -and
-            $invalidSemVer.Output.Contains($invalidSemVerHeadingCase.Version, [StringComparison]::Ordinal) -and
-            $invalidSemVer.Output.Contains("invalid SemVer", [StringComparison]::Ordinal) -and
-            $invalidSemVer.Output.Contains($invalidSemVerHeadingCase.ReasonFragment, [StringComparison]::Ordinal)) "Changelog case '$($invalidSemVerHeadingCase.Name)' did not report the malformed heading and reason: $($invalidSemVer.Output)"
+        Assert-Contract ($invalidSemVer.StandardOutput.Contains("Changelog/version contract failed: Release heading", [StringComparison]::Ordinal) -and
+            $invalidSemVer.StandardOutput.Contains($invalidSemVerHeadingCase.Version, [StringComparison]::Ordinal) -and
+            $invalidSemVer.StandardOutput.Contains("invalid SemVer", [StringComparison]::Ordinal) -and
+            $invalidSemVer.StandardOutput.Contains($invalidSemVerHeadingCase.ReasonFragment, [StringComparison]::Ordinal)) "Changelog case '$($invalidSemVerHeadingCase.Name)' did not report the malformed heading and reason on the stable output channel: $($invalidSemVer.Output)"
     }
 
     Assert-ChangelogCase -Name "valid prerelease release heading parses" -ShouldPass -Content @"
@@ -560,10 +601,10 @@ $($headingCase.Body)
 "@
     Write-Host "Changelog case 'target section token budget rejects over-budget input': expected fail, exit code $($budgetCase.ExitCode)."
     Assert-Contract ($budgetCase.ExitCode -ne 0 -and
-        $budgetCase.Output.Contains("normalized tokens", [StringComparison]::Ordinal) -and
-        $budgetCase.Output.Contains("fixed", [StringComparison]::Ordinal) -and
-        $budgetCase.Output.Contains("200000", [StringComparison]::Ordinal) -and
-        $budgetCase.Output.Contains("200008", [StringComparison]::Ordinal)) "The target section token budget case did not fail with the expected budget and observed count: $($budgetCase.Output)"
+        $budgetCase.StandardOutput.Contains("normalized tokens", [StringComparison]::Ordinal) -and
+        $budgetCase.StandardOutput.Contains("fixed", [StringComparison]::Ordinal) -and
+        $budgetCase.StandardOutput.Contains("200000", [StringComparison]::Ordinal) -and
+        $budgetCase.StandardOutput.Contains("200008", [StringComparison]::Ordinal)) "The target section token budget case did not fail with the expected budget and observed count on the stable output channel: $($budgetCase.Output)"
 
     $readmePath = Join-Path $repositoryRoot "README.md"
     $originalReadme = [IO.File]::ReadAllText($readmePath)
@@ -697,8 +738,15 @@ dotnet tool install --global KeelMatrix.FixtureVault --version 0.2.0
         ChangelogPath = $trackedChangelogPath
         RepositoryRoot = $repositoryRoot
     }
-    $realChangelogOutput = & pwsh -NoProfile -File $changelogScriptPath @realContractParameters 2>&1
-    $realChangelogExitCode = $LASTEXITCODE
+    $realChangelogResult = Invoke-PwshScript -ScriptPath $changelogScriptPath -Arguments @(
+        "-ExpectedVersion", $realContractParameters.ExpectedVersion,
+        "-ExpectedPackageVersion", $realContractParameters.ExpectedPackageVersion,
+        "-ExpectedCommit", $realContractParameters.ExpectedCommit,
+        "-ChangelogPath", $realContractParameters.ChangelogPath,
+        "-RepositoryRoot", $realContractParameters.RepositoryRoot
+    )
+    $realChangelogOutput = $realChangelogResult.Output
+    $realChangelogExitCode = $realChangelogResult.ExitCode
     $realChangelogText = [IO.File]::ReadAllText($trackedChangelogPath)
     $realChangelogIsPlanned = $realChangelogText -match '(?im)^##[ \t]+\[0\.1\.0\][^\r\n]*(?:planned|not[ \t-]+yet[ \t-]+published)'
     if ($realChangelogIsPlanned) {
@@ -739,12 +787,13 @@ dotnet tool install --global KeelMatrix.FixtureVault --version 0.2.0
     $originalChangelog = [IO.File]::ReadAllText($trackedChangelogPath)
     try {
         [IO.File]::WriteAllText($trackedChangelogPath, $originalChangelog + "`n", [Text.UTF8Encoding]::new($false))
-        $trackedMismatch = & pwsh -NoProfile -File $changelogScriptPath `
-            -ExpectedVersion "0.1.0" `
-            -ExpectedPackageVersion "0.1.0" `
-            -ExpectedCommit $script:RepositoryCommit `
-            -RepositoryRoot $repositoryRoot 2>&1
-        Assert-Contract ($LASTEXITCODE -ne 0) "A tracked changelog modified after the checked-out commit passed the publication gate."
+        $trackedMismatch = Invoke-PwshScript -ScriptPath $changelogScriptPath -Arguments @(
+            "-ExpectedVersion", "0.1.0",
+            "-ExpectedPackageVersion", "0.1.0",
+            "-ExpectedCommit", $script:RepositoryCommit,
+            "-RepositoryRoot", $repositoryRoot
+        )
+        Assert-Contract ($trackedMismatch.ExitCode -ne 0) "A tracked changelog modified after the checked-out commit passed the publication gate."
     }
     finally {
         [IO.File]::WriteAllText($trackedChangelogPath, $originalChangelog, [Text.UTF8Encoding]::new($false))
