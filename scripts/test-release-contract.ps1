@@ -480,6 +480,89 @@ $($headingCase.Body)
 - The scanner now supports the updated release behavior.
 "@
 
+    $invalidSemVerHeadingCases = @(
+        [pscustomobject]@{ Name = "invalid lower release rejects leading-zero patch"; Version = "0.0.09"; ReasonFragment = "leading zero" },
+        [pscustomobject]@{ Name = "invalid lower release rejects leading-zero major"; Version = "00.0.9"; ReasonFragment = "leading zero" },
+        [pscustomobject]@{ Name = "invalid lower release rejects leading-zero minor"; Version = "0.00.9"; ReasonFragment = "leading zero" },
+        [pscustomobject]@{ Name = "invalid lower release rejects leading-zero numeric prerelease"; Version = "0.0.9-01"; ReasonFragment = "numeric pre-release" }
+    )
+    foreach ($invalidSemVerHeadingCase in $invalidSemVerHeadingCases) {
+        $invalidSemVer = Invoke-ChangelogContract @"
+# Changelog
+
+## [$($invalidSemVerHeadingCase.Version)] - $today
+
+### Added
+
+- Malformed lower-looking release.
+
+## [0.1.0] - $today
+
+### Changed
+
+- This transition section must be rejected.
+"@
+        Write-Host "Changelog case '$($invalidSemVerHeadingCase.Name)': expected fail, exit code $($invalidSemVer.ExitCode)."
+        Assert-Contract ($invalidSemVer.ExitCode -ne 0) "Changelog case '$($invalidSemVerHeadingCase.Name)' unexpectedly passed."
+        Assert-Contract ($invalidSemVer.Output.Contains("Release heading", [StringComparison]::Ordinal) -and
+            $invalidSemVer.Output.Contains($invalidSemVerHeadingCase.Version, [StringComparison]::Ordinal) -and
+            $invalidSemVer.Output.Contains("invalid SemVer", [StringComparison]::Ordinal) -and
+            $invalidSemVer.Output.Contains($invalidSemVerHeadingCase.ReasonFragment, [StringComparison]::Ordinal)) "Changelog case '$($invalidSemVerHeadingCase.Name)' did not report the malformed heading and reason: $($invalidSemVer.Output)"
+    }
+
+    Assert-ChangelogCase -Name "valid prerelease release heading parses" -ShouldPass -Content @"
+# Changelog
+
+## [0.1.0-rc.1] - $today
+
+### Added
+
+- Provides the prerelease capability.
+
+## [0.1.0] - $today
+
+### Changed
+
+- The scanner now supports the stable release behavior.
+"@
+
+    $benchmarkTokenCount = 100000
+    $benchmarkBody = ("benign " * $benchmarkTokenCount) -join ""
+    $benchmarkContent = @"
+# Changelog
+
+## [0.1.0] - $today
+
+### Added
+
+- $benchmarkBody
+"@
+    $benchmarkTimer = [Diagnostics.Stopwatch]::StartNew()
+    $benchmark = Invoke-ChangelogContract $benchmarkContent
+    $benchmarkTimer.Stop()
+    $benchmarkNormalizedTokenCount = $benchmarkTokenCount + 7
+    Assert-Contract ($benchmark.ExitCode -eq 0) "The 100,000-token boundedness benchmark failed: $($benchmark.Output)"
+    $benchmarkSeconds = $benchmarkTimer.Elapsed.TotalSeconds.ToString("F3", [Globalization.CultureInfo]::InvariantCulture)
+    Write-Host "Boundedness benchmark: $benchmarkNormalizedTokenCount normalized target-section tokens; command: pwsh -NoProfile -File ./scripts/test-release-contract.ps1; validator elapsed seconds: $benchmarkSeconds."
+
+    $budgetTokenCount = 200001
+    $budgetBody = ("benign " * $budgetTokenCount) -join ""
+    $budgetCase = Invoke-ChangelogContract @"
+# Changelog
+
+## [0.1.0] - $today
+
+### Added
+
+- $budgetBody
+"@
+    Write-Host "Changelog case 'target section token budget rejects over-budget input': expected fail, exit code $($budgetCase.ExitCode)."
+    Assert-Contract ($budgetCase.ExitCode -ne 0 -and
+        $budgetCase.Output.Contains("normalized tokens", [StringComparison]::Ordinal) -and
+        $budgetCase.Output.Contains("fixed", [StringComparison]::Ordinal) -and
+        $budgetCase.Output.Contains("200000", [StringComparison]::Ordinal) -and
+        $budgetCase.Output.Contains("200008", [StringComparison]::Ordinal)) "The target section token budget case did not fail with the expected budget and observed count: $($budgetCase.Output)"
+
     $readmePath = Join-Path $repositoryRoot "README.md"
     $originalReadme = [IO.File]::ReadAllText($readmePath)
     try {

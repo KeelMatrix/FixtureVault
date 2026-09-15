@@ -121,7 +121,10 @@ $changelog = [IO.File]::ReadAllText($resolvedChangelogPath)
 $headingMatches = [Text.RegularExpressions.Regex]::Matches(
     $changelog,
     '(?m)^(?<level>#{1,6})[ \t]+(?<title>[^\r\n]+?)[ \t]*\r?$')
-$releaseHeadingPattern = '^[ ]*\[?(?<version>\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\]?(?:[ \t]+-[ \t]+(?<suffix>.*?))?[ \t]*$'
+# Recognize version-shaped headings broadly enough to reject malformed SemVer
+# instead of silently treating them as ordinary headings. Strict validity is
+# checked by ConvertTo-SemanticVersion below.
+$releaseHeadingPattern = '^[ ]*\[?(?<version>\d(?=[^\]\r\n \t]*\.[^\]\r\n \t]*\.)[^\]\r\n \t]*)\]?(?:[ \t]+-[ \t]+(?<suffix>.*?))?[ \t]*$'
 $headingStack = [Collections.Generic.List[object]]::new()
 $headings = @(
     foreach ($headingMatch in $headingMatches) {
@@ -175,12 +178,23 @@ function Normalize-ChangelogText {
 }
 
 function Get-NormalizedTokens {
-    param([AllowEmptyString()][string]$NormalizedText)
+    param([AllowEmptyString()][string]$Text)
 
-    return @(
-        [Text.RegularExpressions.Regex]::Matches($NormalizedText, '[\p{L}\p{N}]+') |
-            ForEach-Object { $_.Value }
-    )
+    if ([string]::IsNullOrEmpty($Text)) {
+        return @()
+    }
+
+    $tokens = [Collections.Generic.List[string]]::new()
+    $tokenMatches = [Text.RegularExpressions.Regex]::Matches(
+        $Text,
+        '[\p{L}\p{N}]+',
+        ([Text.RegularExpressions.RegexOptions]::CultureInvariant -bor
+            [Text.RegularExpressions.RegexOptions]::NonBacktracking))
+    foreach ($tokenMatch in $tokenMatches) {
+        [void]$tokens.Add($tokenMatch.Value.ToLowerInvariant())
+    }
+
+    return $tokens.ToArray()
 }
 
 function Test-TokenSequence {
@@ -225,7 +239,10 @@ function Test-AsciiDigits {
 }
 
 function Test-SemanticIdentifiers {
-    param([Parameter(Mandatory = $true)][string]$Value)
+    param(
+        [Parameter(Mandatory = $true)][string]$Value,
+        [switch]$RejectNumericLeadingZero
+    )
 
     foreach ($identifier in @($Value.Split('.'))) {
         if ($identifier.Length -eq 0) {
@@ -241,26 +258,109 @@ function Test-SemanticIdentifiers {
                 return $false
             }
         }
+
+        if ($RejectNumericLeadingZero -and
+            (Test-AsciiDigits $identifier) -and
+            $identifier.Length -gt 1 -and
+            $identifier[0] -eq '0') {
+            return $false
+        }
     }
 
     return $true
 }
 
+function Get-SemanticVersionFailureReason {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    if ($Value -ne $Value.Trim()) {
+        return "leading or trailing whitespace is not allowed"
+    }
+
+    $trimmedValue = $Value.Trim()
+    if ($trimmedValue.Length -eq 0) {
+        return "the version is empty"
+    }
+
+    $buildSeparator = $trimmedValue.IndexOf('+')
+    if ($buildSeparator -ge 0) {
+        if ($trimmedValue.IndexOf('+', $buildSeparator + 1) -ge 0) {
+            return "the version contains more than one build-metadata separator"
+        }
+        if ($buildSeparator -eq $trimmedValue.Length - 1) {
+            return "build metadata must contain at least one identifier"
+        }
+
+        if (-not (Test-SemanticIdentifiers $trimmedValue.Substring($buildSeparator + 1))) {
+            return "build metadata contains an empty or invalid identifier"
+        }
+    }
+
+    $withoutBuild = if ($buildSeparator -ge 0) {
+        $trimmedValue.Substring(0, $buildSeparator)
+    }
+    else {
+        $trimmedValue
+    }
+    $preReleaseSeparator = $withoutBuild.IndexOf('-')
+    $coreText = if ($preReleaseSeparator -ge 0) {
+        $withoutBuild.Substring(0, $preReleaseSeparator)
+    }
+    else {
+        $withoutBuild
+    }
+    $coreParts = @($coreText.Split('.'))
+    if ($coreParts.Count -ne 3) {
+        return "the version core must contain exactly three dot-separated numeric components"
+    }
+
+    $componentNames = @('major', 'minor', 'patch')
+    for ($index = 0; $index -lt $coreParts.Count; $index++) {
+        $component = $coreParts[$index]
+        if (-not (Test-AsciiDigits $component)) {
+            return "$($componentNames[$index]) must contain only ASCII digits"
+        }
+        if ($component.Length -gt 1 -and $component[0] -eq '0') {
+            return "$($componentNames[$index]) must not have a leading zero"
+        }
+    }
+
+    if ($preReleaseSeparator -ge 0) {
+        $preReleaseText = $withoutBuild.Substring($preReleaseSeparator + 1)
+        if ($preReleaseText.Length -eq 0) {
+            return "pre-release metadata must contain at least one identifier"
+        }
+        if (-not (Test-SemanticIdentifiers $preReleaseText -RejectNumericLeadingZero)) {
+            foreach ($identifier in @($preReleaseText.Split('.'))) {
+                if ($identifier.Length -eq 0) {
+                    return "pre-release metadata contains an empty identifier"
+                }
+                if ((Test-AsciiDigits $identifier) -and
+                    $identifier.Length -gt 1 -and
+                    $identifier[0] -eq '0') {
+                    return "numeric pre-release identifiers must not have a leading zero"
+                }
+            }
+            return "pre-release metadata contains an invalid identifier"
+        }
+    }
+
+    return $null
+}
+
 function ConvertTo-SemanticVersion {
     param([Parameter(Mandatory = $true)][string]$Value)
+
+    $failureReason = Get-SemanticVersionFailureReason $Value
+    if ($null -ne $failureReason) {
+        return $null
+    }
 
     $trimmedValue = $Value.Trim()
     $buildSeparator = $trimmedValue.IndexOf('+')
     $withoutBuild = $trimmedValue
     if ($buildSeparator -ge 0) {
-        if ($trimmedValue.IndexOf('+', $buildSeparator + 1) -ge 0 -or $buildSeparator -eq $trimmedValue.Length - 1) {
-            return $null
-        }
-
         $withoutBuild = $trimmedValue.Substring(0, $buildSeparator)
-        if (-not (Test-SemanticIdentifiers $trimmedValue.Substring($buildSeparator + 1))) {
-            return $null
-        }
     }
 
     $preReleaseSeparator = $withoutBuild.IndexOf('-')
@@ -271,17 +371,9 @@ function ConvertTo-SemanticVersion {
         $withoutBuild
     }
     $coreParts = @($coreText.Split('.'))
-    if ($coreParts.Count -ne 3 -or @($coreParts | Where-Object { -not (Test-AsciiDigits $_) }).Count -gt 0) {
-        return $null
-    }
-
     $preRelease = @()
     if ($preReleaseSeparator -ge 0) {
         $preReleaseText = $withoutBuild.Substring($preReleaseSeparator + 1)
-        if (-not (Test-SemanticIdentifiers $preReleaseText)) {
-            return $null
-        }
-
         $preRelease = @($preReleaseText.Split('.'))
     }
 
@@ -345,14 +437,19 @@ function Compare-SemanticVersions {
     return $leftPreRelease.Count.CompareTo($rightPreRelease.Count)
 }
 
+foreach ($releaseHeading in @($headings | Where-Object { $null -ne $_.ReleaseVersion })) {
+    $failureReason = Get-SemanticVersionFailureReason $releaseHeading.ReleaseVersion
+    Assert-Contract ($null -eq $failureReason) "Release heading '$($releaseHeading.Title)' has invalid SemVer '$($releaseHeading.ReleaseVersion)': $failureReason."
+    $releaseHeading | Add-Member -NotePropertyName SemanticVersion -NotePropertyValue (ConvertTo-SemanticVersion $releaseHeading.ReleaseVersion)
+}
+
 function Find-FirstReleaseBannedWording {
     param(
         [Parameter(Mandatory = $true)]
-        [AllowEmptyString()]
-        [string]$Text
+        [AllowEmptyCollection()]
+        [string[]]$Tokens
     )
 
-    $tokens = @(Get-NormalizedTokens (Normalize-ChangelogText $Text))
     $bannedWordings = @(
         'now', 'no longer', 'previously', 'formerly', 'used to',
         'fixed', 'fixes', 'corrected', 'resolved', 'addressed',
@@ -360,19 +457,26 @@ function Find-FirstReleaseBannedWording {
     ) | ForEach-Object {
         [pscustomobject]@{
             Phrase = $_
-            Tokens = @(Get-NormalizedTokens (Normalize-ChangelogText $_))
+            Tokens = @(Get-NormalizedTokens $_)
         }
     }
 
-    # The wording list is fixed and small; each token position is visited once
-    # for a bounded number of normalized token sequences.
-    for ($index = 0; $index -lt $tokens.Count; $index++) {
-        foreach ($bannedWording in $bannedWordings) {
-            if ($tokens[$index] -cne $bannedWording.Tokens[0]) {
-                continue
-            }
+    $wordingsByFirstToken = @{}
+    foreach ($bannedWording in $bannedWordings) {
+        $firstToken = $bannedWording.Tokens[0]
+        if (-not $wordingsByFirstToken.ContainsKey($firstToken)) {
+            $wordingsByFirstToken[$firstToken] = [Collections.Generic.List[object]]::new()
+        }
+        [void]$wordingsByFirstToken[$firstToken].Add($bannedWording)
+    }
 
-            if (Test-TokenSequence -Tokens $tokens -MarkerTokens $bannedWording.Tokens -StartIndex $index) {
+    # Index by the first token so each token position is visited once and only
+    # candidate phrases are compared. This keeps the scan linear with a small,
+    # fixed constant independent of the section size.
+    for ($index = 0; $index -lt $Tokens.Count; $index++) {
+        $candidateWordings = $wordingsByFirstToken[$Tokens[$index]]
+        foreach ($bannedWording in $candidateWordings) {
+            if (Test-TokenSequence -Tokens $Tokens -MarkerTokens $bannedWording.Tokens -StartIndex $index) {
                 return $bannedWording.Phrase
             }
         }
@@ -384,16 +488,14 @@ function Find-FirstReleaseBannedWording {
 function Test-PreReleaseMarkerScan {
     param(
         [Parameter(Mandatory = $true)]
-        [AllowEmptyString()]
-        [string]$Text,
+        [AllowEmptyCollection()]
+        [string[]]$Tokens,
 
         [Parameter(Mandatory = $true)]
         [object[]]$MarkerDefinitions
     )
 
-    $normalizedText = Normalize-ChangelogText $Text
-    $tokens = @(Get-NormalizedTokens $normalizedText)
-    if ($tokens.Count -eq 0) {
+    if ($Tokens.Count -eq 0) {
         return $false
     }
 
@@ -403,30 +505,46 @@ function Test-PreReleaseMarkerScan {
         'shipping', 'launch', 'launched', 'launching', 'status', 'state'
     )
 
+    $markersByFirstToken = @{}
     foreach ($marker in $MarkerDefinitions) {
-        $markerTokens = @(Get-NormalizedTokens (Normalize-ChangelogText $marker.Phrase))
-        if ($markerTokens.Count -eq 0) {
+        if ($marker.Tokens.Count -eq 0) {
             continue
         }
+        $firstToken = $marker.Tokens[0]
+        if (-not $markersByFirstToken.ContainsKey($firstToken)) {
+            $markersByFirstToken[$firstToken] = [Collections.Generic.List[object]]::new()
+        }
+        [void]$markersByFirstToken[$firstToken].Add($marker)
+    }
 
-        for ($index = 0; $index -le $tokens.Count - $markerTokens.Count; $index++) {
-            if (-not (Test-TokenSequence -Tokens $tokens -MarkerTokens $markerTokens -StartIndex $index)) {
+    # Index by the first token so the marker definitions do not each rescan the
+    # entire section. The tokenization itself is a simple linear character-class
+    # match; no backtracking expression is applied to the section text.
+    for ($index = 0; $index -lt $Tokens.Count; $index++) {
+        $candidateMarkers = $markersByFirstToken[$Tokens[$index]]
+        foreach ($marker in $candidateMarkers) {
+            $markerTokens = $marker.Tokens
+            if (-not (Test-TokenSequence -Tokens $Tokens -MarkerTokens $markerTokens -StartIndex $index)) {
                 continue
             }
 
             $windowStart = [Math]::Max(0, $index - 4)
-            $windowEnd = [Math]::Min($tokens.Count - 1, $index + $markerTokens.Count + 3)
-            $contextWindow = @($tokens[$windowStart..$windowEnd])
-            $hasReleaseContext = @($contextWindow | Where-Object {
-                    $releaseContextTokens -contains $_ -and
-                    $_ -notin $markerTokens
-                }).Count -gt 0
+            $windowEnd = [Math]::Min($Tokens.Count - 1, $index + $markerTokens.Count + 3)
+            $hasReleaseContext = $false
+            for ($contextIndex = $windowStart; $contextIndex -le $windowEnd; $contextIndex++) {
+                $contextToken = $Tokens[$contextIndex]
+                if ($releaseContextTokens -contains $contextToken -and
+                    $markerTokens -notcontains $contextToken) {
+                    $hasReleaseContext = $true
+                    break
+                }
+            }
 
             # "Draft API type" is ordinary changelog prose, not a release state.
             # Keep this exclusion narrow: a nearby release/status word still wins.
             $isDraftApiProse = $marker.Phrase -eq 'draft' -and
-                $index + $markerTokens.Count -lt $tokens.Count -and
-                $tokens[$index + $markerTokens.Count] -eq 'api' -and
+                $index + $markerTokens.Count -lt $Tokens.Count -and
+                $Tokens[$index + $markerTokens.Count] -eq 'api' -and
                 -not $hasReleaseContext
             if ($isDraftApiProse) {
                 continue
@@ -436,7 +554,7 @@ function Test-PreReleaseMarkerScan {
                 return $true
             }
 
-            $isStandaloneStatus = $index + $markerTokens.Count -eq $tokens.Count
+            $isStandaloneStatus = $index + $markerTokens.Count -eq $Tokens.Count
             if ($hasReleaseContext -or $isStandaloneStatus) {
                 return $true
             }
@@ -468,6 +586,14 @@ $preReleaseMarkerDefinitions = @(
     [pscustomobject]@{ Phrase = 'work in progress'; RequiresReleaseContext = $true },
     [pscustomobject]@{ Phrase = 'coming soon'; RequiresReleaseContext = $true }
 )
+foreach ($marker in $preReleaseMarkerDefinitions) {
+    $marker | Add-Member -NotePropertyName Tokens -NotePropertyValue @(Get-NormalizedTokens $marker.Phrase)
+}
+
+# Fixed normalized-token budget for the target release section. This is a
+# deterministic resource bound, not a wall-clock timeout; 200,000 tokens is
+# large enough for ordinary release notes while bounding adversarial input.
+$targetSectionTokenBudget = 200000
 
 $nextSectionHeading = @($headings |
     Where-Object { $_.Index -gt $targetHeading.Index -and $_.Level -le $targetHeading.Level } |
@@ -480,15 +606,17 @@ else {
     $changelog.Length
 }
 $targetSection = $changelog.Substring($targetHeading.Index, $sectionEndIndex - $targetHeading.Index)
+$targetSectionTokens = @(Get-NormalizedTokens $targetSection)
+Assert-Contract ($targetSectionTokens.Count -le $targetSectionTokenBudget) "Target release section has $($targetSectionTokens.Count) normalized tokens, exceeding the fixed budget of $targetSectionTokenBudget."
 Assert-Contract (-not (Test-PreReleaseMarkerScan `
-        -Text $targetSection `
+        -Tokens $targetSectionTokens `
         -MarkerDefinitions $preReleaseMarkerDefinitions)) "Release section for '$ExpectedVersion' is still marked as planned or unpublished."
 
-$targetSemanticVersion = ConvertTo-SemanticVersion $targetHeading.ReleaseVersion
+$targetSemanticVersion = $targetHeading.SemanticVersion
 Assert-Contract ($null -ne $targetSemanticVersion) "Release heading version '$($targetHeading.ReleaseVersion)' is not a valid semantic version."
 $hasLowerRelease = $false
 foreach ($releaseHeading in @($headings | Where-Object { $null -ne $_.ReleaseVersion })) {
-    $releaseSemanticVersion = ConvertTo-SemanticVersion $releaseHeading.ReleaseVersion
+    $releaseSemanticVersion = $releaseHeading.SemanticVersion
     if ($null -ne $releaseSemanticVersion -and
         (Compare-SemanticVersions -Left $releaseSemanticVersion -Right $targetSemanticVersion) -lt 0) {
         $hasLowerRelease = $true
@@ -509,7 +637,7 @@ if (-not $hasLowerRelease) {
 
     Assert-Contract ($addedHeadingCount -gt 0) "First release '$ExpectedVersion' must contain a non-empty Added section."
 
-    $bannedWording = Find-FirstReleaseBannedWording $targetSection
+    $bannedWording = Find-FirstReleaseBannedWording $targetSectionTokens
     Assert-Contract ($null -eq $bannedWording) "First release '$ExpectedVersion' contains unpublished transition/remediation wording '$bannedWording'."
 }
 
@@ -541,8 +669,9 @@ function Get-HeadingDirectScope {
 
 foreach ($ancestor in @($targetHeading.Ancestors)) {
     $ancestorScope = Get-HeadingDirectScope -Heading $ancestor -AllHeadings $headings -Document $changelog
+    $ancestorTokens = @(Get-NormalizedTokens $ancestorScope)
     Assert-Contract (-not (Test-PreReleaseMarkerScan `
-            -Text $ancestorScope `
+            -Tokens $ancestorTokens `
             -MarkerDefinitions $preReleaseMarkerDefinitions)) "Release version '$ExpectedVersion' is nested inside a pre-release section."
 }
 
