@@ -35,6 +35,10 @@ internal static class PolicyLoader
 
             return new PolicyLoadResult(policy, null);
         }
+        catch (JsonException ex) when (string.Equals(ex.Path, "$.ci.strict", StringComparison.Ordinal))
+        {
+            return InvalidPolicy(InvalidCiStrictMessage);
+        }
         catch (JsonException)
         {
             return InvalidPolicy();
@@ -61,8 +65,20 @@ internal static class PolicyLoader
             policy.Conventions is null || policy.Conventions.Count == 0 || policy.Conventions.Count > 32 ||
             policy.SensitiveDataRules is null || policy.SensitiveDataRules.Count == 0 || policy.SensitiveDataRules.Count > 32 ||
             policy.IgnoredPaths is null || policy.IgnoredPaths.Count > 256 ||
-            policy.Ci is null || policy.MaxFileBytes < 1 || policy.MaxFileBytes > 64 * 1024 * 1024)
+            policy.MaxFileBytes < 1 || policy.MaxFileBytes > 64 * 1024 * 1024)
         {
+            return false;
+        }
+
+        if (policy.Ci is null)
+        {
+            validationError = InvalidCiStrictMessage;
+            return false;
+        }
+
+        if (policy.Ci.Strict is null)
+        {
+            validationError = InvalidCiStrictMessage;
             return false;
         }
 
@@ -108,6 +124,8 @@ internal static class PolicyLoader
                 ? $"{FixtureVaultContract.PolicyFileName} is malformed or uses an unsupported schema."
                 : $"{FixtureVaultContract.PolicyFileName} is invalid: {validationError}"));
     }
+
+    private const string InvalidCiStrictMessage = "ci.strict is required and must be a JSON boolean.";
 }
 
 internal static class PolicyWriter

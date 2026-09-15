@@ -70,7 +70,7 @@ internal sealed class FixtureVaultPolicy
 internal sealed class CiPolicy
 {
     [JsonPropertyName("strict")]
-    public bool Strict { get; set; }
+    public bool? Strict { get; set; }
 }
 
 // Diagnostics are a safe-rendering boundary: never include raw untrusted CLI

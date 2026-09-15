@@ -75,7 +75,7 @@ Candidates are files matching an allowed fixture extension or a supported fixtur
 
 The v1 `sensitiveDataRules` policy supports only `high-confidence` (case-insensitive), which is also the default. An unknown value is invalid configuration and returns exit code `2`; it never disables sensitive-data detection silently.
 
-When `ci.strict` is `true`, findings block the scan with exit code `1`. When it is `false`, findings are reported as warnings and the scan exits `0`; configuration and execution errors always exit `2`. `--strict` is a convenience override that turns strict behavior on for the current scan.
+`ci.strict` is required and must be a JSON boolean. It has no implicit default: omitting it, misspelling it, or changing its casing is a configuration error (`FV-E005`) and exits `2`. When `ci.strict` is `true`, findings block the scan with exit code `1`. When it is explicitly `false`, findings are reported as warnings and the scan exits `0`; configuration and execution errors always exit `2`. `--strict` is a convenience override that turns strict behavior on for the current scan.
 
 ## Supported Conventions
 
@@ -175,7 +175,7 @@ Malformed `.fixturevault.json`, a missing configured root, an unsafe root path, 
 ## Troubleshooting
 
 - **Missing policy:** `FV-E001` means `.fixturevault.json` is absent. Run `fixturevault init`, or create the policy file manually using the documented schema.
-- **Malformed policy:** `FV-E005` means the policy is invalid, too large, or uses an unsupported schema. Check `version`, required arrays, extensions, roots, `sensitiveDataRules` (`high-confidence` is the only v1 value), and `ci.strict`.
+- **Malformed policy:** `FV-E005` means the policy is invalid, too large, or uses an unsupported schema. Check `version`, required arrays, extensions, roots, `sensitiveDataRules` (`high-confidence` is the only v1 value), and the required `ci.strict` JSON boolean. Omitting, misspelling, or changing the casing of `ci.strict` is a configuration error, not a non-strict default.
 - **Missing or unsafe root:** `FV-E008` means a configured root does not exist, is not a directory, is outside the repository, or is a link. Use repository-relative directories that exist and do not traverse outside the repository.
 - **Required manifest:** with the `fixturevault-manifest` convention enabled, a missing manifest returns `FV-E012` and a malformed or unsafe manifest returns `FV-E011`; create `.fixturevault.manifest.json` with explicit `activeBaselines`, or remove that convention when no manifest is maintained.
 - **Unsupported or skipped checks:** unknown convention hints appear as `FV-SKIP-CONVENTION`. Orphan checks for Verify, Snapshooter, and generic files appear as `FV-SKIP-ORPHAN` because no relationship was proved. Reparse points appear as `FV-SKIP-REPARSE`; their targets are not read.
