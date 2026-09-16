@@ -22,6 +22,7 @@ internal static class FixtureVaultContract
     internal const string UninspectableContentErrorMessage = "Content inspection could not be completed because no encoding suitable for inspection could be established.";
     internal const string UninspectableContentSkippedCode = "FV-SKIP-ENCODING";
     internal const string UninspectableContentSkippedReason = "Content-dependent checks, including sensitive-data detection, did not run for this fixture because no encoding suitable for content inspection could be established.";
+    internal const string UnprovenTextEncodingSkippedReason = "Content-dependent checks, including sensitive-data detection, did not run for this fixture because its bytes contain NUL characters and declare no byte-order mark, so no text encoding is proven and undeclared encodings are never inferred.";
 
     internal static readonly JsonSerializerOptions JsonOptions = new()
     {

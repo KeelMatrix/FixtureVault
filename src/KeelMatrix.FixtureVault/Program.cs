@@ -190,9 +190,12 @@ internal static class FixtureVaultApplication
     {
         foreach (SkippedDiagnostic diagnostic in skipped)
         {
-            writer.WriteLine(diagnostic.Path is null
-                ? $"{diagnostic.Code}: {diagnostic.Reason}"
-                : $"{diagnostic.Code} {diagnostic.Path}: {diagnostic.Reason}");
+            writer.WriteLine(diagnostic switch
+            {
+                { Path: not null } => $"{diagnostic.Code} {diagnostic.Path}: {diagnostic.Reason}",
+                { Convention: not null } => $"{diagnostic.Code} {diagnostic.Convention}: {diagnostic.Reason}",
+                _ => $"{diagnostic.Code}: {diagnostic.Reason}"
+            });
         }
 
         writer.WriteLine($"{skipped.Count} check(s) skipped conservatively.");

@@ -32,6 +32,9 @@ internal sealed class FixtureScanner
         var findings = new List<Finding>();
         var skipped = new List<SkippedDiagnostic>();
         var errors = new List<ScanError>();
+        // The strictness decision is fixed before any early failure so an error report never claims a
+        // blocking disposition that the configured policy does not support.
+        bool strict = strictOverride || policy.Ci?.Strict == true;
         GlobMatchBudget ignoreBudget = matcherBudget ?? new GlobMatchBudget();
         FixtureFileWalk walkFunction = fileWalk ?? SafeFileWalker.Walk;
         IReadOnlyList<ISensitiveDataDetector> detectors = CreateDefaultSensitiveDataDetectors();
@@ -46,7 +49,7 @@ internal sealed class FixtureScanner
             if (!GlobMatcher.TryCreate(ignoredPath, out GlobMatcher? matcher) || matcher is null)
             {
                 errors.Add(new ScanError("FV-E007", "An ignored path pattern is malformed."));
-                return CompleteWithErrors(errors);
+                return CompleteWithErrors(errors, strict);
             }
 
             ignoredMatchers.Add(matcher);
@@ -61,7 +64,7 @@ internal sealed class FixtureScanner
             if (!PathUtilities.TryResolveRoot(repositoryRoot, configuredRoot, out string fullPath, out string relativePath, out string error))
             {
                 errors.Add(new ScanError("FV-E008", error));
-                return CompleteWithErrors(errors);
+                return CompleteWithErrors(errors, strict);
             }
 
             string key = fullPath;
@@ -86,7 +89,7 @@ internal sealed class FixtureScanner
             if (walk.Error is not null)
             {
                 errors.Add(walk.Error);
-                return CompleteWithErrors(errors);
+                return CompleteWithErrors(errors, strict);
             }
 
             foreach (SafeFileEntry file in walk.Files)
@@ -97,7 +100,7 @@ internal sealed class FixtureScanner
                     errors.Add(new ScanError(
                         FixtureVaultContract.IgnoredPathMatchingErrorCode,
                         "Ignored path matching could not be completed safely."));
-                    return CompleteWithErrors(errors, fixtureFiles.Count);
+                    return CompleteWithErrors(errors, strict, fixtureFiles.Count);
                 }
 
                 if (ignoredStatus == GlobMatchStatus.Match)
@@ -129,7 +132,7 @@ internal sealed class FixtureScanner
             walkFunction);
         if (errors.Count > 0)
         {
-            return CompleteWithErrors(errors, fixtureFiles.Count);
+            return CompleteWithErrors(errors, strict, fixtureFiles.Count);
         }
 
         AddCaseCollisionFindings(fixtureFiles, policy, findings);
@@ -138,7 +141,7 @@ internal sealed class FixtureScanner
         if (manifest.Error is not null)
         {
             errors.Add(manifest.Error);
-            return CompleteWithErrors(errors);
+            return CompleteWithErrors(errors, strict);
         }
 
         if (manifest.ActiveBaselines is not null)
@@ -181,7 +184,7 @@ internal sealed class FixtureScanner
             if (!TryGetFileLength(file.FullPath, out long length))
             {
                 errors.Add(new ScanError("FV-E009", "A fixture file could not be inspected safely."));
-                return CompleteWithErrors(errors, fixtureFiles.Count(fileEntry => fileEntry.RelativePath != string.Empty));
+                return CompleteWithErrors(errors, strict, fixtureFiles.Count(fileEntry => fileEntry.RelativePath != string.Empty));
             }
 
             if (length > policy.MaxFileBytes)
@@ -199,13 +202,13 @@ internal sealed class FixtureScanner
             if (totalBytesRead + length > MaximumTotalBytes)
             {
                 errors.Add(new ScanError("FV-E010", "The scan exceeded its total byte safety limit."));
-                return CompleteWithErrors(errors, fixtureFiles.Count);
+                return CompleteWithErrors(errors, strict, fixtureFiles.Count);
             }
 
             if (!TryReadBytes(file.FullPath, length, out byte[] bytes))
             {
                 errors.Add(new ScanError("FV-E009", "A fixture file could not be inspected safely."));
-                return CompleteWithErrors(errors, fixtureFiles.Count);
+                return CompleteWithErrors(errors, strict, fixtureFiles.Count);
             }
 
             totalBytesRead += length;
@@ -213,11 +216,10 @@ internal sealed class FixtureScanner
             if (contentError is not null)
             {
                 errors.Add(contentError);
-                return CompleteWithErrors(errors, fixtureFiles.Count, findings, skipped);
+                return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
             }
         }
 
-        bool strict = strictOverride || policy.Ci!.Strict == true;
         if (!strict)
         {
             findings = findings
@@ -420,20 +422,46 @@ internal sealed class FixtureScanner
         IReadOnlyList<ISensitiveDataDetector> sensitiveDataDetectors)
     {
         bool isVerifyFixture = HasConvention(policy, "verify") && IsVerifySnapshotPath(file.RelativePath);
+        bool isKnownBinaryExtension = IsKnownBinaryExtension(file.RelativePath);
         bool declaresNonUtf8Encoding = TryGetDeclaredNonUtf8Encoding(bytes, out int bomLength, out Encoding? declaredEncoding);
-        bool isBinary = IsKnownBinaryExtension(file.RelativePath) || (!declaresNonUtf8Encoding && bytes.Contains((byte)0));
-        if (isBinary)
+        string text = string.Empty;
+        bool decoded = declaresNonUtf8Encoding
+            ? TryDecodeText(bytes, bomLength, declaredEncoding!, out text)
+            : TryDecodeText(bytes, 0, StrictUtf8, out text);
+
+        // NUL is a legal UTF-8 code point, so bytes that decode as UTF-8 text can still be a BOM-less
+        // UTF-16/UTF-32 stream. Without a byte-order mark, NUL bytes prove no text encoding, so they
+        // are never enough on their own to treat a fixture as an accepted binary baseline.
+        bool hasUndeclaredNulBytes = !declaresNonUtf8Encoding && bytes.Contains((byte)0);
+        bool isUnclassifiedBinaryBlob = !decoded && hasUndeclaredNulBytes;
+
+        // Binary classification needs an explicit signal: a known binary file extension, or bytes that
+        // no supported encoding decodes and that carry NUL bytes.
+        if (isKnownBinaryExtension || isUnclassifiedBinaryBlob)
         {
-            // Binary fixtures are classified deliberately rather than by an unproven encoding: accepted
-            // baselines are documented as never decoded, and unexpected binaries block with FV005.
+            // Received artifacts are reported as FV001 and are never decoded as text.
             if (HasConvention(policy, "verify") && IsVerifyReceivedPath(file.RelativePath))
             {
                 return null;
             }
 
-            if (IsAcceptedBinaryFixture(file.RelativePath, policy))
+            if (isKnownBinaryExtension && IsAcceptedBinaryFixture(file.RelativePath, policy))
             {
                 return null;
+            }
+
+            if (!isKnownBinaryExtension && isVerifyFixture)
+            {
+                // An accepted Verify baseline is not proven binary by NUL bytes alone, so it is
+                // reported as uninspected content instead of being silently accepted.
+                return ReportUninspectableContent(
+                    file,
+                    isVerifyFixture,
+                    declaresNonUtf8Encoding,
+                    hasUndeclaredNulBytes,
+                    policy,
+                    findings,
+                    skipped);
             }
 
             AddFinding(
@@ -446,13 +474,16 @@ internal sealed class FixtureScanner
             return null;
         }
 
-        string text;
-        bool decoded = declaresNonUtf8Encoding
-            ? TryDecodeText(bytes, bomLength, declaredEncoding!, out text)
-            : TryDecodeText(bytes, 0, StrictUtf8, out text);
-        if (!decoded)
+        if (!decoded || hasUndeclaredNulBytes)
         {
-            return ReportUninspectableContent(file, isVerifyFixture, declaresNonUtf8Encoding, policy, findings, skipped);
+            return ReportUninspectableContent(
+                file,
+                isVerifyFixture,
+                declaresNonUtf8Encoding,
+                hasUndeclaredNulBytes,
+                policy,
+                findings,
+                skipped);
         }
 
         if (declaresNonUtf8Encoding && !isVerifyFixture)
@@ -492,17 +523,20 @@ internal sealed class FixtureScanner
         SafeFileEntry file,
         bool isVerifyFixture,
         bool declaresNonUtf8Encoding,
+        bool hasUndeclaredNulBytes,
         FixtureVaultPolicy policy,
         ICollection<Finding> findings,
         ICollection<SkippedDiagnostic> skipped)
     {
-        // Content inspection is impossible without an established encoding, so the report must never
+        // Content inspection is impossible without a proven text encoding, so the report must never
         // look like a fully checked clean scan for this file.
         skipped.Add(new SkippedDiagnostic(
             FixtureVaultContract.UninspectableContentSkippedCode,
             null,
             file.RelativePath,
-            FixtureVaultContract.UninspectableContentSkippedReason));
+            hasUndeclaredNulBytes
+                ? FixtureVaultContract.UnprovenTextEncodingSkippedReason
+                : FixtureVaultContract.UninspectableContentSkippedReason));
 
         if (!isVerifyFixture)
         {
@@ -511,12 +545,16 @@ internal sealed class FixtureScanner
                 policy,
                 "FV006",
                 file.RelativePath,
-                declaresNonUtf8Encoding
-                    ? "The fixture uses a non-UTF-8 encoding."
-                    : "The fixture is not valid UTF-8 text.",
-                declaresNonUtf8Encoding
-                    ? "Save the fixture as UTF-8 text. A UTF-8 byte-order mark is supported where the fixture convention permits it."
-                    : "Save the fixture as deterministic UTF-8 text and avoid locale-specific encodings.");
+                hasUndeclaredNulBytes
+                    ? "The fixture contains NUL characters but declares no byte-order mark, so it is not proven to be UTF-8 text."
+                    : declaresNonUtf8Encoding
+                        ? "The fixture uses a non-UTF-8 encoding."
+                        : "The fixture is not valid UTF-8 text.",
+                hasUndeclaredNulBytes
+                    ? "Save the fixture as UTF-8 text without NUL characters, or declare UTF-16 or UTF-32 with a byte-order mark."
+                    : declaresNonUtf8Encoding
+                        ? "Save the fixture as UTF-8 text. A UTF-8 byte-order mark is supported where the fixture convention permits it."
+                        : "Save the fixture as deterministic UTF-8 text and avoid locale-specific encodings.");
         }
 
         return IsSensitiveDataDetectionEnabled(policy)
@@ -856,14 +894,20 @@ internal sealed class FixtureScanner
 
     private static ScanResult CompleteWithErrors(
         IReadOnlyList<ScanError> errors,
+        bool strict,
         int filesInspected = 0,
         IReadOnlyList<Finding>? findings = null,
         IReadOnlyList<SkippedDiagnostic>? skipped = null)
     {
+        IReadOnlyList<Finding> reportedFindings = strict || findings is null
+            ? findings ?? []
+            : findings
+                .Select(finding => finding with { Severity = "warning", Disposition = "warn" })
+                .ToList();
         var report = new ScanReport
         {
             FilesInspected = filesInspected,
-            Findings = findings ?? [],
+            Findings = reportedFindings,
             Skipped = skipped ?? [],
             Errors = errors
         };
