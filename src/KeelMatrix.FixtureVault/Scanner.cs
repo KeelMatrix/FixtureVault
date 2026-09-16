@@ -14,6 +14,11 @@ internal sealed class FixtureScanner
     [
         ".bmp", ".gif", ".ico", ".jpg", ".jpeg", ".pdf", ".png", ".zip", ".bin", ".webp"
     ];
+    private static readonly Encoding StrictUtf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+    private static readonly Encoding StrictUtf16LittleEndian = new UnicodeEncoding(bigEndian: false, byteOrderMark: false, throwOnInvalidBytes: true);
+    private static readonly Encoding StrictUtf16BigEndian = new UnicodeEncoding(bigEndian: true, byteOrderMark: false, throwOnInvalidBytes: true);
+    private static readonly Encoding StrictUtf32LittleEndian = new UTF32Encoding(bigEndian: false, byteOrderMark: false, throwOnInvalidCharacters: true);
+    private static readonly Encoding StrictUtf32BigEndian = new UTF32Encoding(bigEndian: true, byteOrderMark: false, throwOnInvalidCharacters: true);
 
     internal static ScanResult Scan(
         string repositoryRoot,
@@ -204,11 +209,11 @@ internal sealed class FixtureScanner
             }
 
             totalBytesRead += length;
-            ScanError? contentError = InspectContent(file, bytes, policy, findings, detectors);
+            ScanError? contentError = InspectContent(file, bytes, policy, findings, skipped, detectors);
             if (contentError is not null)
             {
                 errors.Add(contentError);
-                return CompleteWithErrors(errors, fixtureFiles.Count);
+                return CompleteWithErrors(errors, fixtureFiles.Count, findings, skipped);
             }
         }
 
@@ -411,18 +416,16 @@ internal sealed class FixtureScanner
         byte[] bytes,
         FixtureVaultPolicy policy,
         ICollection<Finding> findings,
+        ICollection<SkippedDiagnostic> skipped,
         IReadOnlyList<ISensitiveDataDetector> sensitiveDataDetectors)
     {
         bool isVerifyFixture = HasConvention(policy, "verify") && IsVerifySnapshotPath(file.RelativePath);
-        bool hasOtherBom = bytes.Length >= 2 && ((bytes[0] == 0xFF && bytes[1] == 0xFE) ||
-                                                 (bytes[0] == 0xFE && bytes[1] == 0xFF) ||
-                                                 (bytes.Length >= 4 && bytes[0] == 0x00 && bytes[1] == 0x00 &&
-                                                  bytes[2] == 0xFE && bytes[3] == 0xFF) ||
-                                                 (bytes.Length >= 4 && bytes[0] == 0xFF && bytes[1] == 0xFE &&
-                                                  bytes[2] == 0x00 && bytes[3] == 0x00));
-        bool isBinary = IsKnownBinaryExtension(file.RelativePath) || (!hasOtherBom && bytes.Contains((byte)0));
+        bool declaresNonUtf8Encoding = TryGetDeclaredNonUtf8Encoding(bytes, out int bomLength, out Encoding? declaredEncoding);
+        bool isBinary = IsKnownBinaryExtension(file.RelativePath) || (!declaresNonUtf8Encoding && bytes.Contains((byte)0));
         if (isBinary)
         {
+            // Binary fixtures are classified deliberately rather than by an unproven encoding: accepted
+            // baselines are documented as never decoded, and unexpected binaries block with FV005.
             if (HasConvention(policy, "verify") && IsVerifyReceivedPath(file.RelativePath))
             {
                 return null;
@@ -443,41 +446,24 @@ internal sealed class FixtureScanner
             return null;
         }
 
-        if (hasOtherBom)
-        {
-            if (!isVerifyFixture)
-            {
-                AddFinding(
-                    findings,
-                    policy,
-                    "FV006",
-                    file.RelativePath,
-                    "The fixture uses a non-UTF-8 encoding.",
-                    "Save the fixture as UTF-8 text. A UTF-8 byte-order mark is supported where the fixture convention permits it.");
-            }
-
-            return null;
-        }
-
         string text;
-        try
+        bool decoded = declaresNonUtf8Encoding
+            ? TryDecodeText(bytes, bomLength, declaredEncoding!, out text)
+            : TryDecodeText(bytes, 0, StrictUtf8, out text);
+        if (!decoded)
         {
-            text = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true).GetString(bytes);
+            return ReportUninspectableContent(file, isVerifyFixture, declaresNonUtf8Encoding, policy, findings, skipped);
         }
-        catch (DecoderFallbackException)
-        {
-            if (!isVerifyFixture)
-            {
-                AddFinding(
-                    findings,
-                    policy,
-                    "FV006",
-                    file.RelativePath,
-                    "The fixture is not valid UTF-8 text.",
-                    "Save the fixture as deterministic UTF-8 text and avoid locale-specific encodings.");
-            }
 
-            return null;
+        if (declaresNonUtf8Encoding && !isVerifyFixture)
+        {
+            AddFinding(
+                findings,
+                policy,
+                "FV006",
+                file.RelativePath,
+                "The fixture uses a non-UTF-8 encoding.",
+                "Save the fixture as UTF-8 text. A UTF-8 byte-order mark is supported where the fixture convention permits it.");
         }
 
         SensitiveDataDetectionResult sensitiveDataResult = HasSensitiveData(text, policy, sensitiveDataDetectors);
@@ -502,13 +488,100 @@ internal sealed class FixtureScanner
         return null;
     }
 
+    private static ScanError? ReportUninspectableContent(
+        SafeFileEntry file,
+        bool isVerifyFixture,
+        bool declaresNonUtf8Encoding,
+        FixtureVaultPolicy policy,
+        ICollection<Finding> findings,
+        ICollection<SkippedDiagnostic> skipped)
+    {
+        // Content inspection is impossible without an established encoding, so the report must never
+        // look like a fully checked clean scan for this file.
+        skipped.Add(new SkippedDiagnostic(
+            FixtureVaultContract.UninspectableContentSkippedCode,
+            null,
+            file.RelativePath,
+            FixtureVaultContract.UninspectableContentSkippedReason));
+
+        if (!isVerifyFixture)
+        {
+            AddFinding(
+                findings,
+                policy,
+                "FV006",
+                file.RelativePath,
+                declaresNonUtf8Encoding
+                    ? "The fixture uses a non-UTF-8 encoding."
+                    : "The fixture is not valid UTF-8 text.",
+                declaresNonUtf8Encoding
+                    ? "Save the fixture as UTF-8 text. A UTF-8 byte-order mark is supported where the fixture convention permits it."
+                    : "Save the fixture as deterministic UTF-8 text and avoid locale-specific encodings.");
+        }
+
+        return IsSensitiveDataDetectionEnabled(policy)
+            ? new ScanError(
+                FixtureVaultContract.UninspectableContentErrorCode,
+                FixtureVaultContract.UninspectableContentErrorMessage)
+            : null;
+    }
+
+    private static bool TryGetDeclaredNonUtf8Encoding(byte[] bytes, out int bomLength, out Encoding? encoding)
+    {
+        // UTF-32 is checked first because FF FE 00 00 is also a UTF-16 little-endian byte-order mark.
+        if (bytes.Length >= 4 && bytes[0] == 0x00 && bytes[1] == 0x00 && bytes[2] == 0xFE && bytes[3] == 0xFF)
+        {
+            bomLength = 4;
+            encoding = StrictUtf32BigEndian;
+            return true;
+        }
+
+        if (bytes.Length >= 4 && bytes[0] == 0xFF && bytes[1] == 0xFE && bytes[2] == 0x00 && bytes[3] == 0x00)
+        {
+            bomLength = 4;
+            encoding = StrictUtf32LittleEndian;
+            return true;
+        }
+
+        if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
+        {
+            bomLength = 2;
+            encoding = StrictUtf16BigEndian;
+            return true;
+        }
+
+        if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
+        {
+            bomLength = 2;
+            encoding = StrictUtf16LittleEndian;
+            return true;
+        }
+
+        bomLength = 0;
+        encoding = null;
+        return false;
+    }
+
+    private static bool TryDecodeText(byte[] bytes, int offset, Encoding encoding, out string text)
+    {
+        try
+        {
+            text = encoding.GetString(bytes, offset, bytes.Length - offset);
+            return true;
+        }
+        catch (DecoderFallbackException)
+        {
+            text = string.Empty;
+            return false;
+        }
+    }
+
     private static SensitiveDataDetectionResult HasSensitiveData(
         string text,
         FixtureVaultPolicy policy,
         IReadOnlyList<ISensitiveDataDetector> sensitiveDataDetectors)
     {
-        if (!(policy.SensitiveDataRules ?? []).Any(rule =>
-                rule.Equals(FixtureVaultContract.HighConfidenceSensitiveDataRule, StringComparison.OrdinalIgnoreCase)))
+        if (!IsSensitiveDataDetectionEnabled(policy))
         {
             return SensitiveDataDetectionResult.Clean;
         }
@@ -531,6 +604,10 @@ internal sealed class FixtureScanner
 
         return found ? SensitiveDataDetectionResult.Found : SensitiveDataDetectionResult.Clean;
     }
+
+    private static bool IsSensitiveDataDetectionEnabled(FixtureVaultPolicy policy) =>
+        (policy.SensitiveDataRules ?? []).Any(rule =>
+            rule.Equals(FixtureVaultContract.HighConfidenceSensitiveDataRule, StringComparison.OrdinalIgnoreCase));
 
     private static RedactionSensitiveDataDetector[] CreateDefaultSensitiveDataDetectors()
     {
@@ -777,11 +854,17 @@ internal sealed class FixtureScanner
         }
     }
 
-    private static ScanResult CompleteWithErrors(IReadOnlyList<ScanError> errors, int filesInspected = 0)
+    private static ScanResult CompleteWithErrors(
+        IReadOnlyList<ScanError> errors,
+        int filesInspected = 0,
+        IReadOnlyList<Finding>? findings = null,
+        IReadOnlyList<SkippedDiagnostic>? skipped = null)
     {
         var report = new ScanReport
         {
             FilesInspected = filesInspected,
+            Findings = findings ?? [],
+            Skipped = skipped ?? [],
             Errors = errors
         };
         return new ScanResult(report, 2, false);

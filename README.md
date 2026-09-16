@@ -81,7 +81,7 @@ The v1 `sensitiveDataRules` policy supports only `high-confidence` (case-insensi
 
 The built-in hints are:
 
-- `verify`: detects common `*.received.*` artifacts and split-mode `*.received/<file>` artifacts, and audits `*.verified.*` and split-mode `*.verified/<file>` baselines. Binary `*.verified.*` and split-mode baselines are accepted and remain subject to `maxFileBytes`; binary `*.received.*` artifacts produce `FV001` without an additional `FV005`. For Verify text fixtures, FixtureVault does not assert encoding or newline style because the repository's canonical `VerifierSettings` are not available to this scanner; supported custom encodings, carriage returns, and trailing newlines are not blocking `FV006` findings.
+- `verify`: detects common `*.received.*` artifacts and split-mode `*.received/<file>` artifacts, and audits `*.verified.*` and split-mode `*.verified/<file>` baselines. Binary `*.verified.*` and split-mode baselines are accepted and remain subject to `maxFileBytes`; binary `*.received.*` artifacts produce `FV001` without an additional `FV005`. For Verify text fixtures, FixtureVault does not assert encoding or newline style because the repository's canonical `VerifierSettings` are not available to this scanner; supported custom encodings, carriage returns, and trailing newlines are not blocking `FV006` findings. A fixture that declares UTF-16 or UTF-32 with a byte-order mark is decoded with that encoding so `FV007` still runs, and content that cannot be decoded at all is reported as `FV-SKIP-ENCODING` instead of being treated as checked.
 - `snapshooter`: audits ordinary `*.snap` files and treats `.snap` files below the documented `__snapshots__/__mismatch__/` directory as received/unapproved artifacts. Other `.snap` paths are audited as ordinary baselines; FixtureVault does not infer a mismatch convention from an ambiguous directory name.
 - `generic`: audits files matching `allowedExtensions`, including `.golden` files.
 - `fixturevault-manifest`: enables the explicit orphan proof described below. When enabled, the manifest is required; a missing manifest is a configuration error (exit code `2`).
@@ -114,9 +114,20 @@ The rule IDs below are the frozen v1 report contract. Every finding has a rule I
 | `FV003` | Two fixture paths differ only by case after Unicode normalization. | Rename one path so it is unique on all supported filesystems. |
 | `FV004` | A fixture exceeds `maxFileBytes`. | Reduce the fixture or deliberately raise the policy limit. |
 | `FV005` | An unexpected binary asset is present under a fixture root; accepted Verify baselines and files covered by an explicitly allowed known-binary extension are excluded. | Remove the binary asset, configure its extension deliberately, or keep it as a supported Verify baseline. |
-| `FV006` | A non-Verify text fixture is not valid UTF-8, uses a non-UTF-8 encoding, or violates a proven newline convention. UTF-8 BOMs are accepted. Verify encoding and newline tolerance are not asserted because canonical Verify settings cannot be proven. | Save non-Verify text as valid UTF-8. Verify text is left to the repository's configured Verify settings. |
-| `FV007` | A high-confidence sensitive-data pattern was detected. | Remove the sensitive value from the fixture. The value is never printed. |
+| `FV006` | A non-Verify text fixture is not valid UTF-8, uses a non-UTF-8 encoding, or violates a proven newline convention. UTF-8 BOMs are accepted, and a UTF-16/UTF-32 BOM is decoded so content inspection can still run. Verify encoding and newline tolerance are not asserted because canonical Verify settings cannot be proven. | Save non-Verify text as valid UTF-8. Verify text is left to the repository's configured Verify settings. When no encoding can be established at all, the file is also reported as `FV-SKIP-ENCODING` and, with sensitive-data detection enabled, the scan fails closed with `FV-E016`. |
+| `FV007` | A high-confidence sensitive-data pattern was detected. Detection requires an established encoding; when none can be established the file is reported as `FV-SKIP-ENCODING` instead, and an enabled sensitive-data policy fails closed with `FV-E016`. | Remove the sensitive value from the fixture. The value is never printed. |
 | `FV008` | A fixture-looking file is outside the approved roots. | Move it below an approved root or update `roots`. |
+
+### Content Inspection and Encoding
+
+Content inspection covers `FV006` for non-Verify text and `FV007` for every text fixture, and it depends on an established encoding. FixtureVault establishes the encoding from the bytes themselves: UTF-8 with or without a UTF-8 byte-order mark, or UTF-16/UTF-32 declared by a byte-order mark, which is decoded with that declared encoding. Verify `*.verified.*` baselines are accepted binary fixtures and are never decoded as text.
+
+When no encoding suitable for content inspection can be established — no byte-order mark and bytes that are not valid UTF-8, or a declared UTF-16/UTF-32 fixture whose content is malformed — FixtureVault never presents the file as fully checked:
+
+- the report contains a per-file `FV-SKIP-ENCODING` entry with the repository-relative path, in both console and JSON output;
+- non-Verify text still produces the blocking `FV006` finding;
+- when `sensitiveDataRules` enables detection, the scan additionally emits the fixed `FV-E016` error and exits `2`, because the configured sensitive-data policy cannot be honored for that file;
+- the skip entry alone never changes the exit code; without an enabled sensitive-data policy it records the gap and the exit code follows the remaining findings. The v1 policy loader always enables `high-confidence`, so a policy-driven scan fails closed instead.
 
 ### Conservative Orphan Detection
 
@@ -170,7 +181,7 @@ Diagnostics do not echo raw untrusted CLI arguments or policy values. They use a
 - `1`: the scan completed and policy-blocking findings exist;
 - `2`: a configuration, input, filesystem, or execution error prevented a trustworthy scan.
 
-Malformed `.fixturevault.json`, a missing configured root, an unsafe root path, or a missing/malformed enabled manifest returns `2`, never a false clean result.
+Malformed `.fixturevault.json`, a missing configured root, an unsafe root path, or a missing/malformed enabled manifest returns `2`, never a false clean result. A scan that cannot honor an enabled sensitive-data policy because a counted fixture's content could not be inspected also returns `2` (`FV-E016`) instead of reporting a clean scan.
 
 ## Troubleshooting
 
@@ -181,7 +192,8 @@ Malformed `.fixturevault.json`, a missing configured root, an unsafe root path, 
 - **Ignored-path matching:** `FV-E013` means the deterministic ignored-path matcher could not complete within the scan safety bound. The scan exits `2` and does not treat the path as unignored; reduce the number or complexity of ignored paths, or split the scan into smaller roots.
 - **Sensitive-data detection:** `FV-E014` means an enabled sensitive-data detector could not complete. The scan exits `2` with a fixed message and does not activate telemetry.
 - **Path-policy discovery:** `FV-E015` means the repository-wide fixture-looking-file walk could not complete. The scan exits `2` instead of silently skipping an inaccessible subtree.
-- **Unsupported or skipped checks:** unknown convention hints appear as `FV-SKIP-CONVENTION`. Orphan checks for Verify, Snapshooter, and generic files appear as `FV-SKIP-ORPHAN` because no relationship was proved. Reparse points appear as `FV-SKIP-REPARSE`; their targets are not read.
+- **Uninspectable content:** `FV-E016` means a counted fixture's bytes could not be decoded with any supported encoding (UTF-8, or UTF-16/UTF-32 declared by a byte-order mark) while `sensitiveDataRules` enables detection, so content-dependent checks could not run. The scan exits `2`, the matching `FV-SKIP-ENCODING` entry names the file, and no clean result is reported. Save the fixture as UTF-8 or remove it from the governed fixture set.
+- **Unsupported or skipped checks:** unknown convention hints appear as `FV-SKIP-CONVENTION`. Orphan checks for Verify, Snapshooter, and generic files appear as `FV-SKIP-ORPHAN` because no relationship was proved. Reparse points appear as `FV-SKIP-REPARSE`; their targets are not read. Fixtures whose encoding could not be established appear as `FV-SKIP-ENCODING` with their repository-relative path because content-dependent checks, including sensitive-data detection, did not run.
 - **Exit codes:** `0` means a completed scan has no blocking findings, `1` means a completed scan has blocking findings, and `2` means an error prevented a trustworthy scan. Use `--format json` to inspect structured `findings`, `skipped`, and `errors`.
 
 ## Security and Privacy
@@ -190,7 +202,7 @@ See the [Privacy](https://github.com/KeelMatrix/FixtureVault/blob/main/PRIVACY.m
 
 Configured roots are hard boundaries. Relative roots and `--root` overrides must remain inside the repository root; traversal outside that boundary is rejected. Every directory component from the repository root to a selected root is checked for links and reparse points before scanning, so a root beneath an intermediate link fails conservatively. Repository-relative paths are used in reports. Symbolic links and Windows reparse points are never followed, including links that point outside an approved root. Link entries are reported as skipped without reading their targets.
 
-FixtureVault bounds policy size, filesystem entries, and total bytes read. It does not decode known binary assets as text. Invalid or unsupported encodings in non-Verify text produce a bounded diagnostic; Verify encoding and newline tolerance are not asserted without canonical Verify settings. Scanning is strictly non-mutating.
+FixtureVault bounds policy size, filesystem entries, and total bytes read. It does not decode known binary assets as text. A fixture that declares UTF-16 or UTF-32 with a byte-order mark is decoded so content inspection can run; content that cannot be decoded with any supported encoding is reported as `FV-SKIP-ENCODING` and, when sensitive-data detection is enabled, fails the scan closed with `FV-E016` and exit code `2` instead of a clean result. Invalid or unsupported encodings in non-Verify text produce a bounded diagnostic; Verify encoding and newline tolerance are not asserted without canonical Verify settings. Scanning is strictly non-mutating.
 
 Sensitive-data detection is separate from redaction: FixtureVault does not rewrite a fixture to clear a finding. Detection uses hardened primitives from `KeelMatrix.Redaction` 0.1.0, but the matched value is never retained in a report or diagnostic.
 
@@ -219,7 +231,7 @@ dotnet tool install --global KeelMatrix.FixtureVault
 
 ## Platform Behavior and Limitations
 
-The tool targets .NET 8 and uses platform-neutral .NET filesystem and encoding APIs. It is designed for Windows, Linux, and macOS. The public GitHub Actions CI matrix validates the tool on all three operating systems. Case-colliding paths are reported using a case-insensitive, Unicode-normalized comparison so repositories can catch cross-filesystem hazards. Unsupported conventions and inaccessible linked paths are skipped conservatively.
+The tool targets .NET 8 and uses platform-neutral .NET filesystem and encoding APIs. It is designed for Windows, Linux, and macOS. The public GitHub Actions CI matrix validates the tool on all three operating systems. Case-colliding paths are reported using a case-insensitive, Unicode-normalized comparison so repositories can catch cross-filesystem hazards. Unsupported conventions and inaccessible linked paths are skipped conservatively, and fixtures whose content cannot be decoded are skipped with a per-file diagnostic instead of being reported as checked.
 
 FixtureVault is not a snapshot assertion framework, serializer, mutation/fix command, auto-approval system, cloud vault, hosted service, binary forensic scanner, or broad replacement for secret scanners. It does not inspect arbitrary repository files beyond the lightweight path-policy check for fixture-looking files outside approved roots.
 

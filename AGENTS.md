@@ -45,7 +45,7 @@ Do not create or push the release tag until this command passes on the finalized
 
 - The package is one `net8.0` .NET tool with command `fixturevault`; it has no supported library API.
 - `.fixturevault.json` and report schema version `1` are compatibility contracts.
-- Rule IDs `FV001` through `FV008` are stable and must remain documented with their behavior.
+- Rule IDs `FV001` through `FV008` are stable and must remain documented with their behavior. `FV-SKIP-*` skip codes and `FV-E0xx` error codes are part of the same documented contract, and content-dependent checks must never be skipped without a per-file diagnostic.
 - `scan` is strictly read-only. Do not add code that writes, deletes, or rewrites fixture files.
 - Every configured root stays within the repository boundary; reparse points and symbolic links are never followed.
 - Findings use repository-relative paths and never include matched sensitive values or fixture contents.

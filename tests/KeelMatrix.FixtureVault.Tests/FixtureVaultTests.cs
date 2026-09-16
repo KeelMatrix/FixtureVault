@@ -783,12 +783,11 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
-    public void Verify_custom_encoding_and_newline_tolerance_are_not_blocking_findings()
+    public void Verify_custom_encoding_and_newline_variants_are_clean_and_still_content_inspected()
     {
         using var repository = new TemporaryRepository();
         repository.WritePolicy();
         repository.WriteBytes("tests/custom-encoding.verified.json", [0xFF, 0xFE, 0x6F, 0x00, 0x6E, 0x00, 0x65, 0x00]);
-        repository.WriteBytes("tests/undecodable.verified.json", [0xC3, 0x28]);
         repository.WriteBytes("tests/carriage-return.verified.json", [0x6F, 0x6E, 0x65, 0x0D, 0x0A, 0x74, 0x77, 0x6F]);
         repository.WriteBytes("tests/trailing-newline.verified.json", [0x6F, 0x6E, 0x65, 0x0A]);
 
@@ -797,7 +796,131 @@ public sealed class FixtureVaultTests
         Assert.Equal(0, result.ExitCode);
         Assert.Empty(result.Report.Findings);
         Assert.Empty(result.Report.Errors);
-        Assert.DoesNotContain(result.Report.Findings, item => item.Path == "tests/undecodable.verified.json");
+        Assert.DoesNotContain(result.Report.Skipped, item => item.Code == "FV-SKIP-ENCODING");
+    }
+
+    [Theory]
+    [InlineData("utf-16le")]
+    [InlineData("utf-16be")]
+    [InlineData("utf-32le")]
+    [InlineData("utf-32be")]
+    public void Verify_bom_declared_encoding_is_decoded_and_sensitive_data_is_still_detected(string encodingName)
+    {
+        const string sensitiveValue = "fixture-test-secret-1234567890";
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes(
+            "tests/Payments/Create.verified.json",
+            EncodeWithDeclaredBom(encodingName, $"{{\"apiKey\":\"{sensitiveValue}\"}}\n"));
+
+        ScanResult result = repository.Scan();
+        string json = result.Report.ToJson();
+
+        Assert.Equal(1, result.ExitCode);
+        Finding finding = Assert.Single(result.Report.Findings, item => item.RuleId == "FV007");
+        Assert.Equal("tests/Payments/Create.verified.json", finding.Path);
+        Assert.DoesNotContain(result.Report.Findings, item => item.RuleId == "FV006");
+        Assert.DoesNotContain(result.Report.Skipped, item => item.Code == "FV-SKIP-ENCODING");
+        Assert.Empty(result.Report.Errors);
+        Assert.Equal(1, result.Report.FilesInspected);
+        Assert.DoesNotContain(sensitiveValue, json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Verify_undecodable_fixture_is_skipped_and_fails_closed_when_sensitive_detection_is_enabled()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/undecodable.verified.json", [0xC3, 0x28]);
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", "json"], telemetry, out string output, out string error);
+        using JsonDocument report = JsonDocument.Parse(output);
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(error);
+        Assert.Equal(0, telemetry.SuccessfulScans);
+        JsonElement skip = Assert.Single(report.RootElement.GetProperty("skipped").EnumerateArray(), item =>
+            item.GetProperty("code").GetString() == FixtureVaultContract.UninspectableContentSkippedCode);
+        Assert.Equal("tests/undecodable.verified.json", skip.GetProperty("path").GetString());
+        JsonElement scanError = Assert.Single(report.RootElement.GetProperty("errors").EnumerateArray());
+        Assert.Equal(FixtureVaultContract.UninspectableContentErrorCode, scanError.GetProperty("code").GetString());
+        Assert.Equal(FixtureVaultContract.UninspectableContentErrorMessage, scanError.GetProperty("message").GetString());
+        Assert.DoesNotContain(report.RootElement.GetProperty("findings").EnumerateArray(), item =>
+            item.GetProperty("ruleId").GetString() is "FV006" or "FV007");
+    }
+
+    [Fact]
+    public void Verify_undecodable_fixture_skip_is_reported_in_human_readable_output()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/undecodable.verified.json", [0xC3, 0x28]);
+
+        int exitCode = repository.Run(["scan"], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains(FixtureVaultContract.UninspectableContentErrorCode, error, StringComparison.Ordinal);
+        Assert.Contains(FixtureVaultContract.UninspectableContentSkippedCode, error, StringComparison.Ordinal);
+        Assert.Contains("tests/undecodable.verified.json", error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Verify_undecodable_fixture_is_only_skipped_when_sensitive_detection_is_disabled()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WriteBytes("tests/undecodable.verified.json", [0xC3, 0x28]);
+        FixtureVaultPolicy policy = FixtureVaultPolicy.CreateDefault(testsDirectoryExists: true);
+        // The v1 policy loader always enables sensitive-data detection; this policy documents the
+        // documented contract for a scanner run whose configured policy disables it.
+        policy.SensitiveDataRules = [];
+
+        ScanResult result = FixtureScanner.Scan(repository.Root, policy, [], strictOverride: false);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.Report.Findings);
+        Assert.Empty(result.Report.Errors);
+        SkippedDiagnostic skip = Assert.Single(result.Report.Skipped, item =>
+            item.Code == FixtureVaultContract.UninspectableContentSkippedCode);
+        Assert.Equal("tests/undecodable.verified.json", skip.Path);
+    }
+
+    [Fact]
+    public void Verify_utf8_fixture_detects_sensitive_data_without_skip_or_encoding_finding()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/Payments/Create.verified.json", "{\"apiKey\":\"fixture-test-secret-1234567890\"}\n");
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains(result.Report.Findings, item =>
+            item.RuleId == "FV007" && item.Path == "tests/Payments/Create.verified.json");
+        Assert.DoesNotContain(result.Report.Findings, item => item.RuleId == "FV006");
+        Assert.DoesNotContain(result.Report.Skipped, item => item.Code == "FV-SKIP-ENCODING");
+        Assert.Empty(result.Report.Errors);
+    }
+
+    [Theory]
+    [InlineData(new byte[] { 0xFF, 0xFE, 0x6F, 0x00, 0x6B, 0x00 }, 1, false)]
+    [InlineData(new byte[] { 0xC3, 0x28 }, 2, true)]
+    public void Non_verify_non_utf8_text_still_blocks_with_fv006(byte[] bytes, int expectedExitCode, bool expectsSkip)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/utf16.golden", bytes);
+
+        ScanResult result = repository.Scan();
+
+        Finding finding = Assert.Single(result.Report.Findings, item => item.RuleId == "FV006");
+        Assert.Equal("tests/utf16.golden", finding.Path);
+        Assert.Equal("block", finding.Disposition);
+        Assert.Equal(expectedExitCode, result.ExitCode);
+        Assert.DoesNotContain(result.Report.Findings, item => item.RuleId == "FV007");
+        Assert.Equal(
+            expectsSkip,
+            result.Report.Skipped.Any(item => item.Code == "FV-SKIP-ENCODING"));
     }
 
     [Fact]
@@ -1652,6 +1775,27 @@ public sealed class FixtureVaultTests
 
     private static byte[] Utf8Bom(string text) =>
         [.. Encoding.UTF8.GetPreamble(), .. Encoding.UTF8.GetBytes(text)];
+
+    private static byte[] EncodeWithDeclaredBom(string encodingName, string text)
+    {
+        Encoding encoding = encodingName switch
+        {
+            "utf-16le" => Encoding.Unicode,
+            "utf-16be" => Encoding.BigEndianUnicode,
+            "utf-32le" => Encoding.UTF32,
+            "utf-32be" => new UTF32Encoding(bigEndian: true, byteOrderMark: false),
+            _ => throw new ArgumentOutOfRangeException(nameof(encodingName))
+        };
+        byte[] preamble = encodingName switch
+        {
+            "utf-16le" => [0xFF, 0xFE],
+            "utf-16be" => [0xFE, 0xFF],
+            "utf-32le" => [0xFF, 0xFE, 0x00, 0x00],
+            "utf-32be" => [0x00, 0x00, 0xFE, 0xFF],
+            _ => throw new ArgumentOutOfRangeException(nameof(encodingName))
+        };
+        return [.. preamble, .. encoding.GetBytes(text)];
+    }
 
     private static byte[] PngBytes() =>
         [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0xFF];

@@ -154,6 +154,11 @@ internal static class FixtureVaultApplication
                 errorOutput.WriteLine($"{scanError.Code}: {scanError.Message}");
             }
 
+            if (result.Report.Skipped.Count > 0)
+            {
+                WriteSkippedDiagnostics(result.Report.Skipped, errorOutput);
+            }
+
             return result.ExitCode;
         }
 
@@ -175,9 +180,21 @@ internal static class FixtureVaultApplication
 
         if (result.Report.Skipped.Count > 0)
         {
-            output.WriteLine($"{result.Report.Skipped.Count} check(s) skipped conservatively.");
+            WriteSkippedDiagnostics(result.Report.Skipped, output);
         }
 
         return result.ExitCode;
+    }
+
+    private static void WriteSkippedDiagnostics(IReadOnlyList<SkippedDiagnostic> skipped, TextWriter writer)
+    {
+        foreach (SkippedDiagnostic diagnostic in skipped)
+        {
+            writer.WriteLine(diagnostic.Path is null
+                ? $"{diagnostic.Code}: {diagnostic.Reason}"
+                : $"{diagnostic.Code} {diagnostic.Path}: {diagnostic.Reason}");
+        }
+
+        writer.WriteLine($"{skipped.Count} check(s) skipped conservatively.");
     }
 }

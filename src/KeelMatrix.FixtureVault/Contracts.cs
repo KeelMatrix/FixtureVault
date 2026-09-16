@@ -18,6 +18,10 @@ internal static class FixtureVaultContract
     internal const string SensitiveDataDetectorErrorMessage = "Sensitive-data detection could not be completed safely.";
     internal const string PathPolicyTraversalErrorCode = "FV-E015";
     internal const string PathPolicyTraversalErrorMessage = "Repository path-policy discovery could not be completed safely.";
+    internal const string UninspectableContentErrorCode = "FV-E016";
+    internal const string UninspectableContentErrorMessage = "Content inspection could not be completed because no encoding suitable for inspection could be established.";
+    internal const string UninspectableContentSkippedCode = "FV-SKIP-ENCODING";
+    internal const string UninspectableContentSkippedReason = "Content-dependent checks, including sensitive-data detection, did not run for this fixture because no encoding suitable for content inspection could be established.";
 
     internal static readonly JsonSerializerOptions JsonOptions = new()
     {
