@@ -9,6 +9,8 @@ namespace KeelMatrix.FixtureVault.Tests;
 
 public sealed class FixtureVaultTests
 {
+    private const string SensitiveValue = "fixture-test-secret-1234567890";
+
     [Fact]
     public void Init_creates_only_the_versioned_policy_file()
     {
@@ -860,7 +862,7 @@ public sealed class FixtureVaultTests
         JsonElement skip = Assert.Single(report.RootElement.GetProperty("skipped").EnumerateArray(), item =>
             item.GetProperty("code").GetString() == FixtureVaultContract.UninspectableContentSkippedCode);
         Assert.Equal("tests/Payments/Create.verified.json", skip.GetProperty("path").GetString());
-        Assert.Equal(FixtureVaultContract.UnprovenTextEncodingSkippedReason, skip.GetProperty("reason").GetString());
+        Assert.Equal(FixtureVaultContract.UndeclaredNulContentSkippedReason, skip.GetProperty("reason").GetString());
         JsonElement scanError = Assert.Single(report.RootElement.GetProperty("errors").EnumerateArray());
         Assert.Equal(FixtureVaultContract.UninspectableContentErrorCode, scanError.GetProperty("code").GetString());
         Assert.DoesNotContain(sensitiveValue, output, StringComparison.Ordinal);
@@ -892,7 +894,7 @@ public sealed class FixtureVaultTests
         JsonElement skip = Assert.Single(report.RootElement.GetProperty("skipped").EnumerateArray(), item =>
             item.GetProperty("code").GetString() == FixtureVaultContract.UninspectableContentSkippedCode);
         Assert.Equal("tests/Payments/Create.verified.json", skip.GetProperty("path").GetString());
-        Assert.Equal(FixtureVaultContract.UnprovenTextEncodingSkippedReason, skip.GetProperty("reason").GetString());
+        Assert.Equal(FixtureVaultContract.UndeclaredNulContentSkippedReason, skip.GetProperty("reason").GetString());
         JsonElement scanError = Assert.Single(report.RootElement.GetProperty("errors").EnumerateArray());
         Assert.Equal(FixtureVaultContract.UninspectableContentErrorCode, scanError.GetProperty("code").GetString());
     }
@@ -914,7 +916,7 @@ public sealed class FixtureVaultTests
         SkippedDiagnostic skip = Assert.Single(result.Report.Skipped, item =>
             item.Code == FixtureVaultContract.UninspectableContentSkippedCode);
         Assert.Equal("tests/Payments/Create.verified/Order.json", skip.Path);
-        Assert.Equal(FixtureVaultContract.UnprovenTextEncodingSkippedReason, skip.Reason);
+        Assert.Equal(FixtureVaultContract.UndeclaredNulContentSkippedReason, skip.Reason);
         Assert.Contains(result.Report.Errors, item => item.Code == FixtureVaultContract.UninspectableContentErrorCode);
     }
 
@@ -933,7 +935,7 @@ public sealed class FixtureVaultTests
         SkippedDiagnostic skip = Assert.Single(result.Report.Skipped, item =>
             item.Code == FixtureVaultContract.UninspectableContentSkippedCode);
         Assert.Equal("tests/Payments/Create.verified.json", skip.Path);
-        Assert.Equal(FixtureVaultContract.UnprovenTextEncodingSkippedReason, skip.Reason);
+        Assert.Equal(FixtureVaultContract.UninspectableContentSkippedReason, skip.Reason);
         Assert.Contains(result.Report.Errors, item => item.Code == FixtureVaultContract.UninspectableContentErrorCode);
     }
 
@@ -953,7 +955,194 @@ public sealed class FixtureVaultTests
         SkippedDiagnostic skip = Assert.Single(result.Report.Skipped, item =>
             item.Code == FixtureVaultContract.UninspectableContentSkippedCode);
         Assert.Equal("tests/nul-bytes.golden", skip.Path);
-        Assert.Equal(FixtureVaultContract.UnprovenTextEncodingSkippedReason, skip.Reason);
+        Assert.Equal(FixtureVaultContract.UndeclaredNulContentSkippedReason, skip.Reason);
+    }
+
+    [Theory]
+    // Declared encoding | decoded content | whether the fixture also carries a synthetic sensitive value.
+    [InlineData("none", "text", false)]
+    [InlineData("none", "text", true)]
+    [InlineData("none", "nul", false)]
+    [InlineData("none", "nul", true)]
+    [InlineData("utf-8", "text", false)]
+    [InlineData("utf-8", "text", true)]
+    [InlineData("utf-8", "nul", false)]
+    [InlineData("utf-8", "nul", true)]
+    [InlineData("utf-16le", "text", false)]
+    [InlineData("utf-16le", "text", true)]
+    [InlineData("utf-16le", "nul", false)]
+    [InlineData("utf-16le", "nul", true)]
+    [InlineData("utf-16be", "text", false)]
+    [InlineData("utf-16be", "text", true)]
+    [InlineData("utf-16be", "nul", false)]
+    [InlineData("utf-16be", "nul", true)]
+    [InlineData("utf-32le", "text", false)]
+    [InlineData("utf-32le", "text", true)]
+    [InlineData("utf-32le", "nul", false)]
+    [InlineData("utf-32le", "nul", true)]
+    [InlineData("utf-32be", "text", false)]
+    [InlineData("utf-32be", "text", true)]
+    [InlineData("utf-32be", "nul", false)]
+    [InlineData("utf-32be", "nul", true)]
+    [InlineData("none", "undecodable", false)]
+    [InlineData("utf-8", "undecodable", false)]
+    [InlineData("utf-16le", "undecodable", false)]
+    [InlineData("utf-16be", "undecodable", false)]
+    [InlineData("utf-32le", "undecodable", false)]
+    [InlineData("utf-32be", "undecodable", false)]
+    public void Content_classification_decides_the_encoding_decodability_nul_matrix(
+        string declaredEncoding,
+        string contentShape,
+        bool withSensitiveValue)
+    {
+        ContentClassification classification = ContentClassification.Classify(
+            DeclaredEncodingFixtureBytes(declaredEncoding, contentShape, withSensitiveValue));
+
+        switch (contentShape)
+        {
+            case "text":
+                Assert.Equal(ContentDecodeOutcome.Decoded, classification.Outcome);
+                Assert.Contains(
+                    withSensitiveValue ? SensitiveValue : "orderId",
+                    classification.Text,
+                    StringComparison.Ordinal);
+                break;
+            case "nul":
+                Assert.Equal(ContentDecodeOutcome.DecodedWithNul, classification.Outcome);
+                Assert.Contains('\0', classification.Text);
+                break;
+            default:
+                Assert.Equal(ContentDecodeOutcome.Undecodable, classification.Outcome);
+                Assert.Equal(string.Empty, classification.Text);
+                break;
+        }
+
+        Assert.Equal(
+            declaredEncoding == "none" ? null : DeclaredEncodingName(declaredEncoding),
+            classification.DeclaredEncodingName);
+        Assert.Equal(
+            contentShape == "text" ? ContentKind.Inspected : ContentKind.Uninspectable,
+            ContentClassification.Resolve(classification, isKnownBinaryExtension: false, isVerifyFixture: true));
+        // A known binary extension is never decoded as text, whatever its bytes happen to decode to.
+        Assert.Equal(
+            ContentKind.BinaryAsset,
+            ContentClassification.Resolve(classification, isKnownBinaryExtension: true, isVerifyFixture: true));
+    }
+
+    [Fact]
+    public void Undecodable_nul_bytes_are_a_binary_asset_only_outside_the_verify_convention()
+    {
+        ContentClassification classification = ContentClassification.Classify(
+            [0x89, 0x50, 0x4E, 0x47, 0x00, 0x01]);
+
+        Assert.Equal(ContentDecodeOutcome.Undecodable, classification.Outcome);
+        Assert.Null(classification.DeclaredEncodingName);
+        Assert.True(classification.ProvesUndeclaredBinaryBlob);
+        Assert.Equal(
+            ContentKind.Uninspectable,
+            ContentClassification.Resolve(classification, isKnownBinaryExtension: false, isVerifyFixture: true));
+        Assert.Equal(
+            ContentKind.BinaryAsset,
+            ContentClassification.Resolve(classification, isKnownBinaryExtension: false, isVerifyFixture: false));
+    }
+
+    [Theory]
+    // Declared encoding | decoded content | whether the fixture also carries a synthetic sensitive value.
+    [InlineData("none", "text", false)]
+    [InlineData("none", "text", true)]
+    [InlineData("none", "nul", false)]
+    [InlineData("none", "nul", true)]
+    [InlineData("utf-8", "text", false)]
+    [InlineData("utf-8", "text", true)]
+    [InlineData("utf-8", "nul", false)]
+    [InlineData("utf-8", "nul", true)]
+    [InlineData("utf-16le", "text", false)]
+    [InlineData("utf-16le", "text", true)]
+    [InlineData("utf-16le", "nul", false)]
+    [InlineData("utf-16le", "nul", true)]
+    [InlineData("utf-16be", "text", false)]
+    [InlineData("utf-16be", "text", true)]
+    [InlineData("utf-16be", "nul", false)]
+    [InlineData("utf-16be", "nul", true)]
+    [InlineData("utf-32le", "text", false)]
+    [InlineData("utf-32le", "text", true)]
+    [InlineData("utf-32le", "nul", false)]
+    [InlineData("utf-32le", "nul", true)]
+    [InlineData("utf-32be", "text", false)]
+    [InlineData("utf-32be", "text", true)]
+    [InlineData("utf-32be", "nul", false)]
+    [InlineData("utf-32be", "nul", true)]
+    [InlineData("none", "undecodable", false)]
+    [InlineData("utf-8", "undecodable", false)]
+    [InlineData("utf-16le", "undecodable", false)]
+    [InlineData("utf-16be", "undecodable", false)]
+    [InlineData("utf-32le", "undecodable", false)]
+    [InlineData("utf-32be", "undecodable", false)]
+    public void Content_classification_matrix_is_reflected_in_every_reported_field(
+        string declaredEncoding,
+        string contentShape,
+        bool withSensitiveValue)
+    {
+        const string path = "tests/Payments/Create.verified.json";
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes(path, DeclaredEncodingFixtureBytes(declaredEncoding, contentShape, withSensitiveValue));
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", "json"], telemetry, out string output, out string error);
+        using JsonDocument report = JsonDocument.Parse(output);
+        JsonElement root = report.RootElement;
+        JsonElement[] findings = [.. root.GetProperty("findings").EnumerateArray()];
+        JsonElement[] skipped = [.. root.GetProperty("skipped").EnumerateArray()];
+        JsonElement[] errors = [.. root.GetProperty("errors").EnumerateArray()];
+
+        Assert.Equal(1, root.GetProperty("filesInspected").GetInt32());
+
+        if (contentShape is "nul" or "undecodable")
+        {
+            // Content that cannot be trusted is never reported as a clean, fully checked fixture,
+            // whether or not a detector would have matched.
+            Assert.Equal(2, exitCode);
+            Assert.Empty(findings);
+            Assert.Empty(error);
+            Assert.Equal(0, telemetry.SuccessfulScans);
+            JsonElement scanError = Assert.Single(errors);
+            Assert.Equal(FixtureVaultContract.UninspectableContentErrorCode, scanError.GetProperty("code").GetString());
+            JsonElement skip = Assert.Single(skipped, item =>
+                item.GetProperty("code").GetString() == FixtureVaultContract.UninspectableContentSkippedCode);
+            Assert.Equal(path, skip.GetProperty("path").GetString());
+            string reason = skip.GetProperty("reason").GetString()!;
+            Assert.Equal(ExpectedSkipReason(declaredEncoding, contentShape), reason);
+            if (declaredEncoding != "none")
+            {
+                Assert.DoesNotContain("declare no byte-order mark", reason, StringComparison.Ordinal);
+                Assert.Contains(DeclaredEncodingName(declaredEncoding), reason, StringComparison.Ordinal);
+            }
+        }
+        else if (withSensitiveValue)
+        {
+            Assert.Equal(1, exitCode);
+            Assert.Empty(errors);
+            Assert.Empty(error);
+            Assert.Equal(1, telemetry.SuccessfulScans);
+            JsonElement finding = Assert.Single(findings);
+            Assert.Equal("FV007", finding.GetProperty("ruleId").GetString());
+            Assert.Equal(path, finding.GetProperty("path").GetString());
+            Assert.DoesNotContain(skipped, item =>
+                item.GetProperty("code").GetString() == FixtureVaultContract.UninspectableContentSkippedCode);
+        }
+        else
+        {
+            Assert.Equal(0, exitCode);
+            Assert.Empty(findings);
+            Assert.Empty(errors);
+            Assert.Empty(error);
+            Assert.Equal(1, telemetry.SuccessfulScans);
+            Assert.DoesNotContain(skipped, item =>
+                item.GetProperty("code").GetString() == FixtureVaultContract.UninspectableContentSkippedCode);
+        }
+
+        AssertNoCanary(SensitiveValue, output, error);
     }
 
     [Fact]
@@ -1914,6 +2103,68 @@ public sealed class FixtureVaultTests
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllText(path, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         }
+    }
+
+    private static byte[] DeclaredEncodingFixtureBytes(
+        string declaredEncoding,
+        string contentShape,
+        bool withSensitiveValue)
+    {
+        if (contentShape == "undecodable")
+        {
+            // Valid byte-order marks followed by bytes no supported encoding of that kind decodes.
+            return declaredEncoding switch
+            {
+                "none" => [0xC3, 0x28],
+                "utf-8" => [.. Encoding.UTF8.GetPreamble(), 0xC3, 0x28],
+                "utf-16le" => [0xFF, 0xFE, 0x00, 0xD8],
+                "utf-16be" => [0xFE, 0xFF, 0xD8, 0x00],
+                "utf-32le" => [0xFF, 0xFE, 0x00, 0x00, 0x00, 0x00, 0x11, 0x00],
+                "utf-32be" => [0x00, 0x00, 0xFE, 0xFF, 0x00, 0x11, 0x00, 0x00],
+                _ => throw new ArgumentOutOfRangeException(nameof(declaredEncoding))
+            };
+        }
+
+        string text = withSensitiveValue
+            ? $"{{\"apiKey\":\"{SensitiveValue}\"}}\n"
+            : "{\"orderId\":\"1\"}\n";
+        if (contentShape == "nul")
+        {
+            text += "\0";
+        }
+
+        return declaredEncoding switch
+        {
+            "none" => Encoding.UTF8.GetBytes(text),
+            "utf-8" => Utf8Bom(text),
+            "utf-16le" or "utf-16be" or "utf-32le" or "utf-32be" => EncodeWithDeclaredBom(declaredEncoding, text),
+            _ => throw new ArgumentOutOfRangeException(nameof(declaredEncoding))
+        };
+    }
+
+    private static string DeclaredEncodingName(string declaredEncoding) => declaredEncoding switch
+    {
+        "utf-8" => ContentClassification.Utf8EncodingName,
+        "utf-16le" => ContentClassification.Utf16LittleEndianEncodingName,
+        "utf-16be" => ContentClassification.Utf16BigEndianEncodingName,
+        "utf-32le" => ContentClassification.Utf32LittleEndianEncodingName,
+        "utf-32be" => ContentClassification.Utf32BigEndianEncodingName,
+        _ => throw new ArgumentOutOfRangeException(nameof(declaredEncoding))
+    };
+
+    private static string ExpectedSkipReason(string declaredEncoding, string contentShape)
+    {
+        if (declaredEncoding == "none")
+        {
+            return contentShape == "nul"
+                ? FixtureVaultContract.UndeclaredNulContentSkippedReason
+                : FixtureVaultContract.UninspectableContentSkippedReason;
+        }
+
+        string name = DeclaredEncodingName(declaredEncoding);
+        return contentShape == "nul"
+            ? FixtureVaultContract.DeclaredNulContentSkippedReason(name)
+            : FixtureVaultContract.UndecodableDeclaredContentSkippedReason(name);
     }
 
     private static string ReadCompatibilityFixture(string fileName)

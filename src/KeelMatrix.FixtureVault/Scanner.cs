@@ -14,12 +14,6 @@ internal sealed class FixtureScanner
     [
         ".bmp", ".gif", ".ico", ".jpg", ".jpeg", ".pdf", ".png", ".zip", ".bin", ".webp"
     ];
-    private static readonly Encoding StrictUtf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
-    private static readonly Encoding StrictUtf16LittleEndian = new UnicodeEncoding(bigEndian: false, byteOrderMark: false, throwOnInvalidBytes: true);
-    private static readonly Encoding StrictUtf16BigEndian = new UnicodeEncoding(bigEndian: true, byteOrderMark: false, throwOnInvalidBytes: true);
-    private static readonly Encoding StrictUtf32LittleEndian = new UTF32Encoding(bigEndian: false, byteOrderMark: false, throwOnInvalidCharacters: true);
-    private static readonly Encoding StrictUtf32BigEndian = new UTF32Encoding(bigEndian: true, byteOrderMark: false, throwOnInvalidCharacters: true);
-
     internal static ScanResult Scan(
         string repositoryRoot,
         FixtureVaultPolicy policy,
@@ -423,81 +417,51 @@ internal sealed class FixtureScanner
     {
         bool isVerifyFixture = HasConvention(policy, "verify") && IsVerifySnapshotPath(file.RelativePath);
         bool isKnownBinaryExtension = IsKnownBinaryExtension(file.RelativePath);
-        bool declaresNonUtf8Encoding = TryGetDeclaredNonUtf8Encoding(bytes, out int bomLength, out Encoding? declaredEncoding);
-        string text = string.Empty;
-        bool decoded = declaresNonUtf8Encoding
-            ? TryDecodeText(bytes, bomLength, declaredEncoding!, out text)
-            : TryDecodeText(bytes, 0, StrictUtf8, out text);
+        ContentClassification classification = ContentClassification.Classify(bytes);
 
-        // NUL is a legal UTF-8 code point, so bytes that decode as UTF-8 text can still be a BOM-less
-        // UTF-16/UTF-32 stream. Without a byte-order mark, NUL bytes prove no text encoding, so they
-        // are never enough on their own to treat a fixture as an accepted binary baseline.
-        bool hasUndeclaredNulBytes = !declaresNonUtf8Encoding && bytes.Contains((byte)0);
-        bool isUnclassifiedBinaryBlob = !decoded && hasUndeclaredNulBytes;
-
-        // Binary classification needs an explicit signal: a known binary file extension, or bytes that
-        // no supported encoding decodes and that carry NUL bytes.
-        if (isKnownBinaryExtension || isUnclassifiedBinaryBlob)
+        switch (ContentClassification.Resolve(classification, isKnownBinaryExtension, isVerifyFixture))
         {
-            // Received artifacts are reported as FV001 and are never decoded as text.
-            if (HasConvention(policy, "verify") && IsVerifyReceivedPath(file.RelativePath))
-            {
-                return null;
-            }
+            case ContentKind.BinaryAsset:
+                // Binary assets are never decoded as text. A received artifact is already reported as
+                // FV001, and an accepted baseline or allowed binary extension is governed by size only.
+                if (HasConvention(policy, "verify") && IsVerifyReceivedPath(file.RelativePath))
+                {
+                    return null;
+                }
 
-            if (isKnownBinaryExtension && IsAcceptedBinaryFixture(file.RelativePath, policy))
-            {
-                return null;
-            }
+                if (isKnownBinaryExtension && IsAcceptedBinaryFixture(file.RelativePath, policy))
+                {
+                    return null;
+                }
 
-            if (!isKnownBinaryExtension && isVerifyFixture)
-            {
-                // An accepted Verify baseline is not proven binary by NUL bytes alone, so it is
-                // reported as uninspected content instead of being silently accepted.
-                return ReportUninspectableContent(
-                    file,
-                    isVerifyFixture,
-                    declaresNonUtf8Encoding,
-                    hasUndeclaredNulBytes,
-                    policy,
+                AddFinding(
                     findings,
-                    skipped);
-            }
+                    policy,
+                    "FV005",
+                    file.RelativePath,
+                    "An unexpected binary asset is present in the fixture tree.",
+                    "Remove the binary asset or keep only supported text fixtures.");
+                return null;
 
-            AddFinding(
-                findings,
-                policy,
-                "FV005",
-                file.RelativePath,
-                "An unexpected binary asset is present in the fixture tree.",
-                "Remove the binary asset or keep only supported text fixtures.");
-            return null;
+            case ContentKind.Uninspectable:
+                return ReportUninspectableContent(file, classification, isVerifyFixture, policy, findings, skipped);
+
+            default:
+                break;
         }
 
-        if (!decoded || hasUndeclaredNulBytes)
-        {
-            return ReportUninspectableContent(
-                file,
-                isVerifyFixture,
-                declaresNonUtf8Encoding,
-                hasUndeclaredNulBytes,
-                policy,
-                findings,
-                skipped);
-        }
-
-        if (declaresNonUtf8Encoding && !isVerifyFixture)
+        if (classification.IsNonUtf8Declaration && !isVerifyFixture)
         {
             AddFinding(
                 findings,
                 policy,
                 "FV006",
                 file.RelativePath,
-                "The fixture uses a non-UTF-8 encoding.",
-                "Save the fixture as UTF-8 text. A UTF-8 byte-order mark is supported where the fixture convention permits it.");
+                FixtureVaultContract.NonUtf8EncodingDiagnosticMessage,
+                FixtureVaultContract.NonUtf8EncodingRemediation);
         }
 
-        SensitiveDataDetectionResult sensitiveDataResult = HasSensitiveData(text, policy, sensitiveDataDetectors);
+        SensitiveDataDetectionResult sensitiveDataResult = HasSensitiveData(classification.Text, policy, sensitiveDataDetectors);
         if (sensitiveDataResult == SensitiveDataDetectionResult.Failed)
         {
             return new ScanError(
@@ -521,9 +485,8 @@ internal sealed class FixtureScanner
 
     private static ScanError? ReportUninspectableContent(
         SafeFileEntry file,
+        ContentClassification classification,
         bool isVerifyFixture,
-        bool declaresNonUtf8Encoding,
-        bool hasUndeclaredNulBytes,
         FixtureVaultPolicy policy,
         ICollection<Finding> findings,
         ICollection<SkippedDiagnostic> skipped)
@@ -534,9 +497,7 @@ internal sealed class FixtureScanner
             FixtureVaultContract.UninspectableContentSkippedCode,
             null,
             file.RelativePath,
-            hasUndeclaredNulBytes
-                ? FixtureVaultContract.UnprovenTextEncodingSkippedReason
-                : FixtureVaultContract.UninspectableContentSkippedReason));
+            classification.SkippedReason));
 
         if (!isVerifyFixture)
         {
@@ -545,16 +506,8 @@ internal sealed class FixtureScanner
                 policy,
                 "FV006",
                 file.RelativePath,
-                hasUndeclaredNulBytes
-                    ? "The fixture contains NUL characters but declares no byte-order mark, so it is not proven to be UTF-8 text."
-                    : declaresNonUtf8Encoding
-                        ? "The fixture uses a non-UTF-8 encoding."
-                        : "The fixture is not valid UTF-8 text.",
-                hasUndeclaredNulBytes
-                    ? "Save the fixture as UTF-8 text without NUL characters, or declare UTF-16 or UTF-32 with a byte-order mark."
-                    : declaresNonUtf8Encoding
-                        ? "Save the fixture as UTF-8 text. A UTF-8 byte-order mark is supported where the fixture convention permits it."
-                        : "Save the fixture as deterministic UTF-8 text and avoid locale-specific encodings.");
+                classification.DiagnosticMessage,
+                classification.Remediation);
         }
 
         return IsSensitiveDataDetectionEnabled(policy)
@@ -562,56 +515,6 @@ internal sealed class FixtureScanner
                 FixtureVaultContract.UninspectableContentErrorCode,
                 FixtureVaultContract.UninspectableContentErrorMessage)
             : null;
-    }
-
-    private static bool TryGetDeclaredNonUtf8Encoding(byte[] bytes, out int bomLength, out Encoding? encoding)
-    {
-        // UTF-32 is checked first because FF FE 00 00 is also a UTF-16 little-endian byte-order mark.
-        if (bytes.Length >= 4 && bytes[0] == 0x00 && bytes[1] == 0x00 && bytes[2] == 0xFE && bytes[3] == 0xFF)
-        {
-            bomLength = 4;
-            encoding = StrictUtf32BigEndian;
-            return true;
-        }
-
-        if (bytes.Length >= 4 && bytes[0] == 0xFF && bytes[1] == 0xFE && bytes[2] == 0x00 && bytes[3] == 0x00)
-        {
-            bomLength = 4;
-            encoding = StrictUtf32LittleEndian;
-            return true;
-        }
-
-        if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
-        {
-            bomLength = 2;
-            encoding = StrictUtf16BigEndian;
-            return true;
-        }
-
-        if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
-        {
-            bomLength = 2;
-            encoding = StrictUtf16LittleEndian;
-            return true;
-        }
-
-        bomLength = 0;
-        encoding = null;
-        return false;
-    }
-
-    private static bool TryDecodeText(byte[] bytes, int offset, Encoding encoding, out string text)
-    {
-        try
-        {
-            text = encoding.GetString(bytes, offset, bytes.Length - offset);
-            return true;
-        }
-        catch (DecoderFallbackException)
-        {
-            text = string.Empty;
-            return false;
-        }
     }
 
     private static SensitiveDataDetectionResult HasSensitiveData(

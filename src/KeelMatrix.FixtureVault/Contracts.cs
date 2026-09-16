@@ -22,7 +22,28 @@ internal static class FixtureVaultContract
     internal const string UninspectableContentErrorMessage = "Content inspection could not be completed because no encoding suitable for inspection could be established.";
     internal const string UninspectableContentSkippedCode = "FV-SKIP-ENCODING";
     internal const string UninspectableContentSkippedReason = "Content-dependent checks, including sensitive-data detection, did not run for this fixture because no encoding suitable for content inspection could be established.";
-    internal const string UnprovenTextEncodingSkippedReason = "Content-dependent checks, including sensitive-data detection, did not run for this fixture because its bytes contain NUL characters and declare no byte-order mark, so no text encoding is proven and undeclared encodings are never inferred.";
+    internal const string UndeclaredNulContentSkippedReason = "Content-dependent checks, including sensitive-data detection, did not run for this fixture because its decoded content contains a NUL (U+0000) character and no byte-order mark declares a text encoding, so the decoded text cannot be trusted.";
+    internal const string UndeclaredNulContentDiagnosticMessage = "The fixture contains NUL characters but declares no byte-order mark, so it is not proven to be UTF-8 text.";
+    internal const string UndecodableContentDiagnosticMessage = "The fixture is not valid UTF-8 text.";
+    internal const string NonUtf8EncodingDiagnosticMessage = "The fixture uses a non-UTF-8 encoding.";
+    internal const string NonUtf8EncodingRemediation = "Save the fixture as UTF-8 text. A UTF-8 byte-order mark is supported where the fixture convention permits it.";
+    internal const string NulContentRemediation = "Save the fixture as UTF-8 text without NUL characters; a byte-order mark does not make NUL content inspectable.";
+    internal const string UndeclaredEncodingRemediation = "Save the fixture as deterministic UTF-8 text and avoid locale-specific encodings.";
+
+    internal static string DeclaredNulContentSkippedReason(string declaredEncodingName) =>
+        $"Content-dependent checks, including sensitive-data detection, did not run for this fixture because its decoded {declaredEncodingName} content contains a NUL (U+0000) character, so the decoded text cannot be trusted.";
+
+    internal static string UndecodableDeclaredContentSkippedReason(string declaredEncodingName) =>
+        $"Content-dependent checks, including sensitive-data detection, did not run for this fixture because its bytes declare {declaredEncodingName} with a byte-order mark but are not valid {declaredEncodingName} text.";
+
+    internal static string DeclaredNulContentDiagnosticMessage(string declaredEncodingName) =>
+        $"The fixture declares {declaredEncodingName} with a byte-order mark, but its decoded content contains a NUL (U+0000) character, so its content is not trusted for content inspection.";
+
+    internal static string UndecodableDeclaredContentDiagnosticMessage(string declaredEncodingName) =>
+        $"The fixture declares {declaredEncodingName} with a byte-order mark, but its bytes are not valid {declaredEncodingName} text.";
+
+    internal static string DeclaredEncodingRemediation(string declaredEncodingName) =>
+        $"Save the fixture as valid {declaredEncodingName} text without NUL characters, or as UTF-8 text.";
 
     internal static readonly JsonSerializerOptions JsonOptions = new()
     {
