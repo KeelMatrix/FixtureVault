@@ -20,12 +20,20 @@ internal sealed class FixtureScanner
         FixtureVaultPolicy policy,
         IReadOnlyList<string> rootOverrides,
         bool strictOverride,
-        GlobMatchBudget? matcherBudget = null)
+        GlobMatchBudget? matcherBudget = null,
+        IReadOnlyList<ISensitiveDataDetector>? additionalSensitiveDataDetectors = null,
+        FixtureFileWalk? fileWalk = null)
     {
         var findings = new List<Finding>();
         var skipped = new List<SkippedDiagnostic>();
         var errors = new List<ScanError>();
         GlobMatchBudget ignoreBudget = matcherBudget ?? new GlobMatchBudget();
+        FixtureFileWalk walkFunction = fileWalk ?? SafeFileWalker.Walk;
+        IReadOnlyList<ISensitiveDataDetector> detectors = CreateDefaultSensitiveDataDetectors();
+        if (additionalSensitiveDataDetectors is not null)
+        {
+            detectors = [.. detectors, .. additionalSensitiveDataDetectors];
+        }
 
         var ignoredMatchers = new List<GlobMatcher>();
         foreach (string ignoredPath in policy.IgnoredPaths ?? [])
@@ -64,7 +72,7 @@ internal sealed class FixtureScanner
             OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
         foreach (ResolvedRoot root in activeRoots)
         {
-            WalkResult walk = SafeFileWalker.Walk(
+            WalkResult walk = walkFunction(
                 repositoryRoot,
                 root.FullPath,
                 failOnAccessErrors: true,
@@ -104,7 +112,16 @@ internal sealed class FixtureScanner
             }
         }
 
-        AddPathPolicyFindings(repositoryRoot, policy, activeRoots, ignoredMatchers, ignoreBudget, findings, skipped, errors);
+        AddPathPolicyFindings(
+            repositoryRoot,
+            policy,
+            activeRoots,
+            ignoredMatchers,
+            ignoreBudget,
+            findings,
+            skipped,
+            errors,
+            walkFunction);
         if (errors.Count > 0)
         {
             return CompleteWithErrors(errors, fixtureFiles.Count);
@@ -187,7 +204,12 @@ internal sealed class FixtureScanner
             }
 
             totalBytesRead += length;
-            InspectContent(file, bytes, policy, findings);
+            ScanError? contentError = InspectContent(file, bytes, policy, findings, detectors);
+            if (contentError is not null)
+            {
+                errors.Add(contentError);
+                return CompleteWithErrors(errors, fixtureFiles.Count);
+            }
         }
 
         bool strict = strictOverride || policy.Ci!.Strict == true;
@@ -219,17 +241,22 @@ internal sealed class FixtureScanner
         GlobMatchBudget matcherBudget,
         ICollection<Finding> findings,
         ICollection<SkippedDiagnostic> skipped,
-        List<ScanError> errors)
+        List<ScanError> errors,
+        FixtureFileWalk walkFunction)
     {
-        WalkResult walk = SafeFileWalker.Walk(
+        WalkResult walk = walkFunction(
             repositoryRoot,
             repositoryRoot,
-            failOnAccessErrors: false,
+            failOnAccessErrors: true,
             shouldPruneDirectory: relativePath => IsIgnoredDirectory(relativePath, ignoredMatchers, matcherBudget));
         AddReparseSkips(walk, skipped);
         if (walk.Error is not null)
         {
-            errors.Add(walk.Error);
+            errors.Add(walk.Error.Code == "FV-E002"
+                ? new ScanError(
+                    FixtureVaultContract.PathPolicyTraversalErrorCode,
+                    FixtureVaultContract.PathPolicyTraversalErrorMessage)
+                : walk.Error);
             return;
         }
 
@@ -379,12 +406,14 @@ internal sealed class FixtureScanner
         }
     }
 
-    private static void InspectContent(
+    private static ScanError? InspectContent(
         SafeFileEntry file,
         byte[] bytes,
         FixtureVaultPolicy policy,
-        ICollection<Finding> findings)
+        ICollection<Finding> findings,
+        IReadOnlyList<ISensitiveDataDetector> sensitiveDataDetectors)
     {
+        bool isVerifyFixture = HasConvention(policy, "verify") && IsVerifySnapshotPath(file.RelativePath);
         bool hasOtherBom = bytes.Length >= 2 && ((bytes[0] == 0xFF && bytes[1] == 0xFE) ||
                                                  (bytes[0] == 0xFE && bytes[1] == 0xFF) ||
                                                  (bytes.Length >= 4 && bytes[0] == 0x00 && bytes[1] == 0x00 &&
@@ -396,12 +425,12 @@ internal sealed class FixtureScanner
         {
             if (HasConvention(policy, "verify") && IsVerifyReceivedPath(file.RelativePath))
             {
-                return;
+                return null;
             }
 
             if (IsAcceptedBinaryFixture(file.RelativePath, policy))
             {
-                return;
+                return null;
             }
 
             AddFinding(
@@ -411,19 +440,23 @@ internal sealed class FixtureScanner
                 file.RelativePath,
                 "An unexpected binary asset is present in the fixture tree.",
                 "Remove the binary asset or keep only supported text fixtures.");
-            return;
+            return null;
         }
 
         if (hasOtherBom)
         {
-            AddFinding(
-                findings,
-                policy,
-                "FV006",
-                file.RelativePath,
-                "The fixture uses a non-UTF-8 encoding.",
-                "Save the fixture as UTF-8 text. A UTF-8 byte-order mark is supported where the fixture convention permits it.");
-            return;
+            if (!isVerifyFixture)
+            {
+                AddFinding(
+                    findings,
+                    policy,
+                    "FV006",
+                    file.RelativePath,
+                    "The fixture uses a non-UTF-8 encoding.",
+                    "Save the fixture as UTF-8 text. A UTF-8 byte-order mark is supported where the fixture convention permits it.");
+            }
+
+            return null;
         }
 
         string text;
@@ -433,31 +466,29 @@ internal sealed class FixtureScanner
         }
         catch (DecoderFallbackException)
         {
-            AddFinding(
-                findings,
-                policy,
-                "FV006",
-                file.RelativePath,
-                "The fixture is not valid UTF-8 text.",
-                "Save the fixture as deterministic UTF-8 text and avoid locale-specific encodings.");
-            return;
+            if (!isVerifyFixture)
+            {
+                AddFinding(
+                    findings,
+                    policy,
+                    "FV006",
+                    file.RelativePath,
+                    "The fixture is not valid UTF-8 text.",
+                    "Save the fixture as deterministic UTF-8 text and avoid locale-specific encodings.");
+            }
+
+            return null;
         }
 
-        bool isVerifyFixture = HasConvention(policy, "verify") && IsVerifySnapshotPath(file.RelativePath);
-        bool hasCarriageReturn = bytes.Contains((byte)'\r');
-        bool hasTrailingNewline = bytes.Length > 0 && (bytes[^1] == (byte)'\r' || bytes[^1] == (byte)'\n');
-        if (isVerifyFixture && (hasCarriageReturn || hasTrailingNewline))
+        SensitiveDataDetectionResult sensitiveDataResult = HasSensitiveData(text, policy, sensitiveDataDetectors);
+        if (sensitiveDataResult == SensitiveDataDetectionResult.Failed)
         {
-            AddFinding(
-                findings,
-                policy,
-                "FV006",
-                file.RelativePath,
-                "The Verify fixture has newline bytes that do not match Verify's LF-only, no-trailing-newline convention.",
-                "Regenerate or save the Verify fixture as UTF-8 with LF-only newlines and no trailing newline. A UTF-8 byte-order mark is supported.");
+            return new ScanError(
+                FixtureVaultContract.SensitiveDataDetectorErrorCode,
+                FixtureVaultContract.SensitiveDataDetectorErrorMessage);
         }
 
-        if (HasSensitiveData(text, policy))
+        if (sensitiveDataResult == SensitiveDataDetectionResult.Found)
         {
             AddFinding(
                 findings,
@@ -467,16 +498,42 @@ internal sealed class FixtureScanner
                 "Potential sensitive data was detected in this fixture.",
                 "Remove the sensitive value from the fixture; FixtureVault never prints the matched value.");
         }
+
+        return null;
     }
 
-    private static bool HasSensitiveData(string text, FixtureVaultPolicy policy)
+    private static SensitiveDataDetectionResult HasSensitiveData(
+        string text,
+        FixtureVaultPolicy policy,
+        IReadOnlyList<ISensitiveDataDetector> sensitiveDataDetectors)
     {
         if (!(policy.SensitiveDataRules ?? []).Any(rule =>
                 rule.Equals(FixtureVaultContract.HighConfidenceSensitiveDataRule, StringComparison.OrdinalIgnoreCase)))
         {
-            return false;
+            return SensitiveDataDetectionResult.Clean;
         }
 
+        bool found = false;
+        foreach (ISensitiveDataDetector detector in sensitiveDataDetectors)
+        {
+            try
+            {
+                if (detector.IsSensitive(text))
+                {
+                    found = true;
+                }
+            }
+            catch
+            {
+                return SensitiveDataDetectionResult.Failed;
+            }
+        }
+
+        return found ? SensitiveDataDetectionResult.Found : SensitiveDataDetectionResult.Clean;
+    }
+
+    private static RedactionSensitiveDataDetector[] CreateDefaultSensitiveDataDetectors()
+    {
         ITextRedactor[] redactors =
         [
             new AuthorizationRedactor(),
@@ -491,23 +548,14 @@ internal sealed class FixtureScanner
                 @"(?i)[""']?\b(api[_-]?key|client[_-]?secret|password|secret|token)\b[""']?\s*[:=]\s*[""']?[A-Za-z0-9_./+=-]{16,}",
                 "$1=<redacted>")
         ];
+        return redactors.Select(redactor => new RedactionSensitiveDataDetector(redactor)).ToArray();
+    }
 
-        foreach (ITextRedactor redactor in redactors)
-        {
-            try
-            {
-                if (!string.Equals(redactor.Redact(text), text, StringComparison.Ordinal))
-                {
-                    return true;
-                }
-            }
-            catch
-            {
-                // A detector failure must not turn into a diagnostic leak or a scan crash.
-            }
-        }
-
-        return false;
+    private enum SensitiveDataDetectionResult
+    {
+        Clean,
+        Found,
+        Failed
     }
 
     private static bool IsFixtureCandidate(

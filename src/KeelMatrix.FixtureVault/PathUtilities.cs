@@ -203,6 +203,12 @@ internal sealed record WalkResult(
     IReadOnlyList<string> ReparsePaths,
     ScanError? Error);
 
+internal delegate WalkResult FixtureFileWalk(
+    string repositoryRoot,
+    string root,
+    bool failOnAccessErrors,
+    Func<string, GlobMatchStatus>? shouldPruneDirectory);
+
 internal enum GlobMatchStatus
 {
     NoMatch,

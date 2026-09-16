@@ -1,4 +1,5 @@
-﻿using System.Security.Cryptography;
+﻿using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Xunit;
@@ -762,18 +763,41 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
-    public void Invalid_encoding_and_verify_newlines_are_detected_deterministically()
+    public void Verify_encoding_and_newline_variants_are_not_blocked_but_non_verify_invalid_encoding_is_detected()
     {
         using var repository = new TemporaryRepository();
         repository.WritePolicy();
         repository.WriteBytes("tests/bom.golden", [0xEF, 0xBB, 0xBF, 0x6F, 0x6B, 0x0A]);
         repository.WriteBytes("tests/verify.verified.json", [0xEF, 0xBB, 0xBF, 0x6F, 0x6E, 0x65, 0x0D, 0x0A, 0x74, 0x77, 0x6F]);
         repository.WriteBytes("tests/utf16.golden", [0xFF, 0xFE, 0x6F, 0x00, 0x6B, 0x00]);
+        repository.WriteBytes("tests/verify-utf16.verified.json", [0xFF, 0xFE, 0x6F, 0x00, 0x6E, 0x00, 0x65, 0x00]);
 
         ScanResult result = repository.Scan();
 
-        Assert.Equal(2, result.Report.Findings.Count(item => item.RuleId == "FV006"));
+        Assert.Equal(1, result.Report.Findings.Count(item => item.RuleId == "FV006"));
+        Assert.Contains(result.Report.Findings, item => item.RuleId == "FV006" && item.Path == "tests/utf16.golden");
         Assert.DoesNotContain(result.Report.Findings, item => item.Path == "tests/bom.golden");
+        Assert.DoesNotContain(result.Report.Findings, item => item.Path == "tests/verify.verified.json");
+        Assert.DoesNotContain(result.Report.Findings, item => item.Path == "tests/verify-utf16.verified.json");
+        Assert.Equal(1, result.ExitCode);
+    }
+
+    [Fact]
+    public void Verify_custom_encoding_and_newline_tolerance_are_not_blocking_findings()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/custom-encoding.verified.json", [0xFF, 0xFE, 0x6F, 0x00, 0x6E, 0x00, 0x65, 0x00]);
+        repository.WriteBytes("tests/undecodable.verified.json", [0xC3, 0x28]);
+        repository.WriteBytes("tests/carriage-return.verified.json", [0x6F, 0x6E, 0x65, 0x0D, 0x0A, 0x74, 0x77, 0x6F]);
+        repository.WriteBytes("tests/trailing-newline.verified.json", [0x6F, 0x6E, 0x65, 0x0A]);
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.Report.Findings);
+        Assert.Empty(result.Report.Errors);
+        Assert.DoesNotContain(result.Report.Findings, item => item.Path == "tests/undecodable.verified.json");
     }
 
     [Fact]
@@ -802,6 +826,34 @@ public sealed class FixtureVaultTests
 
         Assert.Contains(result.Report.Findings, item => item.RuleId == "FV007");
         Assert.DoesNotContain(sensitiveValue, json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Sensitive_detector_failure_fails_closed_without_telemetry_or_canary_leakage()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/clean.golden", "clean");
+        const string canary = "detector-canary-do-not-leak-9f2c";
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(
+            ["scan", "--format", "json"],
+            telemetry,
+            out string output,
+            out string error,
+            additionalSensitiveDataDetectors: [new ThrowingSensitiveDataDetector(canary)]);
+
+        using JsonDocument report = JsonDocument.Parse(output);
+        JsonElement errorEntry = Assert.Single(report.RootElement.GetProperty("errors").EnumerateArray());
+        Assert.Equal(2, exitCode);
+        Assert.Equal(0, telemetry.SuccessfulScans);
+        Assert.Empty(error);
+        Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
+        Assert.Equal(FixtureVaultContract.SensitiveDataDetectorErrorCode, errorEntry.GetProperty("code").GetString());
+        Assert.Equal(FixtureVaultContract.SensitiveDataDetectorErrorMessage, errorEntry.GetProperty("message").GetString());
+        AssertNoCanary(canary, output, error);
+        Assert.DoesNotContain(canary, errorEntry.GetRawText(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -985,6 +1037,64 @@ public sealed class FixtureVaultTests
         Assert.Contains(result.Report.Errors, item => item.Code == "FV-E013");
         Assert.Empty(result.Report.Findings);
         Assert.Equal(0, result.Report.FilesInspected);
+    }
+
+    [Fact]
+    public void Path_policy_walk_failure_fails_closed_without_a_false_fv008_result()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("outside.golden", "fixture outside roots\n");
+
+        bool? pathPolicyWalkFailOnAccessErrors = null;
+        FixtureFileWalk failingWalk = (repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory) =>
+        {
+            if (string.Equals(root, repositoryRoot, StringComparison.Ordinal))
+            {
+                pathPolicyWalkFailOnAccessErrors = failOnAccessErrors;
+                return new WalkResult([], [], new ScanError("FV-E002", "test-only injected walk failure"));
+            }
+
+            return SafeFileWalker.Walk(repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory);
+        };
+
+        ScanResult result = repository.Scan(fileWalk: failingWalk);
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.False(result.Completed);
+        Assert.True(pathPolicyWalkFailOnAccessErrors);
+        ScanError error = Assert.Single(result.Report.Errors);
+        Assert.Equal(FixtureVaultContract.PathPolicyTraversalErrorCode, error.Code);
+        Assert.Equal(FixtureVaultContract.PathPolicyTraversalErrorMessage, error.Message);
+        Assert.DoesNotContain(result.Report.Findings, item => item.RuleId == "FV008");
+    }
+
+    [Fact]
+    public void Inaccessible_path_policy_subtree_fails_closed_when_platform_can_create_it()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("unreadable/hidden.golden", "fixture outside roots\n");
+        string inaccessibleDirectory = Path.Combine(repository.Root, "unreadable");
+
+        if (!TryMakeDirectoryInaccessible(inaccessibleDirectory, out Action restore, out string skipReason))
+        {
+            throw SkipException.ForSkip(skipReason);
+        }
+
+        try
+        {
+            ScanResult result = repository.Scan();
+
+            Assert.Equal(2, result.ExitCode);
+            Assert.False(result.Completed);
+            Assert.Contains(result.Report.Errors, item => item.Code == FixtureVaultContract.PathPolicyTraversalErrorCode);
+            Assert.DoesNotContain(result.Report.Findings, item => item.RuleId == "FV008" && item.Path == "unreadable/hidden.golden");
+        }
+        finally
+        {
+            restore();
+        }
     }
 
     [Fact]
@@ -1330,6 +1440,11 @@ public sealed class FixtureVaultTests
         }
     }
 
+    private sealed class ThrowingSensitiveDataDetector(string canary) : ISensitiveDataDetector
+    {
+        public bool IsSensitive(string text) => throw new InvalidOperationException(canary);
+    }
+
     private sealed class TemporaryRepository : IDisposable
     {
         internal TemporaryRepository(bool createTestsDirectory = true)
@@ -1396,7 +1511,9 @@ public sealed class FixtureVaultTests
 
         internal ScanResult Scan(
             IReadOnlyList<string>? options = null,
-            GlobMatchBudget? matcherBudget = null)
+            GlobMatchBudget? matcherBudget = null,
+            IReadOnlyList<ISensitiveDataDetector>? additionalSensitiveDataDetectors = null,
+            FixtureFileWalk? fileWalk = null)
         {
             PolicyLoadResult policy = PolicyLoader.Load(Root);
             Assert.Null(policy.Error);
@@ -1414,18 +1531,29 @@ public sealed class FixtureVaultTests
                 policy.Policy!,
                 roots,
                 strictOverride: options?.Contains("--strict") == true,
-                matcherBudget: matcherBudget);
+                matcherBudget: matcherBudget,
+                additionalSensitiveDataDetectors: additionalSensitiveDataDetectors,
+                fileWalk: fileWalk);
         }
 
         internal int Run(
             string[] args,
             IUsageTelemetry telemetry,
             out string output,
-            out string error)
+            out string error,
+            IReadOnlyList<ISensitiveDataDetector>? additionalSensitiveDataDetectors = null,
+            FixtureFileWalk? fileWalk = null)
         {
             using var stdout = new StringWriter();
             using var stderr = new StringWriter();
-            int exitCode = FixtureVaultApplication.Run(args, Root, telemetry, stdout, stderr);
+            int exitCode = FixtureVaultApplication.Run(
+                args,
+                Root,
+                telemetry,
+                stdout,
+                stderr,
+                additionalSensitiveDataDetectors,
+                fileWalk);
             output = stdout.ToString();
             error = stderr.ToString();
             return exitCode;
@@ -1527,6 +1655,133 @@ public sealed class FixtureVaultTests
 
     private static byte[] PngBytes() =>
         [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0xFF];
+
+    private static bool TryMakeDirectoryInaccessible(
+        string path,
+        out Action restore,
+        out string skipReason)
+    {
+        restore = static () => { };
+        skipReason = "The test platform could not create a reliably inaccessible directory.";
+
+        if (OperatingSystem.IsWindows())
+        {
+            string? sid;
+            try
+            {
+                sid = System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value;
+            }
+            catch (Exception ex) when (ex is PlatformNotSupportedException or InvalidOperationException)
+            {
+                skipReason = $"Windows identity capability is unavailable ({ex.GetType().Name}).";
+                return false;
+            }
+
+            if (string.IsNullOrEmpty(sid) ||
+                !RunIcacls(path, "/inheritance:r") ||
+                !RunIcacls(path, "/deny", $"*{sid}:(OI)(CI)(RX)"))
+            {
+                skipReason = "icacls could not install a deny ACL for the current test identity.";
+                return false;
+            }
+
+            restore = () =>
+            {
+                _ = RunIcacls(path, "/remove:d", $"*{sid}");
+                _ = RunIcacls(path, "/reset", "/T", "/C");
+            };
+
+            try
+            {
+                _ = Directory.GetFileSystemEntries(path);
+                restore();
+                skipReason = "The installed Windows deny ACL did not prevent directory enumeration.";
+                return false;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return true;
+            }
+            catch (IOException)
+            {
+                restore();
+                skipReason = "The Windows ACL test directory could not be enumerated in a stable denied state.";
+                return false;
+            }
+        }
+
+        return TryMakePosixDirectoryInaccessible(path, out restore, out skipReason);
+    }
+
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    private static bool TryMakePosixDirectoryInaccessible(
+        string path,
+        out Action restore,
+        out string skipReason)
+    {
+        restore = static () => { };
+        skipReason = "The test platform could not create a reliably inaccessible directory.";
+        try
+        {
+            UnixFileMode originalMode = File.GetUnixFileMode(path);
+            File.SetUnixFileMode(path, UnixFileMode.None);
+            restore = () => File.SetUnixFileMode(path, originalMode);
+            try
+            {
+                _ = Directory.GetFileSystemEntries(path);
+                restore();
+                skipReason = "chmod 000 did not prevent directory enumeration for this test identity.";
+                return false;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return true;
+            }
+            catch (IOException)
+            {
+                restore();
+                skipReason = "The chmod 000 test directory could not be enumerated in a stable denied state.";
+                return false;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            skipReason = $"POSIX permission capability is unavailable ({ex.GetType().Name}).";
+            return false;
+        }
+    }
+
+    private static bool RunIcacls(string path, params string[] arguments)
+    {
+        try
+        {
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "icacls.exe",
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
+            };
+            process.StartInfo.ArgumentList.Add(path);
+            foreach (string argument in arguments)
+            {
+                process.StartInfo.ArgumentList.Add(argument);
+            }
+
+            if (!process.Start() || !process.WaitForExit(10_000))
+            {
+                return false;
+            }
+
+            return process.ExitCode == 0;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
+    }
 
     private static void AssertNoCanary(string canary, string output, string error)
     {

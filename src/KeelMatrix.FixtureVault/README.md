@@ -37,6 +37,7 @@ fixturevault scan --root tests --format json
 - FixtureVault is strictly read-only during `scan`; it has no mutation or auto-fix command.
 - It has no snapshot assertion API and does not generate snapshots or serializer output.
 - Orphan detection is conservative: a file is reported as orphaned only when a supported convention or explicit manifest proves the relationship.
+- `FV006` keeps the documented UTF-8 rule for non-Verify text. Verify encoding and newline tolerance are not asserted because FixtureVault cannot prove the repository's canonical `VerifierSettings`.
 - Unsupported or ambiguous fixture conventions are reported as skipped rather than guessed.
 - The v1 rule scope is fixed to the documented `FV001`–`FV008` rule families and the `net8.0` .NET tool target.
 

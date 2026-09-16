@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using System.Text.Json.Serialization;
+using KeelMatrix.Redaction;
 
 namespace KeelMatrix.FixtureVault;
 
@@ -13,6 +14,10 @@ internal static class FixtureVaultContract
     internal const string PolicyFileName = ".fixturevault.json";
     internal const string ManifestFileName = ".fixturevault.manifest.json";
     internal const string IgnoredPathMatchingErrorCode = "FV-E013";
+    internal const string SensitiveDataDetectorErrorCode = "FV-E014";
+    internal const string SensitiveDataDetectorErrorMessage = "Sensitive-data detection could not be completed safely.";
+    internal const string PathPolicyTraversalErrorCode = "FV-E015";
+    internal const string PathPolicyTraversalErrorMessage = "Repository path-policy discovery could not be completed safely.";
 
     internal static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -122,3 +127,14 @@ internal sealed class ScanReport
 }
 
 internal sealed record ScanResult(ScanReport Report, int ExitCode, bool Completed);
+
+internal interface ISensitiveDataDetector
+{
+    bool IsSensitive(string text);
+}
+
+internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : ISensitiveDataDetector
+{
+    public bool IsSensitive(string text) =>
+        !string.Equals(redactor.Redact(text), text, StringComparison.Ordinal);
+}

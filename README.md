@@ -81,7 +81,7 @@ The v1 `sensitiveDataRules` policy supports only `high-confidence` (case-insensi
 
 The built-in hints are:
 
-- `verify`: detects common `*.received.*` artifacts and split-mode `*.received/<file>` artifacts, and audits `*.verified.*` and split-mode `*.verified/<file>` baselines. Binary `*.verified.*` and split-mode baselines are accepted and remain subject to `maxFileBytes`; binary `*.received.*` artifacts produce `FV001` without an additional `FV005`. For Verify text fixtures, FixtureVault accepts UTF-8 with or without a BOM and requires LF-only bytes with no trailing newline.
+- `verify`: detects common `*.received.*` artifacts and split-mode `*.received/<file>` artifacts, and audits `*.verified.*` and split-mode `*.verified/<file>` baselines. Binary `*.verified.*` and split-mode baselines are accepted and remain subject to `maxFileBytes`; binary `*.received.*` artifacts produce `FV001` without an additional `FV005`. For Verify text fixtures, FixtureVault does not assert encoding or newline style because the repository's canonical `VerifierSettings` are not available to this scanner; supported custom encodings, carriage returns, and trailing newlines are not blocking `FV006` findings.
 - `snapshooter`: audits ordinary `*.snap` files and treats `.snap` files below the documented `__snapshots__/__mismatch__/` directory as received/unapproved artifacts. Other `.snap` paths are audited as ordinary baselines; FixtureVault does not infer a mismatch convention from an ambiguous directory name.
 - `generic`: audits files matching `allowedExtensions`, including `.golden` files.
 - `fixturevault-manifest`: enables the explicit orphan proof described below. When enabled, the manifest is required; a missing manifest is a configuration error (exit code `2`).
@@ -114,7 +114,7 @@ The rule IDs below are the frozen v1 report contract. Every finding has a rule I
 | `FV003` | Two fixture paths differ only by case after Unicode normalization. | Rename one path so it is unique on all supported filesystems. |
 | `FV004` | A fixture exceeds `maxFileBytes`. | Reduce the fixture or deliberately raise the policy limit. |
 | `FV005` | An unexpected binary asset is present under a fixture root; accepted Verify baselines and files covered by an explicitly allowed known-binary extension are excluded. | Remove the binary asset, configure its extension deliberately, or keep it as a supported Verify baseline. |
-| `FV006` | A fixture is not valid UTF-8, uses a non-UTF-8 encoding, or violates a proven newline convention. UTF-8 BOMs are accepted. Verify text fixtures must use LF-only bytes and no trailing newline. Other supported conventions have no asserted newline style. | Save non-Verify text as valid UTF-8. Regenerate or save Verify text as UTF-8 with optional BOM, LF-only newlines, and no trailing newline. |
+| `FV006` | A non-Verify text fixture is not valid UTF-8, uses a non-UTF-8 encoding, or violates a proven newline convention. UTF-8 BOMs are accepted. Verify encoding and newline tolerance are not asserted because canonical Verify settings cannot be proven. | Save non-Verify text as valid UTF-8. Verify text is left to the repository's configured Verify settings. |
 | `FV007` | A high-confidence sensitive-data pattern was detected. | Remove the sensitive value from the fixture. The value is never printed. |
 | `FV008` | A fixture-looking file is outside the approved roots. | Move it below an approved root or update `roots`. |
 
@@ -179,6 +179,8 @@ Malformed `.fixturevault.json`, a missing configured root, an unsafe root path, 
 - **Missing or unsafe root:** `FV-E008` means a configured root does not exist, is not a directory, is outside the repository, or is a link. Use repository-relative directories that exist and do not traverse outside the repository.
 - **Required manifest:** with the `fixturevault-manifest` convention enabled, a missing manifest returns `FV-E012` and a malformed or unsafe manifest returns `FV-E011`; create `.fixturevault.manifest.json` with explicit `activeBaselines`, or remove that convention when no manifest is maintained.
 - **Ignored-path matching:** `FV-E013` means the deterministic ignored-path matcher could not complete within the scan safety bound. The scan exits `2` and does not treat the path as unignored; reduce the number or complexity of ignored paths, or split the scan into smaller roots.
+- **Sensitive-data detection:** `FV-E014` means an enabled sensitive-data detector could not complete. The scan exits `2` with a fixed message and does not activate telemetry.
+- **Path-policy discovery:** `FV-E015` means the repository-wide fixture-looking-file walk could not complete. The scan exits `2` instead of silently skipping an inaccessible subtree.
 - **Unsupported or skipped checks:** unknown convention hints appear as `FV-SKIP-CONVENTION`. Orphan checks for Verify, Snapshooter, and generic files appear as `FV-SKIP-ORPHAN` because no relationship was proved. Reparse points appear as `FV-SKIP-REPARSE`; their targets are not read.
 - **Exit codes:** `0` means a completed scan has no blocking findings, `1` means a completed scan has blocking findings, and `2` means an error prevented a trustworthy scan. Use `--format json` to inspect structured `findings`, `skipped`, and `errors`.
 
@@ -188,7 +190,7 @@ See the [Privacy](https://github.com/KeelMatrix/FixtureVault/blob/main/PRIVACY.m
 
 Configured roots are hard boundaries. Relative roots and `--root` overrides must remain inside the repository root; traversal outside that boundary is rejected. Every directory component from the repository root to a selected root is checked for links and reparse points before scanning, so a root beneath an intermediate link fails conservatively. Repository-relative paths are used in reports. Symbolic links and Windows reparse points are never followed, including links that point outside an approved root. Link entries are reported as skipped without reading their targets.
 
-FixtureVault bounds policy size, filesystem entries, and total bytes read. It does not decode known binary assets as text. Invalid or unsupported encodings produce a bounded diagnostic. Scanning is strictly non-mutating.
+FixtureVault bounds policy size, filesystem entries, and total bytes read. It does not decode known binary assets as text. Invalid or unsupported encodings in non-Verify text produce a bounded diagnostic; Verify encoding and newline tolerance are not asserted without canonical Verify settings. Scanning is strictly non-mutating.
 
 Sensitive-data detection is separate from redaction: FixtureVault does not rewrite a fixture to clear a finding. Detection uses hardened primitives from `KeelMatrix.Redaction` 0.1.0, but the matched value is never retained in a report or diagnostic.
 

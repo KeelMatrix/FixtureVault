@@ -41,7 +41,9 @@ internal static class FixtureVaultApplication
         string currentDirectory,
         IUsageTelemetry telemetry,
         TextWriter output,
-        TextWriter errorOutput)
+        TextWriter errorOutput,
+        IReadOnlyList<ISensitiveDataDetector>? additionalSensitiveDataDetectors = null,
+        FixtureFileWalk? fileWalk = null)
     {
         CommandLineParseResult parsed = CommandLineParser.Parse(args);
         if (parsed.Error is not null)
@@ -90,7 +92,9 @@ internal static class FixtureVaultApplication
                 repositoryRoot,
                 policyResult.Policy!,
                 parsed.Options.RootOverrides,
-                parsed.Options.StrictOverride);
+                parsed.Options.StrictOverride,
+                additionalSensitiveDataDetectors: additionalSensitiveDataDetectors,
+                fileWalk: fileWalk);
         }
         catch
         {
