@@ -985,11 +985,17 @@ public sealed class FixtureVaultTests
     [InlineData("utf-32be", "nul", false)]
     [InlineData("utf-32be", "nul", true)]
     [InlineData("none", "undecodable", false)]
+    [InlineData("none", "undecodable", true)]
     [InlineData("utf-8", "undecodable", false)]
+    [InlineData("utf-8", "undecodable", true)]
     [InlineData("utf-16le", "undecodable", false)]
+    [InlineData("utf-16le", "undecodable", true)]
     [InlineData("utf-16be", "undecodable", false)]
+    [InlineData("utf-16be", "undecodable", true)]
     [InlineData("utf-32le", "undecodable", false)]
+    [InlineData("utf-32le", "undecodable", true)]
     [InlineData("utf-32be", "undecodable", false)]
+    [InlineData("utf-32be", "undecodable", true)]
     public void Content_classification_decides_the_encoding_decodability_nul_matrix(
         string declaredEncoding,
         string contentShape,
@@ -1073,11 +1079,17 @@ public sealed class FixtureVaultTests
     [InlineData("utf-32be", "nul", false)]
     [InlineData("utf-32be", "nul", true)]
     [InlineData("none", "undecodable", false)]
+    [InlineData("none", "undecodable", true)]
     [InlineData("utf-8", "undecodable", false)]
+    [InlineData("utf-8", "undecodable", true)]
     [InlineData("utf-16le", "undecodable", false)]
+    [InlineData("utf-16le", "undecodable", true)]
     [InlineData("utf-16be", "undecodable", false)]
+    [InlineData("utf-16be", "undecodable", true)]
     [InlineData("utf-32le", "undecodable", false)]
+    [InlineData("utf-32le", "undecodable", true)]
     [InlineData("utf-32be", "undecodable", false)]
+    [InlineData("utf-32be", "undecodable", true)]
     public void Content_classification_matrix_is_reflected_in_every_reported_field(
         string declaredEncoding,
         string contentShape,
@@ -2113,14 +2125,17 @@ public sealed class FixtureVaultTests
         if (contentShape == "undecodable")
         {
             // Valid byte-order marks followed by bytes no supported encoding of that kind decodes.
+            byte[] sensitiveBytes = withSensitiveValue
+                ? Encoding.UTF8.GetBytes(SensitiveValue)
+                : [];
             return declaredEncoding switch
             {
-                "none" => [0xC3, 0x28],
-                "utf-8" => [.. Encoding.UTF8.GetPreamble(), 0xC3, 0x28],
-                "utf-16le" => [0xFF, 0xFE, 0x00, 0xD8],
-                "utf-16be" => [0xFE, 0xFF, 0xD8, 0x00],
-                "utf-32le" => [0xFF, 0xFE, 0x00, 0x00, 0x00, 0x00, 0x11, 0x00],
-                "utf-32be" => [0x00, 0x00, 0xFE, 0xFF, 0x00, 0x11, 0x00, 0x00],
+                "none" => [0xC3, 0x28, .. sensitiveBytes],
+                "utf-8" => [.. Encoding.UTF8.GetPreamble(), 0xC3, 0x28, .. sensitiveBytes],
+                "utf-16le" => [0xFF, 0xFE, 0x00, 0xD8, .. sensitiveBytes],
+                "utf-16be" => [0xFE, 0xFF, 0xD8, 0x00, .. sensitiveBytes],
+                "utf-32le" => [0xFF, 0xFE, 0x00, 0x00, 0x00, 0x00, 0x11, 0x00, .. sensitiveBytes],
+                "utf-32be" => [0x00, 0x00, 0xFE, 0xFF, 0x00, 0x11, 0x00, 0x00, .. sensitiveBytes],
                 _ => throw new ArgumentOutOfRangeException(nameof(declaredEncoding))
             };
         }
