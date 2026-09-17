@@ -21,7 +21,8 @@ internal sealed class FixtureScanner
         bool strictOverride,
         GlobMatchBudget? matcherBudget = null,
         IReadOnlyList<ISensitiveDataDetector>? additionalSensitiveDataDetectors = null,
-        FixtureFileWalk? fileWalk = null)
+        FixtureFileWalk? fileWalk = null,
+        Func<byte[], ContentClassification>? contentClassifier = null)
     {
         var findings = new List<Finding>();
         var skipped = new List<SkippedDiagnostic>();
@@ -107,7 +108,7 @@ internal sealed class FixtureScanner
                         policy,
                         insideActiveRoot: true,
                         isRepositoryRoot: root.RelativePath.Length == 0) &&
-                    seenFiles.Add(file.FullPath))
+                    seenFiles.Add(Path.GetFullPath(file.FullPath)))
                 {
                     fixtureFiles.Add(file);
                 }
@@ -206,7 +207,14 @@ internal sealed class FixtureScanner
             }
 
             totalBytesRead += length;
-            ScanError? contentError = InspectContent(file, bytes, policy, findings, skipped, detectors);
+            ScanError? contentError = InspectContent(
+                file,
+                bytes,
+                policy,
+                findings,
+                skipped,
+                detectors,
+                contentClassifier ?? ContentClassification.Classify);
             if (contentError is not null)
             {
                 errors.Add(contentError);
@@ -329,6 +337,13 @@ internal sealed class FixtureScanner
         }
 
         string path = Path.Combine(repositoryRoot, FixtureVaultContract.ManifestFileName);
+        if (!PathUtilities.TryIsLinkedOrReparseFile(path, out bool isLinkedOrReparse) || isLinkedOrReparse)
+        {
+            return new ManifestLoadResult(null, new ScanError(
+                "FV-E011",
+                "The configured FixtureVault manifest could not be read safely."));
+        }
+
         if (!File.Exists(path))
         {
             return new ManifestLoadResult(null, new ScanError(
@@ -413,11 +428,14 @@ internal sealed class FixtureScanner
         FixtureVaultPolicy policy,
         ICollection<Finding> findings,
         ICollection<SkippedDiagnostic> skipped,
-        IReadOnlyList<ISensitiveDataDetector> sensitiveDataDetectors)
+        IReadOnlyList<ISensitiveDataDetector> sensitiveDataDetectors,
+        Func<byte[], ContentClassification> contentClassifier)
     {
         bool isVerifyFixture = HasConvention(policy, "verify") && IsVerifySnapshotPath(file.RelativePath);
         bool isKnownBinaryExtension = IsKnownBinaryExtension(file.RelativePath);
-        ContentClassification classification = ContentClassification.Classify(bytes);
+        ContentClassification classification = isKnownBinaryExtension
+            ? ContentClassification.KnownBinary
+            : contentClassifier(bytes);
 
         switch (ContentClassification.Resolve(classification, isKnownBinaryExtension, isVerifyFixture))
         {

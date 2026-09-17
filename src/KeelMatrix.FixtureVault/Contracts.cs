@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using KeelMatrix.Redaction;
 
 namespace KeelMatrix.FixtureVault;
@@ -161,6 +162,53 @@ internal interface ISensitiveDataDetector
 
 internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : ISensitiveDataDetector
 {
-    public bool IsSensitive(string text) =>
-        !string.Equals(redactor.Redact(text), text, StringComparison.Ordinal);
+    private static readonly Regex ApiKeyQueryValue = new(
+        "(?<prefix>[?&]\\s*(?:x-)?api[-_]?key\\s*=\\s*)(?<value>[^&#\\s]*)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
+    private static readonly Regex AlreadyRedactedValue = new(
+        "^['\\\"]?(?:\\*{3,}|<\\s*redacted\\s*>|\\[\\s*redacted\\s*\\]|redacted|masked|removed)['\\\"]?$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
+    private static readonly Regex EmptyCredentialAssignment = new(
+        "^\\s*[^=;&\\s]+\\s*=\\s*(?:\\\"\\s*\\\"|'\\s*')?\\s*$",
+        RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
+
+    public bool IsSensitive(string text)
+    {
+        string normalized = ApiKeyQueryValue.Replace(text, static match =>
+        {
+            string value = match.Groups["value"].Value.Trim();
+            string unquotedValue = value.Trim('\"', '\'');
+            return unquotedValue.Length == 0 || AlreadyRedactedValue.IsMatch(value)
+                ? match.Groups["prefix"].Value + "***"
+                : match.Value;
+        });
+        string redacted = redactor.Redact(normalized);
+        if (string.Equals(redacted, normalized, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        int prefixLength = 0;
+        while (prefixLength < normalized.Length &&
+               prefixLength < redacted.Length &&
+               normalized[prefixLength] == redacted[prefixLength])
+        {
+            prefixLength++;
+        }
+
+        int originalEnd = normalized.Length - 1;
+        int redactedEnd = redacted.Length - 1;
+        while (originalEnd >= prefixLength &&
+               redactedEnd >= prefixLength &&
+               normalized[originalEnd] == redacted[redactedEnd])
+        {
+            originalEnd--;
+            redactedEnd--;
+        }
+
+        string changedInput = normalized[prefixLength..(originalEnd + 1)].Trim();
+        return changedInput.Length > 0 &&
+            !AlreadyRedactedValue.IsMatch(changedInput) &&
+            !EmptyCredentialAssignment.IsMatch(changedInput);
+    }
 }

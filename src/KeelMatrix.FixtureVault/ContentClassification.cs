@@ -57,6 +57,11 @@ internal sealed record ContentClassification(
     private static readonly Encoding StrictUtf16BigEndian = new UnicodeEncoding(bigEndian: true, byteOrderMark: false, throwOnInvalidBytes: true);
     private static readonly Encoding StrictUtf32LittleEndian = new UTF32Encoding(bigEndian: false, byteOrderMark: false, throwOnInvalidCharacters: true);
     private static readonly Encoding StrictUtf32BigEndian = new UTF32Encoding(bigEndian: true, byteOrderMark: false, throwOnInvalidCharacters: true);
+    internal static ContentClassification KnownBinary { get; } = new(
+        ContentDecodeOutcome.Undecodable,
+        null,
+        string.Empty,
+        false);
 
     internal bool IsInspectable => Outcome == ContentDecodeOutcome.Decoded;
 

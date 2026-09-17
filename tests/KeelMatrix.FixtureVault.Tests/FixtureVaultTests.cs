@@ -565,6 +565,77 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
+    public void Linked_policy_is_rejected_without_reading_an_outside_target()
+    {
+        using var repository = new TemporaryRepository();
+        string outsideRoot = Path.Combine(Path.GetTempPath(), "fixturevault-policy-link", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideRoot);
+        string outsidePolicy = Path.Combine(outsideRoot, FixtureVaultContract.PolicyFileName);
+        File.WriteAllText(
+            outsidePolicy,
+            FixtureVaultContract.SerializePolicy(FixtureVaultPolicy.CreateDefault(testsDirectoryExists: false)),
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        string policyPath = Path.Combine(repository.Root, FixtureVaultContract.PolicyFileName);
+        File.Delete(policyPath);
+
+        try
+        {
+            CreateSymbolicFileOrSkip(policyPath, outsidePolicy);
+
+            int exitCode = repository.Run(["scan", "--format", "json"], new RecordingTelemetry(), out string output, out string error);
+            using JsonDocument report = JsonDocument.Parse(output);
+
+            Assert.Equal(2, exitCode);
+            Assert.Empty(error);
+            Assert.Contains(report.RootElement.GetProperty("errors").EnumerateArray(), item =>
+                item.GetProperty("code").GetString() == "FV-E004");
+            Assert.DoesNotContain("outside", output, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (Directory.Exists(outsideRoot))
+            {
+                Directory.Delete(outsideRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void Linked_manifest_is_rejected_without_reading_an_outside_target()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Conventions = ["generic", "fixturevault-manifest"]);
+        string outsideRoot = Path.Combine(Path.GetTempPath(), "fixturevault-manifest-link", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideRoot);
+        string outsideManifest = Path.Combine(outsideRoot, FixtureVaultContract.ManifestFileName);
+        File.WriteAllText(
+            outsideManifest,
+            "{\"version\":1,\"activeBaselines\":[]}\n",
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        string manifestPath = Path.Combine(repository.Root, FixtureVaultContract.ManifestFileName);
+        File.Delete(manifestPath);
+
+        try
+        {
+            CreateSymbolicFileOrSkip(manifestPath, outsideManifest);
+
+            ScanResult result = repository.Scan();
+
+            Assert.Equal(2, result.ExitCode);
+            ScanError error = Assert.Single(result.Report.Errors);
+            Assert.Equal("FV-E011", error.Code);
+            Assert.DoesNotContain("outside", error.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (Directory.Exists(outsideRoot))
+            {
+                Directory.Delete(outsideRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void Policy_and_manifest_files_are_not_fixture_candidates()
     {
         using var repository = new TemporaryRepository();
@@ -603,6 +674,43 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
+    public void Unicode_normalization_colliding_paths_are_reported_when_the_filesystem_can_create_both()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        string composed = "tests/café.golden";
+        string decomposed = "tests/cafe\u0301.golden";
+        repository.WriteText(composed, "composed\n");
+        repository.WriteText(decomposed, "decomposed\n");
+        if (!File.Exists(Path.Combine(repository.Root, "tests", "café.golden")) ||
+            !File.Exists(Path.Combine(repository.Root, "tests", "cafe\u0301.golden")) ||
+            File.ReadAllText(Path.Combine(repository.Root, "tests", "café.golden")) ==
+            File.ReadAllText(Path.Combine(repository.Root, "tests", "cafe\u0301.golden")))
+        {
+            return;
+        }
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(2, result.Report.Findings.Count(item => item.RuleId == "FV003"));
+        Assert.Contains(result.Report.Findings, item => item.Path.Contains("café", StringComparison.Ordinal));
+        Assert.Contains(result.Report.Findings, item => item.Path.Contains("cafe\u0301", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Overlapping_roots_inspect_one_file_without_duplicate_findings()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Roots = ["tests", "tests/nested"]);
+        repository.WriteText("tests/nested/OrderTests.received.json", "received\n");
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(1, result.Report.FilesInspected);
+        Assert.Single(result.Report.Findings, item => item.RuleId == "FV001");
+    }
+
+    [Fact]
     public void Oversized_files_are_reported_without_being_read_as_content()
     {
         using var repository = new TemporaryRepository();
@@ -624,6 +732,30 @@ public sealed class FixtureVaultTests
 
         ScanResult result = repository.Scan();
 
+        Assert.Contains(result.Report.Findings, item => item.RuleId == "FV005");
+    }
+
+    [Fact]
+    public void Known_binary_extension_bypasses_content_decoding_boundary()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/image.png", [0x89, 0x50, 0x4E, 0x47, 0x00, 0x01]);
+        bool classifierCalled = false;
+        FixtureVaultPolicy policy = PolicyLoader.Load(repository.Root).Policy!;
+
+        ScanResult result = FixtureScanner.Scan(
+            repository.Root,
+            policy,
+            [],
+            strictOverride: false,
+            contentClassifier: _ =>
+            {
+                classifierCalled = true;
+                throw new Xunit.Sdk.XunitException("Known binary content must bypass text decoding.");
+            });
+
+        Assert.False(classifierCalled);
         Assert.Contains(result.Report.Findings, item => item.RuleId == "FV005");
     }
 
@@ -1181,6 +1313,77 @@ public sealed class FixtureVaultTests
         Assert.DoesNotContain("fixture-test-secret-1234567890", error, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("console")]
+    [InlineData("json")]
+    public void Single_malformed_fixture_preserves_fv006_in_failure_output(string format)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/malformed.golden", [0xC3, 0x28]);
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", format], telemetry, out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        Assert.Equal(0, telemetry.SuccessfulScans);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            Assert.Contains(report.RootElement.GetProperty("findings").EnumerateArray(), item =>
+                item.GetProperty("ruleId").GetString() == "FV006");
+            Assert.Contains(report.RootElement.GetProperty("errors").EnumerateArray(), item =>
+                item.GetProperty("code").GetString() == FixtureVaultContract.UninspectableContentErrorCode);
+            Assert.Empty(error);
+        }
+        else
+        {
+            Assert.Empty(output);
+            Assert.Contains("FV006", error, StringComparison.Ordinal);
+            Assert.Contains("Remediation:", error, StringComparison.Ordinal);
+            Assert.Contains("malformed.golden", error, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData(true, "console")]
+    [InlineData(true, "json")]
+    [InlineData(false, "console")]
+    [InlineData(false, "json")]
+    public void Mixed_sensitive_and_malformed_fixtures_preserve_findings_on_failure(bool strict, string format)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Ci!.Strict = strict);
+        repository.WriteText("tests/a-sensitive.golden", "{\"apiKey\":\"fixture-test-secret-1234567890\"}\n");
+        repository.WriteBytes("tests/z-malformed.golden", [0xC3, 0x28]);
+
+        int exitCode = repository.Run(["scan", "--format", format], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            JsonElement[] findings = [.. report.RootElement.GetProperty("findings").EnumerateArray()];
+            Assert.Contains(findings, item => item.GetProperty("ruleId").GetString() == "FV007");
+            Assert.Contains(findings, item => item.GetProperty("ruleId").GetString() == "FV006");
+            string expectedDisposition = strict ? "block" : "warn";
+            Assert.All(findings, item => Assert.Equal(expectedDisposition, item.GetProperty("disposition").GetString()));
+            Assert.Empty(error);
+        }
+        else
+        {
+            Assert.Empty(output);
+            Assert.Contains("FV007", error, StringComparison.Ordinal);
+            Assert.Contains("FV006", error, StringComparison.Ordinal);
+            Assert.Contains("Remediation:", error, StringComparison.Ordinal);
+            Assert.Contains("a-sensitive.golden", error, StringComparison.Ordinal);
+            Assert.Contains("z-malformed.golden", error, StringComparison.Ordinal);
+            Assert.Contains(strict ? "block" : "warn", error, StringComparison.Ordinal);
+        }
+
+        AssertNoCanary(SensitiveValue, output, error);
+    }
+
     [Fact]
     public void Verify_undecodable_fixture_is_skipped_and_fails_closed_when_sensitive_detection_is_enabled()
     {
@@ -1304,6 +1507,38 @@ public sealed class FixtureVaultTests
 
         Assert.Contains(result.Report.Findings, item => item.RuleId == "FV007");
         Assert.DoesNotContain(sensitiveValue, json, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("console")]
+    [InlineData("json")]
+    public void Empty_and_already_redacted_api_key_query_values_are_not_sensitive_findings(string format)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText(
+            "tests/credentials.golden",
+            "https://example.test/?api_key=&page=1\n" +
+            "https://example.test/?api_key=***&page=1\n" +
+            "https://example.test/?api_key=<redacted>&page=1\n" +
+            "https://example.test/?api_key=[REDACTED]&page=1\n");
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", format], telemetry, out string output, out string error);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, telemetry.SuccessfulScans);
+        Assert.Empty(error);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
+        }
+        else
+        {
+            Assert.DoesNotContain("FV007", output, StringComparison.Ordinal);
+            Assert.Contains("No policy-blocking findings", output, StringComparison.Ordinal);
+        }
     }
 
     [Fact]
@@ -2119,6 +2354,24 @@ public sealed class FixtureVaultTests
             string path = Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllText(path, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        }
+    }
+
+    private static void CreateSymbolicFileOrSkip(string linkPath, string targetPath)
+    {
+        try
+        {
+            File.CreateSymbolicLink(linkPath, targetPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                throw SkipException.ForSkip(
+                    $"Windows symbolic-link capability is unavailable in this environment ({ex.GetType().Name}: {ex.Message}).");
+            }
+
+            throw;
         }
     }
 

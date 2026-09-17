@@ -151,6 +151,32 @@ internal static class PathUtilities
         return (attributes & FileAttributes.ReparsePoint) != 0 || entry.LinkTarget is not null;
     }
 
+    internal static bool TryIsLinkedOrReparseFile(string path, out bool isLinkedOrReparse)
+    {
+        isLinkedOrReparse = false;
+        try
+        {
+            var file = new FileInfo(path);
+            if (file.LinkTarget is not null)
+            {
+                isLinkedOrReparse = true;
+                return true;
+            }
+
+            if (!file.Exists)
+            {
+                return true;
+            }
+
+            isLinkedOrReparse = (file.Attributes & FileAttributes.ReparsePoint) != 0;
+            return true;
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            return false;
+        }
+    }
+
     internal static bool IsWithin(string parent, string candidate)
     {
         string normalizedParent = EnsureTrailingSeparator(Path.GetFullPath(parent));
@@ -179,7 +205,7 @@ internal static class PathUtilities
             relative = relative[2..];
         }
 
-        return relative.Normalize(NormalizationForm.FormC);
+        return relative;
     }
 
     internal static string NormalizeComparisonPath(string relativePath)

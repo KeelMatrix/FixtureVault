@@ -10,6 +10,13 @@ internal static class PolicyLoader
     internal static PolicyLoadResult Load(string repositoryRoot)
     {
         string path = Path.Combine(repositoryRoot, FixtureVaultContract.PolicyFileName);
+        if (!PathUtilities.TryIsLinkedOrReparseFile(path, out bool isLinkedOrReparse) || isLinkedOrReparse)
+        {
+            return new PolicyLoadResult(null, new ScanError(
+                "FV-E004",
+                "The policy file could not be read safely."));
+        }
+
         if (!File.Exists(path))
         {
             return new PolicyLoadResult(null, new ScanError(
