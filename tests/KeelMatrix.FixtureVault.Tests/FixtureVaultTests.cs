@@ -1001,8 +1001,11 @@ public sealed class FixtureVaultTests
         string contentShape,
         bool withSensitiveValue)
     {
+        byte[] fixtureBytes = DeclaredEncodingFixtureBytes(declaredEncoding, contentShape, withSensitiveValue);
+        AssertSensitiveValueIsPlanted(fixtureBytes, contentShape, withSensitiveValue);
+
         ContentClassification classification = ContentClassification.Classify(
-            DeclaredEncodingFixtureBytes(declaredEncoding, contentShape, withSensitiveValue));
+            fixtureBytes);
 
         switch (contentShape)
         {
@@ -1098,7 +1101,9 @@ public sealed class FixtureVaultTests
         const string path = "tests/Payments/Create.verified.json";
         using var repository = new TemporaryRepository();
         repository.WritePolicy();
-        repository.WriteBytes(path, DeclaredEncodingFixtureBytes(declaredEncoding, contentShape, withSensitiveValue));
+        byte[] fixtureBytes = DeclaredEncodingFixtureBytes(declaredEncoding, contentShape, withSensitiveValue);
+        AssertSensitiveValueIsPlanted(fixtureBytes, contentShape, withSensitiveValue);
+        repository.WriteBytes(path, fixtureBytes);
         var telemetry = new RecordingTelemetry();
 
         int exitCode = repository.Run(["scan", "--format", "json"], telemetry, out string output, out string error);
@@ -2155,6 +2160,20 @@ public sealed class FixtureVaultTests
             "utf-16le" or "utf-16be" or "utf-32le" or "utf-32be" => EncodeWithDeclaredBom(declaredEncoding, text),
             _ => throw new ArgumentOutOfRangeException(nameof(declaredEncoding))
         };
+    }
+
+    private static void AssertSensitiveValueIsPlanted(
+        byte[] fixtureBytes,
+        string contentShape,
+        bool withSensitiveValue)
+    {
+        if (contentShape == "undecodable" && withSensitiveValue)
+        {
+            byte[] sensitiveBytes = Encoding.UTF8.GetBytes(SensitiveValue);
+            Assert.True(
+                fixtureBytes.AsSpan().IndexOf(sensitiveBytes) >= 0,
+                "The undecodable sensitive fixture must contain the synthetic sensitive-value bytes.");
+        }
     }
 
     private static string DeclaredEncodingName(string declaredEncoding) => declaredEncoding switch
