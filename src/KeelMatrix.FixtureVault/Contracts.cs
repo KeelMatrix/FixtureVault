@@ -174,6 +174,22 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
 
     public bool IsSensitive(string text)
     {
+        // Supported credential/header values are line-scoped. Evaluate each line separately so a
+        // redactor cannot join an empty value to the next line and turn that neighboring text into
+        // apparent evidence of a secret.
+        foreach (string line in text.Split('\n'))
+        {
+            if (IsSensitiveLine(line))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool IsSensitiveLine(string text)
+    {
         string normalized = ApiKeyQueryValue.Replace(text, static match =>
         {
             string value = match.Groups["value"].Value.Trim();

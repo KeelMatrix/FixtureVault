@@ -1599,6 +1599,38 @@ public sealed class FixtureVaultTests
         }
     }
 
+    [Theory]
+    [InlineData("console")]
+    [InlineData("json")]
+    public void Empty_header_and_assignment_credentials_are_not_sensitive_findings(string format)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText(
+            "tests/empty-credentials.golden",
+            "Authorization: Bearer \n" +
+            "password=\n" +
+            "Authorization: Bearer ***\n" +
+            "password=<redacted>\n");
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", format], telemetry, out string output, out string error);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, telemetry.SuccessfulScans);
+        Assert.Empty(error);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
+        }
+        else
+        {
+            Assert.DoesNotContain("FV007", output, StringComparison.Ordinal);
+            Assert.Contains("No policy-blocking findings", output, StringComparison.Ordinal);
+        }
+    }
+
     [Fact]
     public void Sensitive_detector_failure_fails_closed_without_telemetry_or_canary_leakage()
     {
