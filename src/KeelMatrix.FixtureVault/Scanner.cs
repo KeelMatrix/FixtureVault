@@ -84,7 +84,7 @@ internal sealed class FixtureScanner
             if (walk.Error is not null)
             {
                 errors.Add(walk.Error);
-                return CompleteWithErrors(errors, strict);
+                return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
             }
 
             foreach (SafeFileEntry file in walk.Files)
@@ -95,7 +95,7 @@ internal sealed class FixtureScanner
                     errors.Add(new ScanError(
                         FixtureVaultContract.IgnoredPathMatchingErrorCode,
                         "Ignored path matching could not be completed safely."));
-                    return CompleteWithErrors(errors, strict, fixtureFiles.Count);
+                    return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
                 }
 
                 if (ignoredStatus == GlobMatchStatus.Match)
@@ -127,7 +127,7 @@ internal sealed class FixtureScanner
             walkFunction);
         if (errors.Count > 0)
         {
-            return CompleteWithErrors(errors, strict, fixtureFiles.Count);
+            return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
         }
 
         AddCaseCollisionFindings(fixtureFiles, policy, findings);
@@ -136,7 +136,7 @@ internal sealed class FixtureScanner
         if (manifest.Error is not null)
         {
             errors.Add(manifest.Error);
-            return CompleteWithErrors(errors, strict);
+            return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
         }
 
         if (manifest.ActiveBaselines is not null)
@@ -179,7 +179,12 @@ internal sealed class FixtureScanner
             if (!TryGetFileLength(file.FullPath, out long length))
             {
                 errors.Add(new ScanError("FV-E009", "A fixture file could not be inspected safely."));
-                return CompleteWithErrors(errors, strict, fixtureFiles.Count(fileEntry => fileEntry.RelativePath != string.Empty));
+                return CompleteWithErrors(
+                    errors,
+                    strict,
+                    fixtureFiles.Count(fileEntry => fileEntry.RelativePath != string.Empty),
+                    findings,
+                    skipped);
             }
 
             if (length > policy.MaxFileBytes)
@@ -197,13 +202,13 @@ internal sealed class FixtureScanner
             if (totalBytesRead + length > MaximumTotalBytes)
             {
                 errors.Add(new ScanError("FV-E010", "The scan exceeded its total byte safety limit."));
-                return CompleteWithErrors(errors, strict, fixtureFiles.Count);
+                return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
             }
 
             if (!TryReadBytes(file.FullPath, length, out byte[] bytes))
             {
                 errors.Add(new ScanError("FV-E009", "A fixture file could not be inspected safely."));
-                return CompleteWithErrors(errors, strict, fixtureFiles.Count);
+                return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
             }
 
             totalBytesRead += length;

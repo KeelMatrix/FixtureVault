@@ -636,6 +636,64 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
+    public void Linked_manifest_failure_preserves_prior_collision_findings_in_console_and_json()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Conventions = ["generic", "fixturevault-manifest"]);
+        string composed = "tests/café.golden";
+        string decomposed = "tests/cafe\u0301.golden";
+        repository.WriteText(composed, "composed\n");
+        repository.WriteText(decomposed, "decomposed\n");
+        if (!File.Exists(Path.Combine(repository.Root, "tests", "café.golden")) ||
+            !File.Exists(Path.Combine(repository.Root, "tests", "cafe\u0301.golden")) ||
+            File.ReadAllText(Path.Combine(repository.Root, "tests", "café.golden")) ==
+            File.ReadAllText(Path.Combine(repository.Root, "tests", "cafe\u0301.golden")))
+        {
+            return;
+        }
+
+        string outsideRoot = Path.Combine(Path.GetTempPath(), "fixturevault-manifest-parity", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideRoot);
+        string outsideManifest = Path.Combine(outsideRoot, FixtureVaultContract.ManifestFileName);
+        File.WriteAllText(
+            outsideManifest,
+            "{\"version\":1,\"activeBaselines\":[]}\n",
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        string manifestPath = Path.Combine(repository.Root, FixtureVaultContract.ManifestFileName);
+        File.Delete(manifestPath);
+
+        try
+        {
+            CreateSymbolicFileOrSkip(manifestPath, outsideManifest);
+
+            int consoleExit = repository.Run(["scan"], new RecordingTelemetry(), out string consoleOutput, out string consoleError);
+            int jsonExit = repository.Run(["scan", "--format", "json"], new RecordingTelemetry(), out string jsonOutput, out string jsonError);
+            using JsonDocument jsonReport = JsonDocument.Parse(jsonOutput);
+
+            Assert.Equal(2, consoleExit);
+            Assert.Equal(2, jsonExit);
+            Assert.Empty(consoleOutput);
+            Assert.Empty(jsonError);
+            Assert.Contains("FV-E011", consoleError, StringComparison.Ordinal);
+            Assert.Contains("FV003", consoleError, StringComparison.Ordinal);
+            Assert.Equal(2, jsonReport.RootElement.GetProperty("findings").GetArrayLength());
+            Assert.All(
+                jsonReport.RootElement.GetProperty("findings").EnumerateArray(),
+                finding => Assert.Equal("FV003", finding.GetProperty("ruleId").GetString()));
+            Assert.Contains(
+                jsonReport.RootElement.GetProperty("errors").EnumerateArray(),
+                error => error.GetProperty("code").GetString() == "FV-E011");
+        }
+        finally
+        {
+            if (Directory.Exists(outsideRoot))
+            {
+                Directory.Delete(outsideRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void Policy_and_manifest_files_are_not_fixture_candidates()
     {
         using var repository = new TemporaryRepository();
