@@ -169,7 +169,7 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         "^\\s*(?<prefix>(?:x-?api-?key|apikey)\\s*:\\s*)(?<value>[^\\r\\n]*)\\s*$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
     private static readonly Regex ApiKeyQueryValue = new(
-        "(?<prefix>[?&]\\s*(?:x-)?api[-_]?key\\s*=\\s*)(?<value>[^&#\\s]*)",
+        "(?<prefix>[?&]\\s*(?:x-)?api[-_]?key\\s*=\\s*)(?<value>\"[^\"]*\"|'[^']*'|[^&#\\s]*)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
     private static readonly Regex AlreadyRedactedValue = new(
         "^['\\\"]?(?:\\*{3,}|<\\s*redacted\\s*>|\\[\\s*redacted\\s*\\]|redacted|masked|removed)['\\\"]?$",

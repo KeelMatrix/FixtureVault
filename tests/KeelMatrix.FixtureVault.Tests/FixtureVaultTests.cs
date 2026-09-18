@@ -1577,6 +1577,8 @@ public sealed class FixtureVaultTests
         repository.WriteText(
             "tests/credentials.golden",
             "https://example.test/?api_key=&page=1\n" +
+            "https://example.test/?api_key=\"  \"&page=1\n" +
+            "https://example.test/?api_key='  '&page=1\n" +
             "https://example.test/?api_key=***&page=1\n" +
             "https://example.test/?api_key=<redacted>&page=1\n" +
             "https://example.test/?api_key=[REDACTED]&page=1\n");
@@ -1596,6 +1598,35 @@ public sealed class FixtureVaultTests
         {
             Assert.DoesNotContain("FV007", output, StringComparison.Ordinal);
             Assert.Contains("No policy-blocking findings", output, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("console")]
+    [InlineData("json")]
+    public void Non_empty_api_key_query_values_are_sensitive_without_disclosure(string format)
+    {
+        const string canary = "query-api-key-canary-1234567890";
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/query-credentials.golden", $"https://example.test/?api_key={canary}&page=1\n");
+
+        int exitCode = repository.Run(["scan", "--format", format], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(1, exitCode);
+        Assert.Empty(error);
+        Assert.DoesNotContain(canary, output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            JsonElement finding = Assert.Single(report.RootElement.GetProperty("findings").EnumerateArray());
+            Assert.Equal("FV007", finding.GetProperty("ruleId").GetString());
+            Assert.Equal("block", finding.GetProperty("disposition").GetString());
+        }
+        else
+        {
+            Assert.Contains("FV007", output, StringComparison.Ordinal);
+            Assert.Contains("block", output, StringComparison.Ordinal);
         }
     }
 
