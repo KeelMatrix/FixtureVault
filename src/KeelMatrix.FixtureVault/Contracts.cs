@@ -212,8 +212,8 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         });
         normalized = ApiKeyQueryValue.Replace(normalized, static match =>
         {
-            string value = match.Groups["value"].Value.Trim();
-            return IsEmptyOrAlreadyRedactedValue(value)
+            string value = match.Groups["value"].Value;
+            return IsEmptyOrAlreadyRedactedQueryValue(value)
                 ? match.Groups["prefix"].Value + "***"
                 : match.Value;
         });
@@ -259,5 +259,22 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
             ((trimmed[0] == '\"' && trimmed[^1] == '\"') ||
              (trimmed[0] == '\'' && trimmed[^1] == '\'')) &&
             trimmed[1..^1].Trim().Length == 0;
+    }
+
+    private static bool IsEmptyOrAlreadyRedactedQueryValue(string value)
+    {
+        try
+        {
+            // Query values use application/x-www-form-urlencoded semantics: '+' is a space and
+            // percent escapes represent the UTF-8 value. Classify the decoded value so encoded
+            // whitespace cannot look like a credential merely because its spelling is non-empty.
+            return IsEmptyOrAlreadyRedactedValue(System.Net.WebUtility.UrlDecode(value));
+        }
+        catch (ArgumentException)
+        {
+            // Keep malformed query spellings on the existing redaction path rather than allowing
+            // a malformed escape to abort the scan.
+            return IsEmptyOrAlreadyRedactedValue(value);
+        }
     }
 }

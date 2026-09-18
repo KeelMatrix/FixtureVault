@@ -1602,6 +1602,66 @@ public sealed class FixtureVaultTests
     }
 
     [Theory]
+    [InlineData("%20", "console")]
+    [InlineData("%20", "json")]
+    [InlineData("+", "console")]
+    [InlineData("+", "json")]
+    [InlineData("%09", "console")]
+    [InlineData("%09", "json")]
+    [InlineData("%0A", "console")]
+    [InlineData("%0A", "json")]
+    public void Url_encoded_empty_api_key_query_values_are_not_sensitive_findings(string encodedValue, string format)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/encoded-empty-credentials.golden", $"https://example.test/?api_key={encodedValue}&page=1\n");
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", format], telemetry, out string output, out string error);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, telemetry.SuccessfulScans);
+        Assert.Empty(error);
+        Assert.DoesNotContain("FV007", output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
+        }
+        else
+        {
+            Assert.Contains("No policy-blocking findings", output, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("console")]
+    [InlineData("json")]
+    public void Url_encoded_non_empty_api_key_query_values_remain_sensitive_without_disclosure(string format)
+    {
+        const string encodedValue = "encoded-secret%2Dcanary%2D1234567890";
+        const string decodedValue = "encoded-secret-canary-1234567890";
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/encoded-secret.golden", $"https://example.test/?api_key={encodedValue}&page=1\n");
+
+        int exitCode = repository.Run(["scan", "--format", format], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(1, exitCode);
+        Assert.Empty(error);
+        Assert.Contains("FV007", output, StringComparison.Ordinal);
+        Assert.DoesNotContain(encodedValue, output, StringComparison.Ordinal);
+        Assert.DoesNotContain(decodedValue, output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            JsonElement finding = Assert.Single(report.RootElement.GetProperty("findings").EnumerateArray());
+            Assert.Equal("FV007", finding.GetProperty("ruleId").GetString());
+            Assert.Equal("block", finding.GetProperty("disposition").GetString());
+        }
+    }
+
+    [Theory]
     [InlineData("console")]
     [InlineData("json")]
     public void Non_empty_api_key_query_values_are_sensitive_without_disclosure(string format)
