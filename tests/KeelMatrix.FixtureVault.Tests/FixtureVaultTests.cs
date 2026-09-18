@@ -1640,7 +1640,21 @@ public sealed class FixtureVaultTests
     [InlineData("XApiKey: \"  \"", "json")]
     [InlineData("X-API-KEY: \"\"", "console")]
     [InlineData("X-API-KEY: \"\"", "json")]
-    public void Quoted_empty_api_key_headers_are_not_sensitive_findings(string header, string format)
+    [InlineData("x-api-key: '  '", "console")]
+    [InlineData("x-api-key: '  '", "json")]
+    [InlineData("aPiKeY: \"\"", "console")]
+    [InlineData("aPiKeY: \"\"", "json")]
+    [InlineData("Authorization: Bearer \"\"", "console")]
+    [InlineData("Authorization: Bearer \"\"", "json")]
+    [InlineData("authorization: bearer ''", "console")]
+    [InlineData("authorization: bearer ''", "json")]
+    [InlineData("AUTHORIZATION: BEARER \"  \"", "console")]
+    [InlineData("AUTHORIZATION: BEARER \"  \"", "json")]
+    [InlineData("Authorization: Bearer <redacted>", "console")]
+    [InlineData("Authorization: Bearer <redacted>", "json")]
+    [InlineData("Authorization: Bearer [REDACTED]", "console")]
+    [InlineData("Authorization: Bearer [REDACTED]", "json")]
+    public void Quoted_empty_credential_headers_are_not_sensitive_findings(string header, string format)
     {
         using var repository = new TemporaryRepository();
         repository.WritePolicy();
@@ -1675,6 +1689,37 @@ public sealed class FixtureVaultTests
         using var repository = new TemporaryRepository();
         repository.WritePolicy();
         repository.WriteText("tests/api-key-header.golden", $"{headerName}: {canary}\n");
+
+        int exitCode = repository.Run(["scan", "--format", format], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(1, exitCode);
+        Assert.Empty(error);
+        Assert.DoesNotContain(canary, output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            JsonElement finding = Assert.Single(report.RootElement.GetProperty("findings").EnumerateArray());
+            Assert.Equal("FV007", finding.GetProperty("ruleId").GetString());
+            Assert.Equal("block", finding.GetProperty("disposition").GetString());
+            Assert.Contains("Remove the sensitive value", finding.GetProperty("remediation").GetString(), StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.Contains("FV007", output, StringComparison.Ordinal);
+            Assert.Contains("block", output, StringComparison.Ordinal);
+            Assert.Contains("Remove the sensitive value", output, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("Authorization: Bearer header-bearer-canary-1234567890", "console")]
+    [InlineData("Authorization: Bearer header-bearer-canary-1234567890", "json")]
+    public void Non_empty_authorization_bearer_headers_are_sensitive_findings_without_disclosure(string header, string format)
+    {
+        const string canary = "header-bearer-canary-1234567890";
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/authorization-header.golden", header + "\n");
 
         int exitCode = repository.Run(["scan", "--format", format], new RecordingTelemetry(), out string output, out string error);
 

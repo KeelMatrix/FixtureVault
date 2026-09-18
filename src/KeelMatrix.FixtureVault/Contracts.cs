@@ -162,6 +162,9 @@ internal interface ISensitiveDataDetector
 
 internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : ISensitiveDataDetector
 {
+    private static readonly Regex AuthorizationBearerHeader = new(
+        "^\\s*(?<prefix>authorization\\s*:\\s*bearer(?:\\s+|$))(?<value>[^\\r\\n]*)\\s*$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
     private static readonly Regex ApiKeyHeader = new(
         "^\\s*(?<prefix>(?:x-?api-?key|apikey)\\s*:\\s*)(?<value>[^\\r\\n]*)\\s*$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
@@ -193,7 +196,14 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
 
     private bool IsSensitiveLine(string text)
     {
-        string normalized = ApiKeyHeader.Replace(text, static match =>
+        string normalized = AuthorizationBearerHeader.Replace(text, static match =>
+        {
+            string value = match.Groups["value"].Value.Trim();
+            return IsEmptyOrAlreadyRedactedValue(value)
+                ? match.Groups["prefix"].Value + "***"
+                : match.Value;
+        });
+        normalized = ApiKeyHeader.Replace(normalized, static match =>
         {
             string value = match.Groups["value"].Value.Trim();
             return IsEmptyOrAlreadyRedactedValue(value)
