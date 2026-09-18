@@ -1631,6 +1631,72 @@ public sealed class FixtureVaultTests
         }
     }
 
+    [Theory]
+    [InlineData("X-Api-Key: \"\"", "console")]
+    [InlineData("X-Api-Key: \"\"", "json")]
+    [InlineData("ApiKey: ''", "console")]
+    [InlineData("ApiKey: ''", "json")]
+    [InlineData("XApiKey: \"  \"", "console")]
+    [InlineData("XApiKey: \"  \"", "json")]
+    [InlineData("X-API-KEY: \"\"", "console")]
+    [InlineData("X-API-KEY: \"\"", "json")]
+    public void Quoted_empty_api_key_headers_are_not_sensitive_findings(string header, string format)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/empty-api-key-header.golden", header + "\n");
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", format], telemetry, out string output, out string error);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, telemetry.SuccessfulScans);
+        Assert.Empty(error);
+        Assert.DoesNotContain("FV007", output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
+        }
+        else
+        {
+            Assert.Contains("No policy-blocking findings", output, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("X-Api-Key", "console")]
+    [InlineData("X-Api-Key", "json")]
+    [InlineData("ApiKey", "console")]
+    [InlineData("ApiKey", "json")]
+    public void Non_empty_api_key_headers_are_sensitive_findings_without_disclosure(string headerName, string format)
+    {
+        const string canary = "header-api-key-canary-1234567890";
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/api-key-header.golden", $"{headerName}: {canary}\n");
+
+        int exitCode = repository.Run(["scan", "--format", format], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(1, exitCode);
+        Assert.Empty(error);
+        Assert.DoesNotContain(canary, output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            JsonElement finding = Assert.Single(report.RootElement.GetProperty("findings").EnumerateArray());
+            Assert.Equal("FV007", finding.GetProperty("ruleId").GetString());
+            Assert.Equal("block", finding.GetProperty("disposition").GetString());
+            Assert.Contains("Remove the sensitive value", finding.GetProperty("remediation").GetString(), StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.Contains("FV007", output, StringComparison.Ordinal);
+            Assert.Contains("block", output, StringComparison.Ordinal);
+            Assert.Contains("Remove the sensitive value", output, StringComparison.Ordinal);
+        }
+    }
+
     [Fact]
     public void Sensitive_detector_failure_fails_closed_without_telemetry_or_canary_leakage()
     {

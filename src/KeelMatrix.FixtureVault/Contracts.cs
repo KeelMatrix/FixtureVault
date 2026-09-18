@@ -162,6 +162,9 @@ internal interface ISensitiveDataDetector
 
 internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : ISensitiveDataDetector
 {
+    private static readonly Regex ApiKeyHeader = new(
+        "^\\s*(?<prefix>(?:x-?api-?key|apikey)\\s*:\\s*)(?<value>[^\\r\\n]*)\\s*$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
     private static readonly Regex ApiKeyQueryValue = new(
         "(?<prefix>[?&]\\s*(?:x-)?api[-_]?key\\s*=\\s*)(?<value>[^&#\\s]*)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
@@ -190,11 +193,17 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
 
     private bool IsSensitiveLine(string text)
     {
-        string normalized = ApiKeyQueryValue.Replace(text, static match =>
+        string normalized = ApiKeyHeader.Replace(text, static match =>
         {
             string value = match.Groups["value"].Value.Trim();
-            string unquotedValue = value.Trim('\"', '\'');
-            return unquotedValue.Length == 0 || AlreadyRedactedValue.IsMatch(value)
+            return IsEmptyOrAlreadyRedactedValue(value)
+                ? match.Groups["prefix"].Value + "***"
+                : match.Value;
+        });
+        normalized = ApiKeyQueryValue.Replace(normalized, static match =>
+        {
+            string value = match.Groups["value"].Value.Trim();
+            return IsEmptyOrAlreadyRedactedValue(value)
                 ? match.Groups["prefix"].Value + "***"
                 : match.Value;
         });
@@ -226,5 +235,19 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         return changedInput.Length > 0 &&
             !AlreadyRedactedValue.IsMatch(changedInput) &&
             !EmptyCredentialAssignment.IsMatch(changedInput);
+    }
+
+    private static bool IsEmptyOrAlreadyRedactedValue(string value)
+    {
+        string trimmed = value.Trim();
+        if (trimmed.Length == 0 || AlreadyRedactedValue.IsMatch(trimmed))
+        {
+            return true;
+        }
+
+        return trimmed.Length >= 2 &&
+            ((trimmed[0] == '\"' && trimmed[^1] == '\"') ||
+             (trimmed[0] == '\'' && trimmed[^1] == '\'')) &&
+            trimmed[1..^1].Trim().Length == 0;
     }
 }
