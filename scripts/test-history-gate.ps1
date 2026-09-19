@@ -49,6 +49,27 @@ $previousAuthorEmail = $env:GIT_AUTHOR_EMAIL
 $previousCommitterName = $env:GIT_COMMITTER_NAME
 $previousCommitterEmail = $env:GIT_COMMITTER_EMAIL
 
+function Invoke-CommitMessageHook {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message
+    )
+
+    [IO.File]::WriteAllText(
+        (Join-Path $temporaryRoot "message.txt"),
+        $Message + [Environment]::NewLine,
+        [Text.UTF8Encoding]::new($false))
+    $shellArguments = @("-c", "export PATH=/usr/bin:/bin:`$PATH; ./.githooks/commit-msg message.txt")
+    if ([IO.Path]::GetFileName($shellPath) -eq "bash.exe") {
+        $shellArguments = @("--noprofile", "--norc", "-c", "export PATH=/usr/bin:/bin:`$PATH; ./.githooks/commit-msg message.txt")
+    }
+    $output = @(& $shellPath @shellArguments 2>&1)
+    [pscustomobject]@{
+        ExitCode = $LASTEXITCODE
+        Output = $output
+    }
+}
+
 try {
     Push-Location $temporaryRoot
 
@@ -62,6 +83,24 @@ try {
 
     $validCommit = Invoke-Git @("commit", "--allow-empty", "-m", "Create test history")
     Assert-Contract ($validCommit.ExitCode -eq 0) "Could not create the valid test commit: $($validCommit.Output -join [Environment]::NewLine)"
+
+    $rejectedMessages = @(
+        "Refs ABC-12",
+        "ABC-12",
+        "closes XYZ-34",
+        "frontier review",
+        "frontier",
+        "rejection round",
+        "review round",
+        "acceptance pass"
+    )
+    foreach ($message in $rejectedMessages) {
+        $hookResult = Invoke-CommitMessageHook -Message $message
+        Assert-Contract ($hookResult.ExitCode -eq 1) "The commit-msg hook accepted prohibited metadata '$message'. Output: $($hookResult.Output -join [Environment]::NewLine)"
+    }
+
+    $allowedMessage = Invoke-CommitMessageHook -Message "Support UTF-8, UTF-16, UTF-32, SHA-512, net8.0, FV007, and FV-E016"
+    Assert-Contract ($allowedMessage.ExitCode -eq 0) "The commit-msg hook rejected legitimate engineering identifiers. Output: $($allowedMessage.Output -join [Environment]::NewLine)"
 
     $env:GIT_AUTHOR_NAME = "Example Author"
     $env:GIT_AUTHOR_EMAIL = "example.author@example.com"
@@ -93,4 +132,4 @@ finally {
     }
 }
 
-Write-Host "History gate contract passed: a commit with a non-standard author or committer identity was rejected."
+Write-Host "History gate contract passed: prohibited task/review metadata and a non-standard author or committer identity were rejected; engineering identifiers were accepted."

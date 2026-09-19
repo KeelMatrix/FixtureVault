@@ -1723,6 +1723,84 @@ public sealed class FixtureVaultTests
     }
 
     [Theory]
+    [InlineData("Cookie: a=; b=", "console")]
+    [InlineData("Cookie: a=; b=", "json")]
+    [InlineData("Cookie: session=<redacted>", "console")]
+    [InlineData("Cookie: session=<redacted>", "json")]
+    [InlineData("Cookie: a=***; b=***", "console")]
+    [InlineData("Cookie: a=***; b=***", "json")]
+    [InlineData("cookie: session=", "console")]
+    [InlineData("cookie: session=", "json")]
+    [InlineData("Set-Cookie: session=\"\"; Path=/", "console")]
+    [InlineData("Set-Cookie: session=\"\"; Path=/", "json")]
+    [InlineData(" cOoKiE : first =  ; second =  \"  \" ", "console")]
+    [InlineData(" cOoKiE : first =  ; second =  \"  \" ", "json")]
+    [InlineData("Cookie: session=***", "console")]
+    [InlineData("Cookie: session=***", "json")]
+    [InlineData("Cookie: session=[redacted]", "console")]
+    [InlineData("Cookie: session=[redacted]", "json")]
+    [InlineData("Cookie: session=redacted", "console")]
+    [InlineData("Cookie: session=redacted", "json")]
+    [InlineData("Cookie: session=masked", "console")]
+    [InlineData("Cookie: session=masked", "json")]
+    [InlineData("Cookie: session=removed", "console")]
+    [InlineData("Cookie: session=removed", "json")]
+    [InlineData("Set-Cookie: session=''; Path=/", "console")]
+    [InlineData("Set-Cookie: session=''; Path=/", "json")]
+    public void Empty_and_already_redacted_cookie_values_are_not_sensitive_findings(string header, string format)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/credentials.golden", header + "\n");
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", format], telemetry, out string output, out string error);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, telemetry.SuccessfulScans);
+        Assert.Empty(error);
+        Assert.DoesNotContain("FV007", output, StringComparison.Ordinal);
+        Assert.DoesNotContain(header, output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
+        }
+        else
+        {
+            Assert.Contains("No policy-blocking findings", output, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("Cookie: empty=; session=fixture-cookie-secret-1234567890", "console")]
+    [InlineData("Cookie: empty=; session=fixture-cookie-secret-1234567890", "json")]
+    [InlineData("Cookie: session=\"\"; sibling=fixture-cookie-secret-1234567890", "console")]
+    [InlineData("Cookie: session=\"\"; sibling=fixture-cookie-secret-1234567890", "json")]
+    public void Cookie_headers_with_a_secret_sibling_remain_sensitive_without_disclosure(string header, string format)
+    {
+        const string canary = "fixture-cookie-secret-1234567890";
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/credentials.golden", header + "\n");
+
+        int exitCode = repository.Run(["scan", "--format", format], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(1, exitCode);
+        Assert.Empty(error);
+        Assert.Contains("FV007", output, StringComparison.Ordinal);
+        Assert.DoesNotContain(canary, output, StringComparison.Ordinal);
+        Assert.DoesNotContain(header, output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            JsonElement finding = Assert.Single(report.RootElement.GetProperty("findings").EnumerateArray());
+            Assert.Equal("FV007", finding.GetProperty("ruleId").GetString());
+            Assert.Equal("block", finding.GetProperty("disposition").GetString());
+        }
+    }
+
+    [Theory]
     [InlineData("X-Api-Key: \"\"", "console")]
     [InlineData("X-Api-Key: \"\"", "json")]
     [InlineData("ApiKey: ''", "console")]

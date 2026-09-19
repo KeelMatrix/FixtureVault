@@ -20,6 +20,12 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check complete commit history
+        shell: bash
+        run: sh .githooks/check-history
 
       - name: Test release contract
         shell: pwsh

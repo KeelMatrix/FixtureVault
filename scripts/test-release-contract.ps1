@@ -71,6 +71,8 @@ Assert-JobTimeout "Release validate-release" $validation 45
 Assert-JobTimeout "Release publish" $publication 20
 Assert-Contract (-not $validation.Contains("id-token: write", [StringComparison]::Ordinal)) "The release validation job must not request id-token: write."
 Assert-Contract ($validation.Contains("dotnet restore", [StringComparison]::Ordinal)) "Release validation must restore the solution."
+Assert-Contract ($validation.Contains("fetch-depth: 0", [StringComparison]::Ordinal)) "Release validation must check out complete history for repository-wide gates."
+Assert-Contract ($validation.Contains("sh .githooks/check-history", [StringComparison]::Ordinal)) "Release validation must enforce the commit-history gate over every reachable commit."
 Assert-Contract ($validation.Contains("dotnet build", [StringComparison]::Ordinal)) "Release validation must build the solution."
 Assert-Contract ($validation.Contains("dotnet test", [StringComparison]::Ordinal)) "Release validation must test the solution."
 Assert-Contract ($validation.Contains("dotnet pack", [StringComparison]::Ordinal)) "Release validation must pack the tool."

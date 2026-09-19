@@ -171,6 +171,9 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
     private static readonly Regex ApiKeyQueryValue = new(
         "(?<prefix>[?&]\\s*(?:x-)?api[-_]?key\\s*=\\s*)(?<value>\"[^\"]*\"|'[^']*'|[^&#\\s]*)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
+    private static readonly Regex CookieHeader = new(
+        "^\\s*(?<name>set-cookie|cookie)\\s*:\\s*(?<value>[^\\r\\n]*)\\s*$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
     private static readonly Regex AlreadyRedactedValue = new(
         "^['\\\"]?(?:\\*{3,}|<\\s*redacted\\s*>|\\[\\s*redacted\\s*\\]|redacted|masked|removed)['\\\"]?$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
@@ -196,6 +199,11 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
 
     private bool IsSensitiveLine(string text)
     {
+        if (redactor is CookieRedactor && HasOnlyEmptyOrAlreadyRedactedCookieValues(text))
+        {
+            return false;
+        }
+
         string normalized = AuthorizationBearerHeader.Replace(text, static match =>
         {
             string value = match.Groups["value"].Value.Trim();
@@ -245,6 +253,42 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         return changedInput.Length > 0 &&
             !AlreadyRedactedValue.IsMatch(changedInput) &&
             !EmptyCredentialAssignment.IsMatch(changedInput);
+    }
+
+    private static bool HasOnlyEmptyOrAlreadyRedactedCookieValues(string text)
+    {
+        Match headerMatch = CookieHeader.Match(text);
+        if (!headerMatch.Success)
+        {
+            return false;
+        }
+
+        string[] assignments = headerMatch.Groups["value"].Value.Split(';');
+        bool isSetCookie = headerMatch.Groups["name"].Value.Equals("set-cookie", StringComparison.OrdinalIgnoreCase);
+        int valueCount = isSetCookie ? 1 : assignments.Length;
+        if (assignments.Length == 0 || string.IsNullOrWhiteSpace(assignments[0]))
+        {
+            return false;
+        }
+
+        for (int index = 0; index < valueCount; index++)
+        {
+            string assignment = assignments[index].Trim();
+            int equalsIndex = assignment.IndexOf('=');
+            string name = equalsIndex > 0 ? assignment[..equalsIndex].Trim() : string.Empty;
+            if (name.Length == 0 || name.Any(char.IsWhiteSpace))
+            {
+                return false;
+            }
+
+            string value = assignment[(equalsIndex + 1)..].Trim();
+            if (!IsEmptyOrAlreadyRedactedValue(value))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static bool IsEmptyOrAlreadyRedactedValue(string value)
