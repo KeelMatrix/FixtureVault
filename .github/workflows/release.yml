@@ -85,10 +85,12 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ steps.release-version.outputs.version }}"
+          $expectedCommit = (git rev-parse HEAD).Trim()
           pwsh -NoProfile -File ./scripts/inspect-package.ps1 `
             -PackagePath "./artifacts/packages/KeelMatrix.FixtureVault.$version.nupkg" `
             -SymbolsPackagePath "./artifacts/packages/KeelMatrix.FixtureVault.$version.snupkg" `
-            -ExpectedVersion $version
+            -ExpectedVersion $version `
+            -ExpectedCommit $expectedCommit
 
       - name: Smoke-test the release package
         shell: pwsh

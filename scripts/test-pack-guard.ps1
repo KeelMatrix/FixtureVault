@@ -143,10 +143,11 @@ function New-PackageWithoutReadme {
 function Invoke-PackageInspection {
     param(
         [string]$InspectionScriptPath,
-        [string]$PackagePath
+        [string]$PackagePath,
+        [string]$ExpectedCommit
     )
 
-    $output = @(& pwsh -NoProfile -File $InspectionScriptPath -PackagePath $PackagePath -ExpectedVersion "0.1.0" 2>&1)
+    $output = @(& pwsh -NoProfile -File $InspectionScriptPath -PackagePath $PackagePath -ExpectedVersion "0.1.0" -ExpectedCommit $ExpectedCommit 2>&1)
     [PSCustomObject]@{
         ExitCode = $LASTEXITCODE
         Output = ($output -join [Environment]::NewLine)
@@ -154,6 +155,8 @@ function Invoke-PackageInspection {
 }
 
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+$repositoryCommit = (& git -C $repositoryRoot rev-parse HEAD 2>&1 | Out-String).Trim()
+Assert-Contract ($LASTEXITCODE -eq 0 -and $repositoryCommit -match '^[0-9a-fA-F]{40}$') "Could not resolve the repository commit for package provenance tests."
 $projectPath = Join-Path $repositoryRoot "src/KeelMatrix.FixtureVault/KeelMatrix.FixtureVault.csproj"
 $workRoot = Join-Path ([IO.Path]::GetTempPath()) ("fixturevault-pack-guard-" + [Guid]::NewGuid().ToString("N"))
 $probeTargetsPath = Join-Path $workRoot "pack-guard-probe.targets"
@@ -250,8 +253,65 @@ try {
     Assert-Contract (Test-Path -LiteralPath $normalSymbolsPackagePath) "Normal pack did not produce the expected symbols package."
 
     $inspectionScriptPath = Join-Path $repositoryRoot "scripts/inspect-package.ps1"
-    & pwsh -NoProfile -File $inspectionScriptPath -PackagePath $normalPackagePath -SymbolsPackagePath $normalSymbolsPackagePath -ExpectedVersion "0.1.0"
+    & pwsh -NoProfile -File $inspectionScriptPath -PackagePath $normalPackagePath -SymbolsPackagePath $normalSymbolsPackagePath -ExpectedVersion "0.1.0" -ExpectedCommit $repositoryCommit
     Assert-Contract ($LASTEXITCODE -eq 0) "Normal pack archives failed package-content inspection."
+
+    $staleCommit = ("0" * 40) -join ""
+    $staleProvenancePackagePath = Join-Path $workRoot "stale-provenance.nupkg"
+    New-PackageWithCopyright $normalPackagePath $staleProvenancePackagePath "KeelMatrix"
+    $staleArchive = [IO.Compression.ZipFile]::Open($staleProvenancePackagePath, [IO.Compression.ZipArchiveMode]::Update)
+    try {
+        $staleNuspecEntry = $staleArchive.Entries | Where-Object { $_.FullName -eq "KeelMatrix.FixtureVault.nuspec" } | Select-Object -First 1
+        Assert-Contract ($null -ne $staleNuspecEntry) "The stale-provenance probe could not find the nuspec entry."
+        $staleNuspecReader = [IO.StreamReader]::new($staleNuspecEntry.Open())
+        try {
+            [xml]$staleNuspec = $staleNuspecReader.ReadToEnd()
+        }
+        finally {
+            $staleNuspecReader.Dispose()
+        }
+
+        $staleRepositoryNode = $staleNuspec.SelectSingleNode("/*[local-name()='package']/*[local-name()='metadata']/*[local-name()='repository']")
+        Assert-Contract ($null -ne $staleRepositoryNode) "The stale-provenance probe source is missing its repository node."
+        $staleRepositoryNode.SetAttribute("commit", $staleCommit)
+
+        $staleSettings = [Xml.XmlWriterSettings]::new()
+        $staleSettings.Encoding = [Text.UTF8Encoding]::new($false)
+        $staleSettings.Indent = $true
+        $staleXmlStream = [IO.MemoryStream]::new()
+        try {
+            $staleWriter = [Xml.XmlWriter]::Create($staleXmlStream, $staleSettings)
+            try {
+                $staleNuspec.Save($staleWriter)
+            }
+            finally {
+                $staleWriter.Dispose()
+            }
+
+            $staleNuspecBytes = $staleXmlStream.ToArray()
+        }
+        finally {
+            $staleXmlStream.Dispose()
+        }
+
+        $staleNuspecEntry.Delete()
+        $staleReplacement = $staleArchive.CreateEntry("KeelMatrix.FixtureVault.nuspec")
+        $staleReplacementStream = $staleReplacement.Open()
+        try {
+            $staleReplacementStream.Write($staleNuspecBytes, 0, $staleNuspecBytes.Length)
+        }
+        finally {
+            $staleReplacementStream.Dispose()
+        }
+    }
+    finally {
+        $staleArchive.Dispose()
+    }
+
+    $staleProvenanceResult = Invoke-PackageInspection $inspectionScriptPath $staleProvenancePackagePath $repositoryCommit
+    Assert-Contract ($staleProvenanceResult.ExitCode -ne 0) "Package inspection unexpectedly accepted stale repository provenance."
+    Assert-Contract ($staleProvenanceResult.Output.Contains("Package repository commit is", [StringComparison]::Ordinal)) "Stale repository provenance failed without the exact-commit contract error."
+    Write-Host "Package inspection rejected stale repository provenance as expected."
 
     $copyrightProbes = [ordered]@{
         "missing" = $null
@@ -261,7 +321,7 @@ try {
     foreach ($probe in $copyrightProbes.GetEnumerator()) {
         $probePackagePath = Join-Path $workRoot ("copyright-" + $probe.Key + ".nupkg")
         New-PackageWithCopyright $normalPackagePath $probePackagePath $probe.Value
-        $probeResult = Invoke-PackageInspection $inspectionScriptPath $probePackagePath
+        $probeResult = Invoke-PackageInspection $inspectionScriptPath $probePackagePath $repositoryCommit
         Assert-Contract ($probeResult.ExitCode -ne 0) "Package inspection unexpectedly accepted a $($probe.Key) copyright."
         Assert-Contract ($probeResult.Output.Contains("Package copyright must be exactly KeelMatrix.", [StringComparison]::Ordinal)) "Package inspection rejected a $($probe.Key) copyright without the copyright contract error."
         Write-Host "Package inspection rejected $($probe.Key) copyright as expected."
@@ -269,14 +329,14 @@ try {
 
     $missingReadmePackagePath = Join-Path $workRoot "missing-readme.nupkg"
     New-PackageWithoutReadme $normalPackagePath $missingReadmePackagePath
-    $missingReadmeResult = Invoke-PackageInspection $inspectionScriptPath $missingReadmePackagePath
+    $missingReadmeResult = Invoke-PackageInspection $inspectionScriptPath $missingReadmePackagePath $repositoryCommit
     Assert-Contract ($missingReadmeResult.ExitCode -ne 0) "Package inspection unexpectedly accepted a package without README.md."
     Assert-Contract ($missingReadmeResult.Output.Contains("Expected package entry is missing: README.md", [StringComparison]::Ordinal)) "Package inspection rejected a package without README.md without the README contract error."
     Write-Host "Package inspection rejected a package without README.md as expected."
 
     $mismatchedReadmePackagePath = Join-Path $workRoot "mismatched-readme.nupkg"
     New-PackageWithReadme $normalPackagePath $mismatchedReadmePackagePath "This is not the project-local package README."
-    $mismatchedReadmeResult = Invoke-PackageInspection $inspectionScriptPath $mismatchedReadmePackagePath
+    $mismatchedReadmeResult = Invoke-PackageInspection $inspectionScriptPath $mismatchedReadmePackagePath $repositoryCommit
     Assert-Contract ($mismatchedReadmeResult.ExitCode -ne 0) "Package inspection unexpectedly accepted a README.md from another source."
     Assert-Contract ($mismatchedReadmeResult.Output.Contains("Packed README.md does not match the project-local README", [StringComparison]::Ordinal)) "Package inspection rejected a mismatched README.md without the provenance contract error."
     Write-Host "Package inspection rejected a mismatched README.md as expected."

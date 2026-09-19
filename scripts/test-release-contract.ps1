@@ -80,6 +80,8 @@ Assert-Contract ($validation.Contains('EXPECTED_COMMIT: ${{ github.sha }}', [Str
 Assert-Contract ($validation.Contains('-ExpectedPackageVersion', [StringComparison]::Ordinal)) "Release validation must pass the expected package version to the changelog contract."
 Assert-Contract ($validation.Contains('-ExpectedCommit $env:EXPECTED_COMMIT', [StringComparison]::Ordinal)) "Release validation must pass the expected commit to the changelog contract."
 Assert-Contract ($validation.Contains("inspect-package.ps1", [StringComparison]::Ordinal)) "Release validation must inspect the package archives."
+Assert-Contract ($validation.Contains('$expectedCommit = (git rev-parse HEAD).Trim()', [StringComparison]::Ordinal)) "Release package inspection must resolve the checked-out commit."
+Assert-Contract ($validation.Contains('-ExpectedCommit $expectedCommit', [StringComparison]::Ordinal)) "Release package inspection must validate exact repository provenance."
 Assert-Contract ($validation.Contains("package-consumer-smoke.ps1", [StringComparison]::Ordinal)) "Release validation must run the package consumer smoke."
 Assert-Contract ($validation.Contains("audit-vulnerabilities.ps1", [StringComparison]::Ordinal)) "Release validation must run the repository vulnerability audit."
 Assert-Contract ($validation.Contains('KeelMatrix.FixtureVault.${{ steps.release-version.outputs.version }}.nupkg', [StringComparison]::Ordinal)) "Release validation must upload the primary package by exact name."
@@ -100,6 +102,7 @@ Assert-Contract ($ciWorkflow.Contains("audit-vulnerabilities.ps1", [StringCompar
 Assert-Contract (Test-Path -LiteralPath $changelogScriptPath -PathType Leaf) "The changelog/version contract script is missing."
 Assert-AuditBeforePack "Normal CI" $ciWorkflow
 Assert-AuditBeforePack "Release validation" $workflow
+Assert-Contract ($ciWorkflow.Contains('git rev-parse HEAD', [StringComparison]::Ordinal) -and $ciWorkflow.Contains('-ExpectedCommit $expectedCommit', [StringComparison]::Ordinal)) "CI package inspection must validate exact repository provenance."
 
 $previousTag = $env:RELEASE_TAG
 $previousOutput = $env:GITHUB_OUTPUT
