@@ -96,6 +96,8 @@ try {
         "Preserve UTF-8 BOM handling in reports"
         "Decode UTF-16 fixture files with a byte-order mark"
         "Keep UTF-32 metadata round trips deterministic"
+        "Verify UTF-16LE/BE and UTF-32LE/BE baseline decoding"
+        "Preserve UTF-16/UTF-32 BOM detection"
         "Reject invalid Unicode surrogate pairs"
         "Normalize NFC filenames before comparison"
         "Handle Latin-1 fixture input explicitly"
