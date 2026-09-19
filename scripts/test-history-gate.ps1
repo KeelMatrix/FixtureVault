@@ -167,6 +167,28 @@ try {
         "Verify no fixture bytes leave the process"
         "Retain stable rule ordering"
         "Make scan output reproducible"
+        "Use UTF-8 and UTF-16 encodings"
+        "Preserve UTF-16LE byte order"
+        "Preserve UTF-32BE byte order"
+        "Hash with SHA-1"
+        "Hash with SHA-256"
+        "Hash with SHA-512"
+        "Validate MD5-5 compatibility"
+        "Negotiate HTTP-2"
+        "Negotiate TLS-1.2"
+        "Parse RFC-9110 metadata"
+        "Apply ISO-8601 timestamps"
+        "Read IEEE-754 values"
+        "Inspect ECMA-335 metadata"
+        "Encrypt with AES-256"
+        "Authenticate with HMAC-256"
+        "Load RSA-2048 keys"
+        "Parse MIME-1 content"
+        "Track CVE-2021-44228 advisories"
+        "Run the net8.0 tool"
+        "Report FV007 findings"
+        "Report FV-E016 errors"
+        "Skip FV-SKIP-ENCODING diagnostics"
     )
 
     $negativeCorpus = @(
@@ -192,6 +214,134 @@ try {
         "acceptance pass"
     )
 
+    $tokenDecisionTable = @(
+        @{ Message = "KEE-3"; Expected = 1 }
+        @{ Message = "ABC-1"; Expected = 1 }
+        @{ Message = "KEE-589"; Expected = 1 }
+        @{ Message = "Refs KEE-589"; Expected = 1 }
+        @{ Message = "closes ABC-12"; Expected = 1 }
+        @{ Message = "[KEE-3]"; Expected = 1 }
+        @{ Message = "(KEE-3)"; Expected = 1 }
+        @{ Message = "Fixes KEE-3"; Expected = 1 }
+        @{ Message = "Part of KEE-3"; Expected = 1 }
+        @{ Message = "UTF-8-1"; Expected = 1 }
+        @{ Message = "UTF-16-1"; Expected = 1 }
+        @{ Message = "SHA-256-1"; Expected = 1 }
+        @{ Message = "HTTP-2-1"; Expected = 1 }
+        @{ Message = "TLS-1.2-1"; Expected = 1 }
+        @{ Message = "NET-8-1"; Expected = 1 }
+        @{ Message = "FV007-1"; Expected = 1 }
+        @{ Message = "UTF-8-123"; Expected = 1 }
+        @{ Message = "SHA-256-42"; Expected = 1 }
+        @{ Message = "frontier"; Expected = 1 }
+        @{ Message = "frontier review"; Expected = 1 }
+        @{ Message = "rejection round"; Expected = 1 }
+        @{ Message = "review round"; Expected = 1 }
+        @{ Message = "acceptance pass"; Expected = 1 }
+        @{ Message = "UTF-8"; Expected = 0 }
+        @{ Message = "UTF-16"; Expected = 0 }
+        @{ Message = "UTF-32"; Expected = 0 }
+        @{ Message = "LATIN-1"; Expected = 0 }
+        @{ Message = "SHA-1"; Expected = 0 }
+        @{ Message = "SHA-256"; Expected = 0 }
+        @{ Message = "SHA-384"; Expected = 0 }
+        @{ Message = "SHA-512"; Expected = 0 }
+        @{ Message = "MD5-5"; Expected = 0 }
+        @{ Message = "HTTP-2"; Expected = 0 }
+        @{ Message = "HTTP-3"; Expected = 0 }
+        @{ Message = "TLS-1.2"; Expected = 0 }
+        @{ Message = "TLS-1.3"; Expected = 0 }
+        @{ Message = "SSL-3"; Expected = 0 }
+        @{ Message = "RFC-9110"; Expected = 0 }
+        @{ Message = "RFC-2119"; Expected = 0 }
+        @{ Message = "ISO-8601"; Expected = 0 }
+        @{ Message = "IEEE-754"; Expected = 0 }
+        @{ Message = "ECMA-335"; Expected = 0 }
+        @{ Message = "AES-256"; Expected = 0 }
+        @{ Message = "HMAC-256"; Expected = 0 }
+        @{ Message = "RSA-2048"; Expected = 0 }
+        @{ Message = "MIME-1"; Expected = 0 }
+        @{ Message = "CVE-2021-44228"; Expected = 0 }
+        @{ Message = "net8.0"; Expected = 0 }
+        @{ Message = "net10.0"; Expected = 0 }
+        @{ Message = "FV007"; Expected = 0 }
+        @{ Message = "FV-E016"; Expected = 0 }
+        @{ Message = "SHA-256 hashing"; Expected = 0 }
+        @{ Message = "Upgrade TLS-1.3 support"; Expected = 0 }
+        @{ Message = "Parse RFC-9110 headers"; Expected = 0 }
+        @{ Message = "Fix UTF-8 decoding"; Expected = 0 }
+        @{ Message = "Add AES-256-GCM support"; Expected = 0 }
+        @{ Message = "Support HTTP-2 and HTTP-3"; Expected = 0 }
+        @{ Message = "ISO-8601-1"; Expected = 1 }
+        @{ Message = "IEEE-754-2019"; Expected = 1 }
+    )
+
+    $additionalTokenCases = @(
+        @{ Message = "UTF-8-1"; Expected = 1 }
+        @{ Message = "UTF-8-1.2"; Expected = 1 }
+        @{ Message = "UTF-8-GCM"; Expected = 1 }
+        @{ Message = "UTF-8-HMAC"; Expected = 1 }
+        @{ Message = "UTF-8-CBC"; Expected = 1 }
+        @{ Message = "UTF-8-LE"; Expected = 1 }
+        @{ Message = "UTF-8-BE"; Expected = 1 }
+        @{ Message = "UTF-8-BOM"; Expected = 1 }
+        @{ Message = "LATIN-1-1"; Expected = 1 }
+        @{ Message = "LATIN-1-1.2"; Expected = 1 }
+        @{ Message = "LATIN-1-GCM"; Expected = 1 }
+        @{ Message = "SHA-256-1.2"; Expected = 1 }
+        @{ Message = "SHA-256-GCM"; Expected = 1 }
+        @{ Message = "SHA-256-HMAC"; Expected = 1 }
+        @{ Message = "SHA-256-CBC"; Expected = 1 }
+        @{ Message = "MD5-5-1"; Expected = 1 }
+        @{ Message = "MD5-5-1.2"; Expected = 1 }
+        @{ Message = "HTTP-2-1.2"; Expected = 1 }
+        @{ Message = "HTTP-2-ALPN"; Expected = 1 }
+        @{ Message = "TLS-1.2-1"; Expected = 1 }
+        @{ Message = "TLS-1.2-1.3"; Expected = 1 }
+        @{ Message = "TLS-1.2-GCM"; Expected = 1 }
+        @{ Message = "TLS-1.2-HMAC"; Expected = 1 }
+        @{ Message = "TLS-1.2-CBC"; Expected = 1 }
+        @{ Message = "TLS-1.2-ALPN"; Expected = 1 }
+        @{ Message = "SSL-3-1"; Expected = 1 }
+        @{ Message = "SSL-3-1.2"; Expected = 1 }
+        @{ Message = "SSL-3-ALPN"; Expected = 1 }
+        @{ Message = "RFC-9110-1"; Expected = 1 }
+        @{ Message = "RFC-9110-1.2"; Expected = 1 }
+        @{ Message = "ISO-8601-1"; Expected = 1 }
+        @{ Message = "ISO-8601-1.2"; Expected = 1 }
+        @{ Message = "IEEE-754-2019"; Expected = 1 }
+        @{ Message = "IEEE-754-2019.1"; Expected = 1 }
+        @{ Message = "ECMA-335-1"; Expected = 1 }
+        @{ Message = "ECMA-335-1.2"; Expected = 1 }
+        @{ Message = "ECMA-335-HMAC"; Expected = 1 }
+        @{ Message = "AES-256-1"; Expected = 1 }
+        @{ Message = "AES-256-1.2"; Expected = 1 }
+        @{ Message = "AES-256-GCM"; Expected = 0 }
+        @{ Message = "AES-256-CBC"; Expected = 1 }
+        @{ Message = "AES-256-LE"; Expected = 1 }
+        @{ Message = "AES-256-BE"; Expected = 1 }
+        @{ Message = "HMAC-256-1"; Expected = 1 }
+        @{ Message = "HMAC-256-1.2"; Expected = 1 }
+        @{ Message = "HMAC-256-GCM"; Expected = 1 }
+        @{ Message = "RSA-2048-1"; Expected = 1 }
+        @{ Message = "RSA-2048-1.2"; Expected = 1 }
+        @{ Message = "RSA-2048-CBC"; Expected = 1 }
+        @{ Message = "MIME-1-1"; Expected = 1 }
+        @{ Message = "MIME-1-1.2"; Expected = 1 }
+        @{ Message = "CVE-2021-44228-1"; Expected = 1 }
+        @{ Message = "CVE-2021-44228-1.2"; Expected = 1 }
+        @{ Message = "NET-8-1"; Expected = 1 }
+        @{ Message = "NET8.0-1"; Expected = 1 }
+        @{ Message = "FV007-1"; Expected = 1 }
+        @{ Message = "FV-E016-1"; Expected = 1 }
+        @{ Message = "FV-SKIP-ENCODING-1"; Expected = 1 }
+        @{ Message = "UTF-16LE"; Expected = 0 }
+        @{ Message = "UTF-32BE"; Expected = 0 }
+        @{ Message = "TLS-1"; Expected = 0 }
+        @{ Message = "NET-8"; Expected = 0 }
+        @{ Message = "FV-SKIP-ENCODING"; Expected = 0 }
+    )
+
     foreach ($message in $positiveCorpus) {
         $hookResult = Invoke-CommitMessageHook -Message $message
         Write-Host ("positive`t{0}`t{1}" -f $hookResult.ExitCode, $message)
@@ -202,6 +352,12 @@ try {
         $hookResult = Invoke-CommitMessageHook -Message $message
         Write-Host ("negative`t{0}`t{1}" -f $hookResult.ExitCode, $message)
         Assert-Contract ($hookResult.ExitCode -eq 1) "The commit-msg hook accepted prohibited metadata '$message'. Output: $($hookResult.Output -join [Environment]::NewLine)"
+    }
+
+    foreach ($case in $tokenDecisionTable + $additionalTokenCases) {
+        $hookResult = Invoke-CommitMessageHook -Message $case.Message
+        Write-Host ("token`t{0}`t{1}`texpected {2}" -f $hookResult.ExitCode, $case.Message, $case.Expected)
+        Assert-Contract ($hookResult.ExitCode -eq $case.Expected) "Token decision table mismatch for '$($case.Message)': expected $($case.Expected), got $($hookResult.ExitCode). Output: $($hookResult.Output -join [Environment]::NewLine)"
     }
 
     $env:GIT_AUTHOR_NAME = "Example Author"

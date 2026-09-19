@@ -41,19 +41,60 @@ for word in $blocked_words; do
 done
 
 # These tokens are legitimate engineering vocabulary whose shape resembles a
-# task reference. The families are deliberately bounded: UTF/LATIN are
-# encodings; SHA/MD5 are hashes; HTTP/TLS/SSL are protocols; RFC/ISO/IEEE/
-# ECMA are standards; AES/HMAC/RSA/MIME are data or cryptographic formats;
-# CVE is a vulnerability identifier; NET is a framework version; and FV is a
-# FixtureVault rule/error ID. Other ACR-1-shaped tokens remain reserved for
-# internal task references. Remove these tokens before both reference checks
-# so prose such as "Fix SHA-256 hashing" stays legitimate.
-safe_engineering_tokens='UTF-[0-9]+[A-Z]+|UTF-[0-9]+|LATIN-[0-9]+|SHA-[0-9]+-[0-9]+|SHA-[0-9]+|MD5-[0-9]+|HTTP-[0-9]+|TLS-[0-9]+[.][0-9]+|TLS-[0-9]+|SSL-[0-9]+|RFC-[0-9]+|ISO-[0-9]+|IEEE-[0-9]+|ECMA-[0-9]+|AES-[0-9]+|HMAC-[0-9]+|RSA-[0-9]+|MIME-[0-9]+|CVE-[0-9]+-[0-9]+|CVE-[0-9]+|NET-[0-9]+[.][0-9]+|NET-[0-9]+|FV[0-9]+|FV-E[0-9]+|FV-SKIP-[A-Z0-9-]+'
-message_without_safe_tokens=$(LC_ALL=C tr '[:lower:]' '[:upper:]' < "$message_file" | LC_ALL=C sed -E "
-:remove_safe_token
-s/(^|[^[:alnum:]_])(${safe_engineering_tokens})([^[:alnum:]_]|$)/\1 \3/g
-tremove_safe_token
-")
+# task reference. Tokenization is deliberately explicit: a token is one
+# maximal run of [A-Za-z0-9._-]. Each full token is classified as a whole;
+# no allowlisted spelling is removed from inside a longer token such as
+# UTF-8-1. Other ACR-1-shaped tokens remain reserved for internal references.
+# Each allowlist branch documents the complete form it permits.
+message_without_safe_tokens=$(LC_ALL=C tr '[:lower:]' '[:upper:]' < "$message_file" | LC_ALL=C awk '
+function safe(token) {
+  if (token ~ /^UTF-[0-9]+$/) return 1                 # UTF encoding revision.
+  if (token ~ /^UTF-[0-9]+(LE|BE)$/) return 1         # UTF byte-order spelling.
+  if (token ~ /^LATIN-[0-9]+$/) return 1              # Latin encoding designation.
+  if (token ~ /^SHA-[0-9]+$/) return 1                # SHA hash family and width.
+  if (token ~ /^MD5-[0-9]+$/) return 1                # Existing MD5 digest label.
+  if (token ~ /^HTTP-[0-9]+$/) return 1               # HTTP protocol major version.
+  if (token ~ /^TLS-[0-9]+([.][0-9]+)?$/) return 1    # TLS protocol version.
+  if (token ~ /^SSL-[0-9]+$/) return 1                # SSL protocol version.
+  if (token ~ /^RFC-[0-9]+$/) return 1                # RFC document number.
+  if (token ~ /^ISO-[0-9]+$/) return 1                # ISO standard number.
+  if (token ~ /^IEEE-[0-9]+$/) return 1               # IEEE standard number.
+  if (token ~ /^ECMA-[0-9]+$/) return 1               # ECMA standard number.
+  if (token ~ /^AES-[0-9]+$/) return 1                # AES key size.
+  if (token ~ /^AES-[0-9]+-GCM$/) return 1            # AES-GCM authenticated mode.
+  if (token ~ /^HMAC-[0-9]+$/) return 1               # HMAC digest width.
+  if (token ~ /^RSA-[0-9]+$/) return 1                # RSA key size.
+  if (token ~ /^MIME-[0-9]+$/) return 1               # MIME specification version.
+  if (token ~ /^CVE-[0-9]+-[0-9]+$/) return 1         # CVE year and identifier.
+  if (token ~ /^NET[0-9]+[.][0-9]+$/) return 1        # .NET framework version.
+  if (token ~ /^NET-[0-9]+([.][0-9]+)?$/) return 1    # .NET name with version.
+  if (token ~ /^FV[0-9]+$/) return 1                  # FixtureVault rule ID.
+  if (token ~ /^FV-E[0-9]+$/) return 1                # FixtureVault error ID.
+  if (token ~ /^FV-SKIP-[A-Z]+$/) return 1             # FixtureVault skip code.
+  return 0
+}
+{
+  remaining = $0
+  output = ""
+  while (match(remaining, /[A-Za-z0-9._-]+/)) {
+    output = output substr(remaining, 1, RSTART - 1)
+    token = substr(remaining, RSTART, RLENGTH)
+    if (safe(token)) output = output " "
+    else output = output token
+    remaining = substr(remaining, RSTART + RLENGTH)
+  }
+  print output remaining
+}')
+
+# An allowlisted base followed by an extra numeric tail is always task-shaped,
+# including compact forms such as NET8.0-1 that the generic ACR-1 matcher does
+# not recognize. Match the complete token boundary; never strip the base.
+allowlisted_base_pattern='UTF-[0-9]+(LE|BE)?|LATIN-[0-9]+|SHA-[0-9]+|MD5-[0-9]+|HTTP-[0-9]+|TLS-[0-9]+([.][0-9]+)?|SSL-[0-9]+|RFC-[0-9]+|ISO-[0-9]+|IEEE-[0-9]+|ECMA-[0-9]+|AES-[0-9]+(-GCM)?|HMAC-[0-9]+|RSA-[0-9]+|MIME-[0-9]+|CVE-[0-9]+-[0-9]+|NET[0-9]+[.][0-9]+|NET-[0-9]+([.][0-9]+)?|FV[0-9]+|FV-E[0-9]+|FV-SKIP-[A-Z]+'
+technical_tail_pattern="(^|[^[:alnum:]_])(${allowlisted_base_pattern})-[0-9]+([.][0-9]+)?([^[:alnum:]_]|$)"
+if LC_ALL=C grep -Eiq "$technical_tail_pattern" "$message_file"; then
+  printf '%s\n' 'Commit message rejected: task references are not allowed.' >&2
+  exit 1
+fi
 
 task_reference_pattern='(^|[^[:alnum:]_])(refs?|closes?|fix(es)?|resolves?|reopens?|related[[:space:]]+to|issue|task)[[:space:]:#-]+[A-Z][A-Z0-9]{1,15}-[0-9]{1,8}([^[:alnum:]_]|$)'
 if printf '%s\n' "$message_without_safe_tokens" | LC_ALL=C grep -Eiq "$task_reference_pattern"; then
