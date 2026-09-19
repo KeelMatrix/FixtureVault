@@ -1,41 +1,91 @@
 #!/bin/sh
 set -eu
 
+matrix_mode=0
+
 if [ "${1-}" = "--technical-tail-matrix" ]; then
   if [ "$#" -ne 2 ] || [ ! -f "$2" ]; then
     printf '%s\n' 'Technical-tail matrix check could not read its input.' >&2
     exit 2
   fi
+  matrix_mode=1
 elif [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
   printf '%s\n' 'Commit message check could not read its input.' >&2
   exit 2
 fi
 
-message_file=$1
+if [ "$matrix_mode" -eq 1 ]; then
+  message_file=$2
+else
+  message_file=$1
+fi
 
-# An allowlisted base followed by a non-whitespace separator and a numeric tail
+temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/commit-message.XXXXXX")
+trap 'rm -rf "$temporary_root"' EXIT HUP INT TERM
+normalized_message_file=$temporary_root/normalized-message
+message_without_safe_tokens_file=$temporary_root/message-without-safe-tokens
+
+# Normalize the complete message before any rule runs. ASCII whitespace (space,
+# tab, CR, LF, form feed, and vertical tab) becomes one space. Every non-ASCII
+# byte and every non-whitespace control byte becomes a visible '~' separator;
+# this prevents an invisible or Unicode character from hiding a continuation.
+#
+# Bounded class: reject any ASCII-letter token carrying an ASCII-digit
+# continuation across a run of non-ASCII-letter/non-ASCII-digit characters,
+# including whitespace, controls, non-ASCII characters, and line breaks. Also
+# reject keyword-led references (refs, closes, fixes, resolves, reopens, issue,
+# task, related to) and review-process wording in any whitespace layout.
+# Deliberately accepted: a pure ASCII-whitespace continuation with no separator
+# character (for example, UTF-8 1 or UTF-8 followed by a line break and 1), and
+# a non-ASCII digit with no ASCII-digit continuation. The latter is a separator
+# in the normalized stream, so UTF-8 followed only by an Arabic-Indic digit
+# remains a whitespace-free technical token rather than an ASCII numeric tail.
+normalize_message() {
+  LC_ALL=C awk '
+  BEGIN {
+    ORS = ""
+    pending_space = 0
+    has_content = 0
+  }
+  function append_character(value) {
+    if (pending_space && has_content) printf "%s", " "
+    pending_space = 0
+    printf "%s", value
+    has_content = 1
+  }
+  {
+    for (i = 1; i <= length($0); i++) {
+      character = substr($0, i, 1)
+      if (character ~ /[[:space:]]/) {
+        pending_space = 1
+      }
+      else if (character ~ /[A-Za-z0-9[:punct:]]/) {
+        append_character(character)
+      }
+      else {
+        append_character("~")
+      }
+    }
+    pending_space = 1
+  }
+  END {
+    printf "%s", "\n"
+  }
+  ' "$1" > "$2"
+}
+
+normalize_message "$message_file" "$normalized_message_file"
+
+# An allowlisted base followed by a separator and a numeric tail
 # is always task-shaped, including compact forms such as NET8.0-1 that the
 # generic ACR-1 matcher does not recognize. The separator class is deliberate:
-# every punctuation separator is covered, while whitespace-only continuations
-# such as UTF-8 1 remain accepted. This intentionally rejects rare real
+# every punctuation, control, and non-ASCII separator is covered, while
+# whitespace-only continuations such as UTF-8 1 remain accepted. This
+# intentionally rejects rare real
 # spellings such as SHA-256/384 and NET8.0.1; authors can rephrase them as
 # "SHA-256 and SHA-384" and "net8.0 and net8.0.1" where needed.
 allowlisted_base_pattern='UTF-[0-9]+(LE|BE)?|LATIN-[0-9]+|SHA-[0-9]+|MD5-[0-9]+|HTTP-[0-9]+|TLS-[0-9]+([.][0-9]+)?|SSL-[0-9]+|RFC-[0-9]+|ISO-[0-9]+|IEEE-[0-9]+|ECMA-[0-9]+|AES-[0-9]+(-GCM)?|HMAC-[0-9]+|RSA-[0-9]+|MIME-[0-9]+|CVE-[0-9]+-[0-9]+|NET[0-9]+[.][0-9]+|NET-[0-9]+([.][0-9]+)?|FV[0-9]+|FV-E[0-9]+|FV-SKIP-[A-Z]+'
-technical_tail_pattern="(^|[^[:alnum:]])(${allowlisted_base_pattern})[[:space:]]*[^[:alnum:][:space:]][^[:alnum:]]*[[:space:]]*[0-9]+"
-
-# The history contract uses this internal batch form to exercise the exact
-# technical-tail rule without starting one shell process per generated cell.
-# Normal commit-msg invocations continue through the complete hook below.
-if [ "${1-}" = "--technical-tail-matrix" ]; then
-  while IFS= read -r matrix_message || [ -n "$matrix_message" ]; do
-    if printf '%s\n' "$matrix_message" | LC_ALL=C grep -Eiq "$technical_tail_pattern"; then
-      printf '1\t%s\n' "$matrix_message"
-    else
-      printf '0\t%s\n' "$matrix_message"
-    fi
-  done < "$2"
-  exit 0
-fi
+technical_tail_pattern="(^|[^[:alnum:]_])(${allowlisted_base_pattern})[[:space:]]*[^[:alnum:][:space:]][^[:alnum:]]*[[:space:]]*[0-9]+"
 
 label_co_author=$(printf '\143\157\055\141\165\164\150\157\162\145\144\055\142\171')
 label_signed_off=$(printf '\163\151\147\156\145\144\055\157\146\146\055\142\171')
@@ -45,7 +95,7 @@ label_acked=$(printf '\141\143\153\145\144\055\142\171')
 label_reported=$(printf '\162\145\160\157\162\164\145\144\055\142\171')
 label_approved=$(printf '\141\160\160\162\157\166\145\144\055\142\171')
 
-if LC_ALL=C grep -Eiq "^[[:space:]]*(${label_co_author}|${label_signed_off}|${label_reviewed}|${label_tested}|${label_acked}|${label_reported}|${label_approved})[[:space:]]*:" "$message_file"; then
+if LC_ALL=C grep -Eiq "(^|[^[:alnum:]_])(${label_co_author}|${label_signed_off}|${label_reviewed}|${label_tested}|${label_acked}|${label_reported}|${label_approved})[[:space:]]*:" "$normalized_message_file"; then
   printf '%s\n' 'Commit message rejected: identity trailers are not allowed.' >&2
   exit 1
 fi
@@ -63,7 +113,7 @@ blocked_words=$(printf '%s\n' \
   "$(printf '\157\162\143\150\145\163\164\162\141\164\157\162')")
 
 for word in $blocked_words; do
-  if LC_ALL=C grep -Eiq "(^|[^[:alnum:]_])${word}([^[:alnum:]_]|$)" "$message_file"; then
+  if LC_ALL=C grep -Eiq "(^|[^[:alnum:]_])${word}([^[:alnum:]_]|$)" "$normalized_message_file"; then
     printf '%s\n' 'Commit message rejected: internal metadata is not allowed.' >&2
     exit 1
   fi
@@ -75,7 +125,8 @@ done
 # no allowlisted spelling is removed from inside a longer token such as
 # UTF-8-1. Other ACR-1-shaped tokens remain reserved for internal references.
 # Each allowlist branch documents the complete form it permits.
-message_without_safe_tokens=$(LC_ALL=C tr '[:lower:]' '[:upper:]' < "$message_file" | LC_ALL=C awk '
+strip_safe_tokens() {
+  LC_ALL=C tr '[:lower:]' '[:upper:]' < "$1" | LC_ALL=C awk '
 function safe(token) {
   if (token ~ /^UTF-[0-9]+$/) return 1                 # UTF encoding revision.
   if (token ~ /^UTF-[0-9]+(LE|BE)$/) return 1         # UTF byte-order spelling.
@@ -117,27 +168,122 @@ function has_numeric_tail(value) {
     remaining = tail
   }
   print output remaining
-}')
+}' > "$2"
+}
 
-if printf '%s\n' "$message_without_safe_tokens" | LC_ALL=C grep -Eiq "$technical_tail_pattern"; then
+if [ "$matrix_mode" -eq 1 ]; then
+  # The matrix harness supplies one UTF-8 cell per line as fixed-width octal
+  # byte escapes. Decode and apply the same normalization and technical-tail
+  # rule in one awk process so the exhaustive surface stays fast enough for CI.
+  LC_ALL=C awk -v allowlisted="$allowlisted_base_pattern" '
+  function octal_digit(value) {
+    return index("01234567", value) - 1
+  }
+  function octal_value(value) {
+    return octal_digit(substr(value, 1, 1)) * 64 + octal_digit(substr(value, 2, 1)) * 8 + octal_digit(substr(value, 3, 1))
+  }
+  function append_normalized(value) {
+    if (pending_space && has_content) normalized = normalized " "
+    pending_space = 0
+    normalized = normalized value
+    has_content = 1
+  }
+  function normalize_encoded(value, i, code) {
+    normalized = ""
+    pending_space = 0
+    has_content = 0
+    for (i = 1; i <= length(value); i += 4) {
+      code = octal_value(substr(value, i + 1, 3))
+      if (code == 9 || code == 10 || code == 11 || code == 12 || code == 13 || code == 32) {
+        pending_space = 1
+      }
+      else if ((code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || (code >= 33 && code <= 47) || (code >= 58 && code <= 64) || (code >= 91 && code <= 96) || (code >= 123 && code <= 126)) {
+        append_normalized(sprintf("%c", code))
+      }
+      else {
+        append_normalized("~")
+      }
+    }
+    return normalized
+  }
+  function safe(token) {
+    if (token ~ /^UTF-[0-9]+$/) return 1
+    if (token ~ /^UTF-[0-9]+(LE|BE)$/) return 1
+    if (token ~ /^LATIN-[0-9]+$/) return 1
+    if (token ~ /^SHA-[0-9]+$/) return 1
+    if (token ~ /^MD5-[0-9]+$/) return 1
+    if (token ~ /^HTTP-[0-9]+$/) return 1
+    if (token ~ /^TLS-[0-9]+([.][0-9]+)?$/) return 1
+    if (token ~ /^SSL-[0-9]+$/) return 1
+    if (token ~ /^RFC-[0-9]+$/) return 1
+    if (token ~ /^ISO-[0-9]+$/) return 1
+    if (token ~ /^IEEE-[0-9]+$/) return 1
+    if (token ~ /^ECMA-[0-9]+$/) return 1
+    if (token ~ /^AES-[0-9]+$/) return 1
+    if (token ~ /^AES-[0-9]+-GCM$/) return 1
+    if (token ~ /^HMAC-[0-9]+$/) return 1
+    if (token ~ /^RSA-[0-9]+$/) return 1
+    if (token ~ /^MIME-[0-9]+$/) return 1
+    if (token ~ /^CVE-[0-9]+-[0-9]+$/) return 1
+    if (token ~ /^NET[0-9]+[.][0-9]+$/) return 1
+    if (token ~ /^NET-[0-9]+([.][0-9]+)?$/) return 1
+    if (token ~ /^FV[0-9]+$/) return 1
+    if (token ~ /^FV-E[0-9]+$/) return 1
+    if (token ~ /^FV-SKIP-[A-Z]+$/) return 1
+    return 0
+  }
+  function has_numeric_tail(value) {
+    return value ~ /^[[:space:]]*[^[:alnum:][:space:]][^[:alnum:]]*[[:space:]]*[0-9]/
+  }
+  function strip_safe(value,    remaining, output, token, tail) {
+    remaining = value
+    output = ""
+    while (match(remaining, /[A-Za-z0-9._-]+/)) {
+      output = output substr(remaining, 1, RSTART - 1)
+      token = substr(remaining, RSTART, RLENGTH)
+      tail = substr(remaining, RSTART + RLENGTH)
+      if (safe(token) && !has_numeric_tail(tail)) output = output " "
+      else output = output token
+      remaining = tail
+    }
+    return toupper(output remaining)
+  }
+  BEGIN {
+    technical = "(^|[^[:alnum:]_])("
+    technical = technical allowlisted
+    technical = technical ")[[:space:]]*[^[:alnum:][:space:]][^[:alnum:]]*[[:space:]]*[0-9]+"
+  }
+  {
+    normalized = normalize_encoded($0)
+    if (strip_safe(normalized) ~ technical) print "1"
+    else print "0"
+  }' "$2"
+  exit 0
+fi
+
+strip_safe_tokens "$normalized_message_file" "$message_without_safe_tokens_file"
+
+if LC_ALL=C grep -Eiq "$technical_tail_pattern" "$message_without_safe_tokens_file"; then
   printf '%s\n' 'Commit message rejected: task references are not allowed.' >&2
   exit 1
 fi
 
 task_reference_pattern='(^|[^[:alnum:]_])(refs?|closes?|fix(es)?|resolves?|reopens?|related[[:space:]]+to|issue|task)[[:space:]:#-]+[A-Z][A-Z0-9]{1,15}-[0-9]{1,8}([^[:alnum:]_]|$)'
-if printf '%s\n' "$message_without_safe_tokens" | LC_ALL=C grep -Eiq "$task_reference_pattern"; then
+if LC_ALL=C grep -Eiq "$task_reference_pattern" "$message_without_safe_tokens_file"; then
   printf '%s\n' 'Commit message rejected: task references are not allowed.' >&2
   exit 1
 fi
 
-bare_task_reference_pattern='(^|[^[:alnum:]_])[A-Z]{2,}[A-Z0-9]*-[0-9]{1,8}([^[:alnum:]_]|$)'
-if printf '%s\n' "$message_without_safe_tokens" | LC_ALL=C grep -Eiq "$bare_task_reference_pattern"; then
+# A line break or other normalized whitespace before -<digits> is still an
+# attached reference. This closes split forms such as KEE\n-3 and ABC\n-1.
+bare_task_reference_pattern='(^|[^[:alnum:]_])[A-Z]{2,}[A-Z0-9]*[[:space:]]*-[0-9]{1,8}([^[:alnum:]_]|$)'
+if LC_ALL=C grep -Eiq "$bare_task_reference_pattern" "$message_without_safe_tokens_file"; then
   printf '%s\n' 'Commit message rejected: task references are not allowed.' >&2
   exit 1
 fi
 
 review_process_pattern='(^|[^[:alnum:]_])frontier([^[:alnum:]_]|$)|(^|[^[:alnum:]_])(rejection|review|acceptance)[[:space:]]+(round|pass)([^[:alnum:]_]|$)'
-if LC_ALL=C grep -Eiq "$review_process_pattern" "$message_file"; then
+if LC_ALL=C grep -Eiq "$review_process_pattern" "$normalized_message_file"; then
   printf '%s\n' 'Commit message rejected: review-process metadata is not allowed.' >&2
   exit 1
 fi
@@ -145,13 +291,13 @@ fi
 label_a=$(printf '\141\147\145\156\164')
 label_m=$(printf '\155\157\144\145\154')
 label_p=$(printf '\160\162\157\155\160\164')
-if LC_ALL=C grep -Eiq "^[[:space:]]*(${label_a}|${label_m}|${label_p})[[:space:]]*:" "$message_file"; then
+if LC_ALL=C grep -Eiq "(^|[^[:alnum:]_])(${label_a}|${label_m}|${label_p})[[:space:]]*:" "$normalized_message_file"; then
   printf '%s\n' 'Commit message rejected: internal metadata is not allowed.' >&2
   exit 1
 fi
 
 phrase_generated=$(printf '\147\145\156\145\162\141\164\145\144[[:space:]]\142\171')
-if LC_ALL=C grep -Eiq "$phrase_generated" "$message_file"; then
+if LC_ALL=C grep -Eiq "$phrase_generated" "$normalized_message_file"; then
   printf '%s\n' 'Commit message rejected: generated attribution is not allowed.' >&2
   exit 1
 fi

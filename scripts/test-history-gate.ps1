@@ -70,6 +70,19 @@ function Invoke-CommitMessageHook {
     }
 }
 
+function ConvertTo-OctalEscapedUtf8 {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Value
+    )
+
+    $builder = [Text.StringBuilder]::new()
+    foreach ($byte in [Text.Encoding]::UTF8.GetBytes($Value)) {
+        [void]$builder.Append(('\' + [Convert]::ToString([int]$byte, 8).PadLeft(3, '0')))
+    }
+    $builder.ToString()
+}
+
 function Invoke-TechnicalTailMatrix {
     param(
         [Parameter(Mandatory = $true)]
@@ -77,7 +90,10 @@ function Invoke-TechnicalTailMatrix {
     )
 
     $matrixPath = Join-Path $temporaryRoot "technical-tail-matrix.txt"
-    [IO.File]::WriteAllLines($matrixPath, $Messages, [Text.UTF8Encoding]::new($false))
+    $encodedMessages = foreach ($message in $Messages) {
+        ConvertTo-OctalEscapedUtf8 -Value $message
+    }
+    [IO.File]::WriteAllLines($matrixPath, $encodedMessages, [Text.UTF8Encoding]::new($false))
     $shellArguments = @("-c", "export PATH=/usr/bin:/bin:`$PATH; ./.githooks/commit-msg --technical-tail-matrix technical-tail-matrix.txt")
     if ([IO.Path]::GetFileName($shellPath) -eq "bash.exe") {
         $shellArguments = @("--noprofile", "--norc", "-c", "export PATH=/usr/bin:/bin:`$PATH; ./.githooks/commit-msg --technical-tail-matrix technical-tail-matrix.txt")
@@ -404,6 +420,19 @@ try {
         "Fix CVE-2021-44228_1"
         "UTF-8_1_2"
         "UTF-8_123"
+        "Fix UTF-8`n_1"
+        "UTF-8`n_1"
+        "Fix UTF-8`n#1"
+        "Fix UTF-8`n/1"
+        "Fix UTF-8`n.1"
+        "Fix SHA-256`n_1"
+        "Fix TLS-1.2`n#1"
+        "Fix NET8.0`n_1"
+        ("Fix UTF-8" + [char]0x2014 + "_1")
+        ("Fix UTF-8" + [char]0x2026 + "_1")
+        ("Fix UTF-8" + [char]0xff3f + "_1")
+        "KEE`n-3"
+        "ABC`n-1"
     )
 
     $requiredAcceptCases = @(
@@ -450,17 +479,20 @@ try {
         "Parse RFC-9110 headers"
         "Hash with SHA-256"
         "UTF-8 1"
+        "UTF-8`n1"
+        ("UTF-8" + [char]0x0661)
         "Fix empty credential false positives"
         "reject decoded NUL content"
         "Handle URL-encoded empty API keys"
         "Clarify received fixture content inspection"
     )
 
-    # Generate the complete punctuation-continuation matrix. Each token is a
-    # documented technical family/form, each separator is from the closed
-    # punctuation class enforced by commit-msg, and each suffix begins with a
-    # numeric continuation. Every generated cell must be rejected; the empty
-    # accepted set is the intended result of the separator-independent rule.
+    # Generate the complete normalized-stream matrix. The finite surface covers
+    # documented technical forms, no/single/repeated/surrounded joiners, all
+    # required ASCII punctuation and controls, representative non-ASCII
+    # separators, whitespace layouts around each separator, and every required
+    # numeric suffix. Accepted cells must be only the documented pure-whitespace
+    # continuations; every other generated cell is a rejection.
     $matrixTechnicalTokens = @(
         "UTF-16LE"
         "LATIN-1"
@@ -475,85 +507,132 @@ try {
         "FV-E016"
         "FV-SKIP-ENCODING"
     )
+    $matrixJoiners = @(
+        [pscustomobject]@{ Name = "none"; Value = "" }
+        [pscustomobject]@{ Name = "single"; Value = "-" }
+        [pscustomobject]@{ Name = "repeated"; Value = "--" }
+        [pscustomobject]@{ Name = "surrounded-whitespace"; Value = "  -  " }
+    )
     $matrixSeparators = @(
-        "-"
-        "_"
-        "."
-        "#"
-        "/"
-        ":"
-        "~"
-        "+"
-        ","
-        ";"
-        "="
-        "|"
-        [char]0x5c
-        "@"
-        "^"
-        "&"
-        "*"
-        "("
-        ")"
-        "["
-        "]"
-        "{"
-        "}"
-        "<"
-        ">"
-        [char]0x22
-        [char]0x27
-        [char]0x60
+        [pscustomobject]@{ Name = "ASCII punctuation -"; Value = "-"; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation _"; Value = "_"; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation ."; Value = "."; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation #"; Value = "#"; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation /"; Value = "/"; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation :"; Value = ":"; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation ~"; Value = "~"; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation +"; Value = "+"; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation ,"; Value = ","; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation ;"; Value = ";"; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation ="; Value = "="; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation |"; Value = "|"; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation backslash"; Value = [char]0x5c; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation @"; Value = "@"; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation ^"; Value = "^"; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation &"; Value = "&"; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation *"; Value = "*"; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation ("; Value = "("; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation )"; Value = ")"; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation ["; Value = "["; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation ]"; Value = "]"; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation {"; Value = "{"; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation }"; Value = "}"; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation <"; Value = "<"; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation >"; Value = ">"; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation double-quote"; Value = [char]0x22; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation apostrophe"; Value = [char]0x27; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII punctuation backtick"; Value = [char]0x60; Kind = "punctuation" }
+        [pscustomobject]@{ Name = "ASCII space"; Value = " "; Kind = "whitespace" }
+        (1..31 | ForEach-Object { [pscustomobject]@{ Name = ("ASCII control U+{0:X4}" -f $_); Value = [char]$_; Kind = if ($_ -in 9..13) { "whitespace" } else { "control" } } })
+        [pscustomobject]@{ Name = "ASCII control U+007F"; Value = [char]0x7f; Kind = "control" }
+        [pscustomobject]@{ Name = "NBSP"; Value = [char]0x00a0; Kind = "non-ASCII" }
+        [pscustomobject]@{ Name = "en space"; Value = [char]0x2002; Kind = "non-ASCII" }
+        [pscustomobject]@{ Name = "em space"; Value = [char]0x2003; Kind = "non-ASCII" }
+        [pscustomobject]@{ Name = "ideographic space"; Value = [char]0x3000; Kind = "non-ASCII" }
+        [pscustomobject]@{ Name = "em dash"; Value = [char]0x2014; Kind = "non-ASCII" }
+        [pscustomobject]@{ Name = "ellipsis"; Value = [char]0x2026; Kind = "non-ASCII" }
+        [pscustomobject]@{ Name = "full-width low line"; Value = [char]0xff3f; Kind = "non-ASCII" }
+    )
+    $matrixContinuations = @(
+        [pscustomobject]@{ Name = "none"; Before = ""; After = "" }
+        [pscustomobject]@{ Name = "LF"; Before = "`n"; After = "`n" }
+        [pscustomobject]@{ Name = "CRLF"; Before = "`r`n"; After = "`r`n" }
+        [pscustomobject]@{ Name = "TAB"; Before = "`t"; After = "`t" }
+        [pscustomobject]@{ Name = "space"; Before = " "; After = " " }
+        [pscustomobject]@{ Name = "space-run"; Before = "  "; After = "  " }
     )
     $matrixSuffixes = @(
         "1"
         "12"
         "2019"
         "1.2"
-        "1x"
         "1-2"
         "12345678"
         "999999999"
     )
+    Assert-Contract ($matrixJoiners.Count -eq 4) "The separator matrix must cover none, single, repeated, and surrounding-whitespace joiners."
     Assert-Contract ($matrixTechnicalTokens.Count -ge 12) "The separator matrix must cover at least twelve technical token families/forms."
-    Assert-Contract ($matrixSeparators.Count -eq 28) "The separator matrix must cover all 28 required punctuation separators."
-    Assert-Contract ($matrixSuffixes.Count -eq 8) "The separator matrix must cover all required numeric suffix forms."
+    Assert-Contract ($matrixSeparators.Count -eq 68) "The separator matrix must cover 28 punctuation, 32 ASCII control, ASCII space, and 7 representative non-ASCII separators."
+    Assert-Contract ($matrixContinuations.Count -eq 6) "The separator matrix must cover LF, CRLF, TAB, and space variants around separators."
+    Assert-Contract ($matrixSuffixes.Count -eq 7) "The separator matrix must cover all required numeric suffix forms."
 
     $matrixMessages = [Collections.Generic.List[string]]::new()
+    $matrixCells = [Collections.Generic.List[object]]::new()
     foreach ($token in $matrixTechnicalTokens) {
-        foreach ($separator in $matrixSeparators) {
-            foreach ($suffix in $matrixSuffixes) {
-                $matrixMessages.Add($token + $separator + $suffix)
+        foreach ($joiner in $matrixJoiners) {
+            foreach ($separator in $matrixSeparators) {
+                foreach ($continuation in $matrixContinuations) {
+                    foreach ($suffix in $matrixSuffixes) {
+                        $message = $token + $joiner.Value + $continuation.Before + $separator.Value + $continuation.After + $suffix
+                        $matrixMessages.Add($message)
+                        $matrixCells.Add([pscustomobject]@{
+                            Message = $message
+                            Token = $token
+                            Joiner = $joiner.Name
+                            Separator = $separator.Name
+                            SeparatorKind = $separator.Kind
+                            Continuation = $continuation.Name
+                            Suffix = $suffix
+                            Label = "token=$token; joiner=$($joiner.Name); separator=$($separator.Name); continuation=$($continuation.Name); suffix=$suffix"
+                        })
+                    }
+                }
             }
         }
     }
 
     $matrixHookResult = Invoke-TechnicalTailMatrix -Messages @($matrixMessages)
     Assert-Contract ($matrixHookResult.ExitCode -eq 0) "The technical-tail matrix engine failed: $($matrixHookResult.Output -join [Environment]::NewLine)"
+    $matrixOutput = @($matrixHookResult.Output | Where-Object { $_.ToString().Length -gt 0 })
     $matrixResults = [Collections.Generic.List[object]]::new()
-    $matrixAccepted = [Collections.Generic.List[string]]::new()
-    foreach ($line in $matrixHookResult.Output) {
-        $parts = $line.ToString() -split "`t", 2
-        Assert-Contract ($parts.Count -eq 2) "Technical-tail matrix returned an invalid decision record '$line'."
-        $matrixExitCode = [int]$parts[0]
-        $matrixMessage = $parts[1]
-        $matrixDecision = if ($matrixExitCode -eq 0) { "accepted" } else { "rejected" }
+    $matrixAccepted = [Collections.Generic.List[object]]::new()
+    for ($index = 0; $index -lt $matrixOutput.Count; $index++) {
+        $matrixExitCode = [int]$matrixOutput[$index]
+        $cell = $matrixCells[$index]
+        $deliberateAccept = $cell.Joiner -eq "none" -and $cell.SeparatorKind -eq "whitespace"
         $matrixResults.Add([pscustomobject]@{
-            Message = $matrixMessage
-            Decision = $matrixDecision
+            Cell = $cell.Label
+            Decision = if ($matrixExitCode -eq 0) { "accepted" } else { "rejected" }
         })
-        Write-Host ("matrix`t{0}`t{1}`t{2}" -f $matrixExitCode, $matrixMessage, $matrixDecision)
-        Assert-Contract ($matrixExitCode -eq 1) "Separator matrix accepted '$matrixMessage'."
         if ($matrixExitCode -eq 0) {
-            $matrixAccepted.Add($matrixMessage)
+            Assert-Contract $deliberateAccept "Normalized-stream matrix accepted an undocumented cell: $($cell.Label)."
+            $matrixAccepted.Add($cell)
+        }
+        else {
+            Assert-Contract (-not $deliberateAccept) "Normalized-stream matrix rejected a documented deliberate accept: $($cell.Label)."
         }
     }
 
-    $expectedMatrixCells = $matrixTechnicalTokens.Count * $matrixSeparators.Count * $matrixSuffixes.Count
-    Assert-Contract ($matrixResults.Count -eq $expectedMatrixCells) "Separator matrix recorded $($matrixResults.Count) cells instead of $expectedMatrixCells."
-    Assert-Contract ($matrixAccepted.Count -eq 0) "Separator matrix accepted cells outside the intended allowlist: $($matrixAccepted -join ', ')."
+    $expectedMatrixCells = $matrixTechnicalTokens.Count * $matrixJoiners.Count * $matrixSeparators.Count * $matrixContinuations.Count * $matrixSuffixes.Count
+    Assert-Contract ($matrixOutput.Count -eq $expectedMatrixCells) "Normalized-stream matrix returned $($matrixOutput.Count) decisions instead of $expectedMatrixCells."
+    $expectedDeliberateAccepts = @($matrixCells | Where-Object { $_.Joiner -eq "none" -and $_.SeparatorKind -eq "whitespace" }).Count
+    Assert-Contract ($matrixAccepted.Count -eq $expectedDeliberateAccepts) "Normalized-stream matrix accepted $($matrixAccepted.Count) deliberate cells instead of $expectedDeliberateAccepts."
     Write-Host ("matrix-total`t{0}" -f $matrixResults.Count)
-    Write-Host ("matrix-accepted`t{0}" -f ($(if ($matrixAccepted.Count -eq 0) { "(none)" } else { $matrixAccepted -join ", " })))
+    Write-Host ("matrix-accepted-count`t{0}" -f $matrixAccepted.Count)
+    Write-Host "matrix-accepted-cells`t(the complete list below; every cell is a pure ASCII-whitespace continuation with no separator character)"
+    foreach ($cell in $matrixAccepted) {
+        Write-Host ("matrix-accepted-cell`t{0}" -f $cell.Label)
+    }
 
     foreach ($message in $requiredRejectCases) {
         $hookResult = Invoke-CommitMessageHook -Message $message
