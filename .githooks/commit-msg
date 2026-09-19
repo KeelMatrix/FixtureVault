@@ -1,12 +1,41 @@
 #!/bin/sh
 set -eu
 
-if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+if [ "${1-}" = "--technical-tail-matrix" ]; then
+  if [ "$#" -ne 2 ] || [ ! -f "$2" ]; then
+    printf '%s\n' 'Technical-tail matrix check could not read its input.' >&2
+    exit 2
+  fi
+elif [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
   printf '%s\n' 'Commit message check could not read its input.' >&2
   exit 2
 fi
 
 message_file=$1
+
+# An allowlisted base followed by a non-whitespace separator and a numeric tail
+# is always task-shaped, including compact forms such as NET8.0-1 that the
+# generic ACR-1 matcher does not recognize. The separator class is deliberate:
+# every punctuation separator is covered, while whitespace-only continuations
+# such as UTF-8 1 remain accepted. This intentionally rejects rare real
+# spellings such as SHA-256/384 and NET8.0.1; authors can rephrase them as
+# "SHA-256 and SHA-384" and "net8.0 and net8.0.1" where needed.
+allowlisted_base_pattern='UTF-[0-9]+(LE|BE)?|LATIN-[0-9]+|SHA-[0-9]+|MD5-[0-9]+|HTTP-[0-9]+|TLS-[0-9]+([.][0-9]+)?|SSL-[0-9]+|RFC-[0-9]+|ISO-[0-9]+|IEEE-[0-9]+|ECMA-[0-9]+|AES-[0-9]+(-GCM)?|HMAC-[0-9]+|RSA-[0-9]+|MIME-[0-9]+|CVE-[0-9]+-[0-9]+|NET[0-9]+[.][0-9]+|NET-[0-9]+([.][0-9]+)?|FV[0-9]+|FV-E[0-9]+|FV-SKIP-[A-Z]+'
+technical_tail_pattern="(^|[^[:alnum:]])(${allowlisted_base_pattern})[[:space:]]*[^[:alnum:][:space:]][^[:alnum:]]*[[:space:]]*[0-9]+"
+
+# The history contract uses this internal batch form to exercise the exact
+# technical-tail rule without starting one shell process per generated cell.
+# Normal commit-msg invocations continue through the complete hook below.
+if [ "${1-}" = "--technical-tail-matrix" ]; then
+  while IFS= read -r matrix_message || [ -n "$matrix_message" ]; do
+    if printf '%s\n' "$matrix_message" | LC_ALL=C grep -Eiq "$technical_tail_pattern"; then
+      printf '1\t%s\n' "$matrix_message"
+    else
+      printf '0\t%s\n' "$matrix_message"
+    fi
+  done < "$2"
+  exit 0
+fi
 
 label_co_author=$(printf '\143\157\055\141\165\164\150\157\162\145\144\055\142\171')
 label_signed_off=$(printf '\163\151\147\156\145\144\055\157\146\146\055\142\171')
@@ -73,25 +102,24 @@ function safe(token) {
   if (token ~ /^FV-SKIP-[A-Z]+$/) return 1             # FixtureVault skip code.
   return 0
 }
+function has_numeric_tail(value) {
+  return value ~ /^[[:space:]]*[^[:alnum:][:space:]][^[:alnum:]]*[[:space:]]*[0-9]/
+}
 {
   remaining = $0
   output = ""
   while (match(remaining, /[A-Za-z0-9._-]+/)) {
     output = output substr(remaining, 1, RSTART - 1)
     token = substr(remaining, RSTART, RLENGTH)
-    if (safe(token)) output = output " "
+    tail = substr(remaining, RSTART + RLENGTH)
+    if (safe(token) && !has_numeric_tail(tail)) output = output " "
     else output = output token
-    remaining = substr(remaining, RSTART + RLENGTH)
+    remaining = tail
   }
   print output remaining
 }')
 
-# An allowlisted base followed by an extra numeric tail is always task-shaped,
-# including compact forms such as NET8.0-1 that the generic ACR-1 matcher does
-# not recognize. Match the complete token boundary; never strip the base.
-allowlisted_base_pattern='UTF-[0-9]+(LE|BE)?|LATIN-[0-9]+|SHA-[0-9]+|MD5-[0-9]+|HTTP-[0-9]+|TLS-[0-9]+([.][0-9]+)?|SSL-[0-9]+|RFC-[0-9]+|ISO-[0-9]+|IEEE-[0-9]+|ECMA-[0-9]+|AES-[0-9]+(-GCM)?|HMAC-[0-9]+|RSA-[0-9]+|MIME-[0-9]+|CVE-[0-9]+-[0-9]+|NET[0-9]+[.][0-9]+|NET-[0-9]+([.][0-9]+)?|FV[0-9]+|FV-E[0-9]+|FV-SKIP-[A-Z]+'
-technical_tail_pattern="(^|[^[:alnum:]_])(${allowlisted_base_pattern})-[0-9]+([.][0-9]+)?([^[:alnum:]_]|$)"
-if LC_ALL=C grep -Eiq "$technical_tail_pattern" "$message_file"; then
+if printf '%s\n' "$message_without_safe_tokens" | LC_ALL=C grep -Eiq "$technical_tail_pattern"; then
   printf '%s\n' 'Commit message rejected: task references are not allowed.' >&2
   exit 1
 fi

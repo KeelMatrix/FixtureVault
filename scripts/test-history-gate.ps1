@@ -70,6 +70,25 @@ function Invoke-CommitMessageHook {
     }
 }
 
+function Invoke-TechnicalTailMatrix {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Messages
+    )
+
+    $matrixPath = Join-Path $temporaryRoot "technical-tail-matrix.txt"
+    [IO.File]::WriteAllLines($matrixPath, $Messages, [Text.UTF8Encoding]::new($false))
+    $shellArguments = @("-c", "export PATH=/usr/bin:/bin:`$PATH; ./.githooks/commit-msg --technical-tail-matrix technical-tail-matrix.txt")
+    if ([IO.Path]::GetFileName($shellPath) -eq "bash.exe") {
+        $shellArguments = @("--noprofile", "--norc", "-c", "export PATH=/usr/bin:/bin:`$PATH; ./.githooks/commit-msg --technical-tail-matrix technical-tail-matrix.txt")
+    }
+    $output = @(& $shellPath @shellArguments 2>&1)
+    [pscustomobject]@{
+        ExitCode = $LASTEXITCODE
+        Output = $output
+    }
+}
+
 try {
     Push-Location $temporaryRoot
 
@@ -341,6 +360,212 @@ try {
         @{ Message = "NET-8"; Expected = 0 }
         @{ Message = "FV-SKIP-ENCODING"; Expected = 0 }
     )
+
+    $requiredRejectCases = @(
+        "Fix UTF-8_1"
+        "Fix UTF-8#1"
+        "Fix UTF-8/1"
+        "Fix UTF-8.1"
+        "Fix UTF-8:1"
+        "Fix UTF-8~1"
+        "Fix UTF-8+1"
+        "Fix UTF-8,1"
+        "Fix UTF-8;1"
+        "Fix UTF-8=1"
+        "Fix UTF-8|1"
+        "Fix UTF-8@1"
+        "Fix UTF-8^1"
+        "Fix UTF-8&1"
+        "Fix UTF-8*1"
+        "Fix UTF-8(1)"
+        "Fix UTF-8[1]"
+        "Fix UTF-8{1}"
+        "Fix UTF-8<1>"
+        'Fix UTF-8"1'
+        "Fix UTF-8'1"
+        "Fix SHA-256_1"
+        "Fix SHA-256#1"
+        "Fix SHA-256/1"
+        "Fix SHA-256.1"
+        "Fix SHA-256:1"
+        "Fix TLS-1.2#1"
+        "Fix TLS-1.2/1"
+        "Fix TLS-1.2.1"
+        "Fix NET8.0_1"
+        "Fix NET8.0.1"
+        "Fix NET8.0#1"
+        "Fix NET8.0/1"
+        "Fix NET-8_1"
+        "Fix FV007_1"
+        "Fix FV-E016#1"
+        "Fix RFC-9110_1"
+        "Fix AES-256_1"
+        "Fix HMAC-256#1"
+        "Fix CVE-2021-44228_1"
+        "UTF-8_1_2"
+        "UTF-8_123"
+    )
+
+    $requiredAcceptCases = @(
+        "UTF-8"
+        "UTF-16"
+        "UTF-32"
+        "UTF-16LE"
+        "UTF-16BE"
+        "UTF-32LE"
+        "UTF-32BE"
+        "LATIN-1"
+        "SHA-1"
+        "SHA-256"
+        "SHA-384"
+        "SHA-512"
+        "MD5-5"
+        "HTTP-2"
+        "HTTP-3"
+        "TLS-1"
+        "TLS-1.2"
+        "TLS-1.3"
+        "SSL-3"
+        "RFC-9110"
+        "RFC-2119"
+        "ISO-8601"
+        "IEEE-754"
+        "ECMA-335"
+        "AES-256"
+        "AES-256-GCM"
+        "HMAC-256"
+        "RSA-2048"
+        "MIME-1"
+        "CVE-2021-44228"
+        "net8.0"
+        "net10.0"
+        "NET-8"
+        "FV007"
+        "FV-E016"
+        "FV-SKIP-ENCODING"
+        "Fix UTF-8 decoding"
+        "Add AES-256-GCM support"
+        "Support HTTP-2 and HTTP-3"
+        "Upgrade TLS-1.3 support"
+        "Parse RFC-9110 headers"
+        "Hash with SHA-256"
+        "UTF-8 1"
+        "Fix empty credential false positives"
+        "reject decoded NUL content"
+        "Handle URL-encoded empty API keys"
+        "Clarify received fixture content inspection"
+    )
+
+    # Generate the complete punctuation-continuation matrix. Each token is a
+    # documented technical family/form, each separator is from the closed
+    # punctuation class enforced by commit-msg, and each suffix begins with a
+    # numeric continuation. Every generated cell must be rejected; the empty
+    # accepted set is the intended result of the separator-independent rule.
+    $matrixTechnicalTokens = @(
+        "UTF-16LE"
+        "LATIN-1"
+        "SHA-256"
+        "TLS-1.2"
+        "RFC-9110"
+        "ISO-8601"
+        "IEEE-754"
+        "AES-256-GCM"
+        "CVE-2021-44228"
+        "NET8.0"
+        "FV-E016"
+        "FV-SKIP-ENCODING"
+    )
+    $matrixSeparators = @(
+        "-"
+        "_"
+        "."
+        "#"
+        "/"
+        ":"
+        "~"
+        "+"
+        ","
+        ";"
+        "="
+        "|"
+        [char]0x5c
+        "@"
+        "^"
+        "&"
+        "*"
+        "("
+        ")"
+        "["
+        "]"
+        "{"
+        "}"
+        "<"
+        ">"
+        [char]0x22
+        [char]0x27
+        [char]0x60
+    )
+    $matrixSuffixes = @(
+        "1"
+        "12"
+        "2019"
+        "1.2"
+        "1x"
+        "1-2"
+        "12345678"
+        "999999999"
+    )
+    Assert-Contract ($matrixTechnicalTokens.Count -ge 12) "The separator matrix must cover at least twelve technical token families/forms."
+    Assert-Contract ($matrixSeparators.Count -eq 28) "The separator matrix must cover all 28 required punctuation separators."
+    Assert-Contract ($matrixSuffixes.Count -eq 8) "The separator matrix must cover all required numeric suffix forms."
+
+    $matrixMessages = [Collections.Generic.List[string]]::new()
+    foreach ($token in $matrixTechnicalTokens) {
+        foreach ($separator in $matrixSeparators) {
+            foreach ($suffix in $matrixSuffixes) {
+                $matrixMessages.Add($token + $separator + $suffix)
+            }
+        }
+    }
+
+    $matrixHookResult = Invoke-TechnicalTailMatrix -Messages @($matrixMessages)
+    Assert-Contract ($matrixHookResult.ExitCode -eq 0) "The technical-tail matrix engine failed: $($matrixHookResult.Output -join [Environment]::NewLine)"
+    $matrixResults = [Collections.Generic.List[object]]::new()
+    $matrixAccepted = [Collections.Generic.List[string]]::new()
+    foreach ($line in $matrixHookResult.Output) {
+        $parts = $line.ToString() -split "`t", 2
+        Assert-Contract ($parts.Count -eq 2) "Technical-tail matrix returned an invalid decision record '$line'."
+        $matrixExitCode = [int]$parts[0]
+        $matrixMessage = $parts[1]
+        $matrixDecision = if ($matrixExitCode -eq 0) { "accepted" } else { "rejected" }
+        $matrixResults.Add([pscustomobject]@{
+            Message = $matrixMessage
+            Decision = $matrixDecision
+        })
+        Write-Host ("matrix`t{0}`t{1}`t{2}" -f $matrixExitCode, $matrixMessage, $matrixDecision)
+        Assert-Contract ($matrixExitCode -eq 1) "Separator matrix accepted '$matrixMessage'."
+        if ($matrixExitCode -eq 0) {
+            $matrixAccepted.Add($matrixMessage)
+        }
+    }
+
+    $expectedMatrixCells = $matrixTechnicalTokens.Count * $matrixSeparators.Count * $matrixSuffixes.Count
+    Assert-Contract ($matrixResults.Count -eq $expectedMatrixCells) "Separator matrix recorded $($matrixResults.Count) cells instead of $expectedMatrixCells."
+    Assert-Contract ($matrixAccepted.Count -eq 0) "Separator matrix accepted cells outside the intended allowlist: $($matrixAccepted -join ', ')."
+    Write-Host ("matrix-total`t{0}" -f $matrixResults.Count)
+    Write-Host ("matrix-accepted`t{0}" -f ($(if ($matrixAccepted.Count -eq 0) { "(none)" } else { $matrixAccepted -join ", " })))
+
+    foreach ($message in $requiredRejectCases) {
+        $hookResult = Invoke-CommitMessageHook -Message $message
+        Write-Host ("required-reject`t{0}`t{1}" -f $hookResult.ExitCode, $message)
+        Assert-Contract ($hookResult.ExitCode -eq 1) "Required reject case was accepted '$message'. Output: $($hookResult.Output -join [Environment]::NewLine)"
+    }
+
+    foreach ($message in $requiredAcceptCases) {
+        $hookResult = Invoke-CommitMessageHook -Message $message
+        Write-Host ("required-accept`t{0}`t{1}" -f $hookResult.ExitCode, $message)
+        Assert-Contract ($hookResult.ExitCode -eq 0) "Required accept case was rejected '$message'. Output: $($hookResult.Output -join [Environment]::NewLine)"
+    }
 
     foreach ($message in $positiveCorpus) {
         $hookResult = Invoke-CommitMessageHook -Message $message
