@@ -84,7 +84,7 @@ normalize_message "$message_file" "$normalized_message_file"
 # intentionally rejects rare real
 # spellings such as SHA-256/384 and NET8.0.1; authors can rephrase them as
 # "SHA-256 and SHA-384" and "net8.0 and net8.0.1" where needed.
-allowlisted_base_pattern='UTF-[0-9]+(LE|BE)?|LATIN-[0-9]+|SHA-[0-9]+|MD5-[0-9]+|HTTP-[0-9]+|TLS-[0-9]+([.][0-9]+)?|SSL-[0-9]+|RFC-[0-9]+|ISO-[0-9]+|IEEE-[0-9]+|ECMA-[0-9]+|AES-[0-9]+(-GCM)?|HMAC-[0-9]+|RSA-[0-9]+|MIME-[0-9]+|CVE-[0-9]+-[0-9]+|NET[0-9]+[.][0-9]+|NET-[0-9]+([.][0-9]+)?|FV[0-9]+|FV-E[0-9]+|FV-SKIP-[A-Z]+'
+allowlisted_base_pattern='UTF-[0-9]+(LE|BE)?|LATIN-[0-9]+|SHA-[0-9]+|MD5-[0-9]+|HTTP-[0-9]+|TLS-[0-9]+([.][0-9]+)?|SSL-[0-9]+|RFC-[0-9]+|ISO-[0-9]+|IEEE-[0-9]+|ECMA-[0-9]+|AES-[0-9]+(-GCM)?|HMAC-[0-9]+|RSA-[0-9]+|MIME-[0-9]+|CVE-[0-9]+-[0-9]+|NET[0-9]+[.][0-9]+|NET-[0-9]+|FV[0-9]+|FV-E[0-9]+|FV-SKIP-[A-Z]+'
 technical_tail_pattern="(^|[^[:alnum:]_])(${allowlisted_base_pattern})[[:space:]]*[^[:alnum:][:space:]][^[:alnum:]]*[[:space:]]*[0-9]+"
 
 label_co_author=$(printf '\143\157\055\141\165\164\150\157\162\145\144\055\142\171')
@@ -147,7 +147,7 @@ function safe(token) {
   if (token ~ /^MIME-[0-9]+$/) return 1               # MIME specification version.
   if (token ~ /^CVE-[0-9]+-[0-9]+$/) return 1         # CVE year and identifier.
   if (token ~ /^NET[0-9]+[.][0-9]+$/) return 1        # .NET framework version.
-  if (token ~ /^NET-[0-9]+([.][0-9]+)?$/) return 1    # .NET name with version.
+  if (token ~ /^NET-[0-9]+$/) return 1                 # .NET name with major version.
   if (token ~ /^FV[0-9]+$/) return 1                  # FixtureVault rule ID.
   if (token ~ /^FV-E[0-9]+$/) return 1                # FixtureVault error ID.
   if (token ~ /^FV-SKIP-[A-Z]+$/) return 1             # FixtureVault skip code.
@@ -226,7 +226,7 @@ if [ "$matrix_mode" -eq 1 ]; then
     if (token ~ /^MIME-[0-9]+$/) return 1
     if (token ~ /^CVE-[0-9]+-[0-9]+$/) return 1
     if (token ~ /^NET[0-9]+[.][0-9]+$/) return 1
-    if (token ~ /^NET-[0-9]+([.][0-9]+)?$/) return 1
+    if (token ~ /^NET-[0-9]+$/) return 1
     if (token ~ /^FV[0-9]+$/) return 1
     if (token ~ /^FV-E[0-9]+$/) return 1
     if (token ~ /^FV-SKIP-[A-Z]+$/) return 1
@@ -275,8 +275,8 @@ if LC_ALL=C grep -Eiq "$task_reference_pattern" "$message_without_safe_tokens_fi
 fi
 
 # A line break or other normalized whitespace before -<digits> is still an
-# attached reference. This closes split forms such as KEE\n-3 and ABC\n-1.
-bare_task_reference_pattern='(^|[^[:alnum:]_])[A-Z]{2,}[A-Z0-9]*[[:space:]]*-[0-9]{1,8}([^[:alnum:]_]|$)'
+# attached reference, including when whitespace also follows the hyphen.
+bare_task_reference_pattern='(^|[^[:alnum:]_])[A-Z]{2,}[A-Z0-9]*[[:space:]]*-[[:space:]]*[0-9]{1,8}([^[:alnum:]_]|$)'
 if LC_ALL=C grep -Eiq "$bare_task_reference_pattern" "$message_without_safe_tokens_file"; then
   printf '%s\n' 'Commit message rejected: task references are not allowed.' >&2
   exit 1

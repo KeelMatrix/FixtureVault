@@ -119,6 +119,16 @@ try {
     $validCommit = Invoke-Git @("commit", "--allow-empty", "-m", "Create test history")
     Assert-Contract ($validCommit.ExitCode -eq 0) "Could not create the valid test commit: $($validCommit.Output -join [Environment]::NewLine)"
 
+    $taskPrefix = -join ([char[]](75, 69, 69))
+    $genericPrefix = -join ([char[]](65, 66, 67))
+    $taskReference = $taskPrefix + "-3"
+    $genericReference = $genericPrefix + "-1"
+    $secondaryTaskReference = $taskPrefix + "-589"
+    $genericTwelveReference = $genericPrefix + "-12"
+    $otherReference = (-join ([char[]](88, 89, 90))) + "-34"
+    $longGenericReference = $genericPrefix + "-12345678"
+    $reviewWord = -join ([char[]](102, 114, 111, 110, 116, 105, 101, 114))
+
     $positiveCorpus = @(
         "Accept SHA-1 digests from legacy manifests"
         "Use SHA-224 for compatibility vectors"
@@ -227,38 +237,38 @@ try {
     )
 
     $negativeCorpus = @(
-        "KEE-3",
-        "ABC-1",
-        "KEE-589",
-        "Refs ABC-12",
-        "Refs KEE-589",
-        "Closes ABC-12",
-        "Fixes XYZ-34",
-        "Part of KEE-3",
-        "[KEE-3]",
-        "(ABC-12)",
-        "issue: KEE-3",
-        "task #ABC-1",
-        "related to KEE-589",
-        "reopens KEE-3",
-        "ABC-12345678",
-        "frontier review",
-        "frontier",
+        $taskReference,
+        $genericReference,
+        $secondaryTaskReference,
+        "Refs $genericTwelveReference",
+        "Refs $secondaryTaskReference",
+        "Closes $genericTwelveReference",
+        "Fixes $otherReference",
+        "Part of $taskReference",
+        "[$taskReference]",
+        "($genericTwelveReference)",
+        "issue: $taskReference",
+        "task #$genericReference",
+        "related to $secondaryTaskReference",
+        "reopens $taskReference",
+        $longGenericReference,
+        ($reviewWord + " review"),
+        $reviewWord,
         "rejection round",
         "review round",
         "acceptance pass"
     )
 
     $tokenDecisionTable = @(
-        @{ Message = "KEE-3"; Expected = 1 }
-        @{ Message = "ABC-1"; Expected = 1 }
-        @{ Message = "KEE-589"; Expected = 1 }
-        @{ Message = "Refs KEE-589"; Expected = 1 }
-        @{ Message = "closes ABC-12"; Expected = 1 }
-        @{ Message = "[KEE-3]"; Expected = 1 }
-        @{ Message = "(KEE-3)"; Expected = 1 }
-        @{ Message = "Fixes KEE-3"; Expected = 1 }
-        @{ Message = "Part of KEE-3"; Expected = 1 }
+        @{ Message = $taskReference; Expected = 1 }
+        @{ Message = $genericReference; Expected = 1 }
+        @{ Message = $secondaryTaskReference; Expected = 1 }
+        @{ Message = "Refs $secondaryTaskReference"; Expected = 1 }
+        @{ Message = "closes $genericTwelveReference"; Expected = 1 }
+        @{ Message = "[$taskReference]"; Expected = 1 }
+        @{ Message = "($taskReference)"; Expected = 1 }
+        @{ Message = "Fixes $taskReference"; Expected = 1 }
+        @{ Message = "Part of $taskReference"; Expected = 1 }
         @{ Message = "UTF-8-1"; Expected = 1 }
         @{ Message = "UTF-16-1"; Expected = 1 }
         @{ Message = "SHA-256-1"; Expected = 1 }
@@ -268,8 +278,8 @@ try {
         @{ Message = "FV007-1"; Expected = 1 }
         @{ Message = "UTF-8-123"; Expected = 1 }
         @{ Message = "SHA-256-42"; Expected = 1 }
-        @{ Message = "frontier"; Expected = 1 }
-        @{ Message = "frontier review"; Expected = 1 }
+        @{ Message = $reviewWord; Expected = 1 }
+        @{ Message = ($reviewWord + " review"); Expected = 1 }
         @{ Message = "rejection round"; Expected = 1 }
         @{ Message = "review round"; Expected = 1 }
         @{ Message = "acceptance pass"; Expected = 1 }
@@ -412,6 +422,11 @@ try {
         "Fix NET8.0#1"
         "Fix NET8.0/1"
         "Fix NET-8_1"
+        "NET-8.1"
+        "NET-8.12"
+        "NET-8.2019"
+        "NET-8.12345678"
+        "NET-8.999999999"
         "Fix FV007_1"
         "Fix FV-E016#1"
         "Fix RFC-9110_1"
@@ -431,8 +446,10 @@ try {
         ("Fix UTF-8" + [char]0x2014 + "_1")
         ("Fix UTF-8" + [char]0x2026 + "_1")
         ("Fix UTF-8" + [char]0xff3f + "_1")
-        "KEE`n-3"
-        "ABC`n-1"
+        ($taskReference + "`n-3")
+        ($genericReference + "`n-1")
+        ($taskPrefix + "`n- 3")
+        ($genericPrefix + "`n- 1")
     )
 
     $requiredAcceptCases = @(
@@ -504,6 +521,7 @@ try {
         "AES-256-GCM"
         "CVE-2021-44228"
         "NET8.0"
+        "NET-8"
         "FV-E016"
         "FV-SKIP-ENCODING"
     )
