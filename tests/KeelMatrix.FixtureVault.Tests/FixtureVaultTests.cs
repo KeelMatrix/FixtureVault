@@ -1772,12 +1772,81 @@ public sealed class FixtureVaultTests
         }
     }
 
+    public static IEnumerable<object[]> QuotedPlaceholderCookieValues()
+    {
+        string[] placeholders = ["***", "<redacted>", "[redacted]", "redacted", "masked", "removed"];
+        string[] quotedValues =
+        [
+            "\" {0} \"",
+            "' {0} '",
+            "\"  {0}\t\"",
+            "'\t{0}  '",
+        ];
+
+        foreach (string headerName in new[] { "Cookie", "Set-Cookie" })
+        {
+            foreach (string format in new[] { "console", "json" })
+            {
+                foreach (string placeholder in placeholders)
+                {
+                    foreach (string quotedValue in quotedValues)
+                    {
+                        string value = string.Format(quotedValue, placeholder);
+                        string[] headers = headerName == "Cookie"
+                            ? [
+                                $"Cookie: session={value}",
+                                $"Cookie: first =  {value}  ; second={value}",
+                            ]
+                            : [$"Set-Cookie: session =  {value}  ; Path=/"];
+                        foreach (string header in headers)
+                        {
+                            yield return [header, format];
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     [Theory]
+    [MemberData(nameof(QuotedPlaceholderCookieValues))]
+    public void Quoted_placeholder_cookie_values_with_internal_whitespace_are_not_sensitive_findings(
+        string header,
+        string format)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/credentials.golden", header + "\n");
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", format], telemetry, out string output, out string error);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, telemetry.SuccessfulScans);
+        Assert.Empty(error);
+        Assert.DoesNotContain("FV007", output, StringComparison.Ordinal);
+        Assert.DoesNotContain(header, output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
+        }
+        else
+        {
+            Assert.Contains("No policy-blocking findings", output, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("Cookie: session=fixture-cookie-secret-1234567890", "console")]
+    [InlineData("Cookie: session=fixture-cookie-secret-1234567890", "json")]
     [InlineData("Cookie: empty=; session=fixture-cookie-secret-1234567890", "console")]
     [InlineData("Cookie: empty=; session=fixture-cookie-secret-1234567890", "json")]
     [InlineData("Cookie: session=\"\"; sibling=fixture-cookie-secret-1234567890", "console")]
     [InlineData("Cookie: session=\"\"; sibling=fixture-cookie-secret-1234567890", "json")]
-    public void Cookie_headers_with_a_secret_sibling_remain_sensitive_without_disclosure(string header, string format)
+    [InlineData("Set-Cookie: session=fixture-cookie-secret-1234567890; Path=/", "console")]
+    [InlineData("Set-Cookie: session=fixture-cookie-secret-1234567890; Path=/", "json")]
+    public void Cookie_headers_with_secret_values_remain_sensitive_without_disclosure(string header, string format)
     {
         const string canary = "fixture-cookie-secret-1234567890";
         using var repository = new TemporaryRepository();

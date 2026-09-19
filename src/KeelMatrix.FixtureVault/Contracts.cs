@@ -294,15 +294,19 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
     private static bool IsEmptyOrAlreadyRedactedValue(string value)
     {
         string trimmed = value.Trim();
+        if (trimmed.Length >= 2 &&
+            ((trimmed[0] == '"' && trimmed[^1] == '"') ||
+             (trimmed[0] == '\'' && trimmed[^1] == '\'')))
+        {
+            trimmed = trimmed[1..^1].Trim();
+        }
+
         if (trimmed.Length == 0 || AlreadyRedactedValue.IsMatch(trimmed))
         {
             return true;
         }
 
-        return trimmed.Length >= 2 &&
-            ((trimmed[0] == '\"' && trimmed[^1] == '\"') ||
-             (trimmed[0] == '\'' && trimmed[^1] == '\'')) &&
-            trimmed[1..^1].Trim().Length == 0;
+        return false;
     }
 
     private static bool IsEmptyOrAlreadyRedactedQueryValue(string value)

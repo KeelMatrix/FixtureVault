@@ -85,6 +85,8 @@ try {
     Assert-Contract ($validCommit.ExitCode -eq 0) "Could not create the valid test commit: $($validCommit.Output -join [Environment]::NewLine)"
 
     $rejectedMessages = @(
+        "KEE-3",
+        "ABC-1",
         "Refs ABC-12",
         "ABC-12",
         "closes XYZ-34",
@@ -99,8 +101,15 @@ try {
         Assert-Contract ($hookResult.ExitCode -eq 1) "The commit-msg hook accepted prohibited metadata '$message'. Output: $($hookResult.Output -join [Environment]::NewLine)"
     }
 
-    $allowedMessage = Invoke-CommitMessageHook -Message "Support UTF-8, UTF-16, UTF-32, SHA-512, net8.0, FV007, and FV-E016"
-    Assert-Contract ($allowedMessage.ExitCode -eq 0) "The commit-msg hook rejected legitimate engineering identifiers. Output: $($allowedMessage.Output -join [Environment]::NewLine)"
+    $allowedMessages = @(
+        "Support UTF-8, UTF-16, UTF-32, SHA-512, net8.0, FV007, and FV-E016",
+        "Fix empty credential false positives",
+        "reject decoded NUL content"
+    )
+    foreach ($message in $allowedMessages) {
+        $allowedMessage = Invoke-CommitMessageHook -Message $message
+        Assert-Contract ($allowedMessage.ExitCode -eq 0) "The commit-msg hook rejected legitimate engineering prose '$message'. Output: $($allowedMessage.Output -join [Environment]::NewLine)"
+    }
 
     $env:GIT_AUTHOR_NAME = "Example Author"
     $env:GIT_AUTHOR_EMAIL = "example.author@example.com"
