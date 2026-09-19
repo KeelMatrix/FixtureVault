@@ -40,18 +40,24 @@ for word in $blocked_words; do
   fi
 done
 
+# These tokens are legitimate engineering vocabulary whose shape resembles a
+# task reference. The families are deliberately bounded: UTF/LATIN are
+# encodings; SHA/MD5 are hashes; HTTP/TLS/SSL are protocols; RFC/ISO/IEEE/
+# ECMA are standards; AES/HMAC/RSA/MIME are data or cryptographic formats;
+# CVE is a vulnerability identifier; NET is a framework version; and FV is a
+# FixtureVault rule/error ID. Other ACR-1-shaped tokens remain reserved for
+# internal task references. Remove these tokens before both reference checks
+# so prose such as "Fix SHA-256 hashing" stays legitimate.
+safe_engineering_tokens='(UTF|LATIN|SHA|MD5|HTTP|TLS|SSL|RFC|ISO|IEEE|ECMA|AES|HMAC|RSA|MIME|CVE|NET)-[0-9]+([.-][0-9]+)*|FV[0-9]+|FV-(E[0-9]+|SKIP-[A-Z0-9-]+)'
+message_without_safe_tokens=$(LC_ALL=C tr '[:lower:]' '[:upper:]' < "$message_file" | LC_ALL=C sed -E "s/(^|[^[:alnum:]_])(${safe_engineering_tokens})([^[:alnum:]_]|$)/\1 \3/g")
+
 task_reference_pattern='(^|[^[:alnum:]_])(refs?|closes?|fix(es)?|resolves?|reopens?|related[[:space:]]+to|issue|task)[[:space:]:#-]+[A-Z][A-Z0-9]{1,15}-[0-9]{1,8}([^[:alnum:]_]|$)'
-if LC_ALL=C grep -Eiq "$task_reference_pattern" "$message_file"; then
+if printf '%s\n' "$message_without_safe_tokens" | LC_ALL=C grep -Eiq "$task_reference_pattern"; then
   printf '%s\n' 'Commit message rejected: task references are not allowed.' >&2
   exit 1
 fi
 
-# These tokens are legitimate engineering vocabulary whose shape resembles a bare
-# task reference. Keep this allowlist explicit and bounded so other ACR-1-shaped
-# tokens remain rejected instead of being silently exempted by a broad prefix rule.
-safe_engineering_tokens='UTF-(8|16|32)|SHA-512'
 bare_task_reference_pattern='(^|[^[:alnum:]_])[A-Z]{2,}[A-Z0-9]*-[0-9]{1,8}([^[:alnum:]_]|$)'
-message_without_safe_tokens=$(LC_ALL=C sed -E "s/(^|[^[:alnum:]_])(${safe_engineering_tokens})([^[:alnum:]_]|$)/\1 \3/g" "$message_file")
 if printf '%s\n' "$message_without_safe_tokens" | LC_ALL=C grep -Eiq "$bare_task_reference_pattern"; then
   printf '%s\n' 'Commit message rejected: task references are not allowed.' >&2
   exit 1

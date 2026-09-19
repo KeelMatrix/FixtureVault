@@ -84,31 +84,122 @@ try {
     $validCommit = Invoke-Git @("commit", "--allow-empty", "-m", "Create test history")
     Assert-Contract ($validCommit.ExitCode -eq 0) "Could not create the valid test commit: $($validCommit.Output -join [Environment]::NewLine)"
 
-    $rejectedMessages = @(
+    $positiveCorpus = @(
+        "Accept SHA-1 digests from legacy manifests"
+        "Use SHA-224 for compatibility vectors"
+        "Fix SHA-256 hashing"
+        "Switch cache keys to SHA-384"
+        "Retain SHA-512 integrity checks"
+        "Parse SHA-3 digest labels"
+        "Remove MD5 from the default integrity policy"
+        "Compare HMAC-256 signatures in fixture metadata"
+        "Preserve UTF-8 BOM handling in reports"
+        "Decode UTF-16 fixture files with a byte-order mark"
+        "Keep UTF-32 metadata round trips deterministic"
+        "Reject invalid Unicode surrogate pairs"
+        "Normalize NFC filenames before comparison"
+        "Handle Latin-1 fixture input explicitly"
+        "Support HTTP-2 request fixtures"
+        "Add HTTP-3 protocol coverage"
+        "Require TLS-1 for legacy endpoint tests"
+        "Upgrade TLS-1.1 negotiation checks"
+        "Retain TLS-1.2 compatibility coverage"
+        "Upgrade TLS-1.3 support"
+        "Reject SSL-3 fallback"
+        "Parse RFC-9110 headers"
+        "Apply RFC-2119 requirement wording"
+        "Normalize ISO-8601 timestamps"
+        "Preserve IEEE-754 float round trips"
+        "Read ECMA-335 metadata tokens"
+        "Cover AES-128 encrypted fixtures"
+        "Cover AES-256 encrypted fixtures"
+        "Validate RSA-2048 key metadata"
+        "Parse MIME-1 multipart boundaries"
+        "Record CVE-2026-1234 advisory metadata"
+        "Keep Git worktree paths repository relative"
+        "Preserve merge-base detection for shallow clones"
+        "Ignore untracked fixture outputs"
+        "Handle detached HEAD during package smoke"
+        "Run Linux and Windows fixture checks"
+        "Cache NuGet restore packages in CI"
+        "Fail CI on malformed policy input"
+        "Publish test results after scan failures"
+        "Retry transient restore metadata reads"
+        "Normalize Windows path separators"
+        "Guard Unix symlink traversal"
+        "Reject relative path segments"
+        "Preserve Unicode filenames on macOS"
+        "Detect case collisions on NTFS"
+        "Keep CRLF content stable across platforms"
+        "Add KeelMatrix.FixtureVault package metadata"
+        "Include README and license in the nupkg"
+        "Verify SourceLink commit metadata"
+        "Pack the net8.0 tool command"
+        "Validate nuspec repository URL"
+        "Keep snupkg symbols beside the package"
+        "Parse SemVer 2.0 prerelease labels"
+        "Reject invalid version ranges"
+        "Align package and tool versions"
+        "Compare major minor patch components"
+        "Document version 0.1.0 defaults"
+        "Bound fixture enumeration memory"
+        "Avoid repeated UTF-8 allocations"
+        "Hash large files in a single pass"
+        "Measure scan throughput on cold disk"
+        "Skip duplicate directory stats"
+        "Return exit code 2 for configuration errors"
+        "Keep malformed JSON diagnostics concise"
+        "Fail closed when content is uninspectable"
+        "Do not echo secret values in errors"
+        "Preserve actionable remediation text"
+        "Add FV007 sensitive-data diagnostics"
+        "Document FV-E016 uninspectable content errors"
+        "Keep net8.0 tool startup deterministic"
+        "Guard case-insensitive extension matching"
+        "Report unsupported fixture conventions"
+        "Read policy files without mutation"
+        "Keep JSON report schema versioned"
+        "Separate console and JSON renderers"
+        "Use bounded file-size checks"
+        "Handle empty fixture roots gracefully"
+        "Verify no fixture bytes leave the process"
+        "Retain stable rule ordering"
+        "Make scan output reproducible"
+    )
+
+    $negativeCorpus = @(
         "KEE-3",
         "ABC-1",
+        "KEE-589",
         "Refs ABC-12",
-        "ABC-12",
-        "closes XYZ-34",
+        "Refs KEE-589",
+        "Closes ABC-12",
+        "Fixes XYZ-34",
+        "Part of KEE-3",
+        "[KEE-3]",
+        "(ABC-12)",
+        "issue: KEE-3",
+        "task #ABC-1",
+        "related to KEE-589",
+        "reopens KEE-3",
+        "ABC-12345678",
         "frontier review",
         "frontier",
         "rejection round",
         "review round",
         "acceptance pass"
     )
-    foreach ($message in $rejectedMessages) {
+
+    foreach ($message in $positiveCorpus) {
         $hookResult = Invoke-CommitMessageHook -Message $message
-        Assert-Contract ($hookResult.ExitCode -eq 1) "The commit-msg hook accepted prohibited metadata '$message'. Output: $($hookResult.Output -join [Environment]::NewLine)"
+        Write-Host ("positive`t{0}`t{1}" -f $hookResult.ExitCode, $message)
+        Assert-Contract ($hookResult.ExitCode -eq 0) "The commit-msg hook rejected legitimate engineering prose '$message'. Output: $($hookResult.Output -join [Environment]::NewLine)"
     }
 
-    $allowedMessages = @(
-        "Support UTF-8, UTF-16, UTF-32, SHA-512, net8.0, FV007, and FV-E016",
-        "Fix empty credential false positives",
-        "reject decoded NUL content"
-    )
-    foreach ($message in $allowedMessages) {
-        $allowedMessage = Invoke-CommitMessageHook -Message $message
-        Assert-Contract ($allowedMessage.ExitCode -eq 0) "The commit-msg hook rejected legitimate engineering prose '$message'. Output: $($allowedMessage.Output -join [Environment]::NewLine)"
+    foreach ($message in $negativeCorpus) {
+        $hookResult = Invoke-CommitMessageHook -Message $message
+        Write-Host ("negative`t{0}`t{1}" -f $hookResult.ExitCode, $message)
+        Assert-Contract ($hookResult.ExitCode -eq 1) "The commit-msg hook accepted prohibited metadata '$message'. Output: $($hookResult.Output -join [Environment]::NewLine)"
     }
 
     $env:GIT_AUTHOR_NAME = "Example Author"
