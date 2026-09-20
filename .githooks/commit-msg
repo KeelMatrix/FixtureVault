@@ -151,18 +151,31 @@ fi
 # Rule B (internal prefixes, any layout): the configured prefixes above also
 # reject an ASCII-digit continuation through whitespace alone. A generic token
 # such as `AVX 512`, `ARM 64`, `CUDA 12`, `Go 1.22`, or `ABC 1` remains accepted.
-# Complete allowlisted technical tokens remain accepted, including `UTF-8 1`.
+# Complete allowlisted technical tokens remain accepted, including `UTF-8 1`
+# and the historical Unicode code-point spelling `U+0000`.
 # Non-ASCII digit suffixes remain accepted. The settled conservative rejects
 # are `ISO-8601-1`, `IEEE-754-2019`, `SHA-256/384`, and `net8.0.1`.
 if LC_ALL=C awk -v prefixes="$internal_prefixes" '
   function has_letter(value) { return value ~ /[A-Za-z]/ }
   function has_digit(value) { return value ~ /[0-9]/ }
-  function has_separator(value) { return value ~ /[^A-Za-z0-9]/ }
+  function has_separator_joined_digits(value) {
+    return value ~ /^[A-Za-z][^[:space:]]*[^A-Za-z0-9[:space:]][^[:space:]]*[0-9]+/
+  }
   function numeric_continuation(value) {
     return has_digit(value) && value !~ /[A-Za-z]/
   }
   function allowlisted(value) {
     return tolower(value) in technical
+  }
+  function allowlisted_or_terminal_punctuation(value, trimmed) {
+    if (allowlisted(value)) {
+      return 1
+    }
+    trimmed = value
+    while (trimmed ~ /[^A-Za-z0-9]$/) {
+      trimmed = substr(trimmed, 1, length(trimmed) - 1)
+    }
+    return trimmed != value && allowlisted(trimmed)
   }
   function violation() {
     exit 0
@@ -176,7 +189,7 @@ if LC_ALL=C awk -v prefixes="$internal_prefixes" '
       }
     }
 
-    split("UTF-8 UTF-16 UTF-32 UTF-16LE UTF-16BE UTF-32LE UTF-32BE LATIN-1 SHA-1 SHA-256 SHA-384 SHA-512 MD5-5 HTTP-2 HTTP-3 TLS-1 TLS-1.2 TLS-1.3 SSL-3 RFC-9110 RFC-2119 ISO-8601 IEEE-754 ECMA-335 AES-256 AES-256-GCM HMAC-256 RSA-2048 MIME-1 CVE-2021-44228 net8.0 net10.0 NET-8 FV007 FV-E016 FV-SKIP-ENCODING", accepted, /[[:space:]]+/)
+    split("UTF-8 UTF-16 UTF-32 UTF-16LE UTF-16BE UTF-32LE UTF-32BE UTF-16/UTF-32 UTF-16LE/BE UTF-32LE/BE LATIN-1 SHA-1 SHA-256 SHA-384 SHA-512 MD5-5 HTTP-2 HTTP-3 TLS-1 TLS-1.2 TLS-1.3 SSL-3 RFC-9110 RFC-2119 ISO-8601 IEEE-754 ECMA-335 AES-256 AES-256-GCM HMAC-256 RSA-2048 MIME-1 CVE-2021-44228 net8.0 net10.0 NET-8 FV007 FV-E016 FV-SKIP-ENCODING U+0000", accepted, /[[:space:]]+/)
     for (key in accepted) {
       if (accepted[key] != "") {
         technical[tolower(accepted[key])] = 1
@@ -189,14 +202,15 @@ if LC_ALL=C awk -v prefixes="$internal_prefixes" '
   END {
     count = split(stream, token, /[[:space:]]+/)
 
-    # A complete non-allowlisted token containing letters, digits, and an
-    # ASCII/non-ASCII separator is itself a separator-joined continuation.
+    # A complete non-allowlisted token matching the separator-plus-digit
+    # shape is itself a separator-joined continuation. This deliberately does
+    # not classify digit-led technical literals such as `0x00`.
     for (i = 1; i <= count; i++) {
       current = token[i]
       if (current == "") {
         continue
       }
-      if (has_letter(current) && has_digit(current) && has_separator(current) && !allowlisted(current)) {
+      if (has_separator_joined_digits(current) && !allowlisted_or_terminal_punctuation(current)) {
         violation()
       }
     }
