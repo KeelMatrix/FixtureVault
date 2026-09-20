@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
@@ -7,13 +7,20 @@
     <ToolCommandName>fixturevault</ToolCommandName>
     <PackageId>KeelMatrix.FixtureVault</PackageId>
     <PackageType>DotnetTool</PackageType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
     <Description>Audit snapshot and golden files for stale artifacts, leaked secrets, orphaned baselines, portability problems, and CI policy drift.</Description>
     <PackageTags>snapshot-testing;approval-testing;golden-files;test-fixtures;testing;ci;secrets;dotnet-tool</PackageTags>
-    <PackageReleaseNotes>Read-only snapshot and golden-file governance with init-only policy file creation.</PackageReleaseNotes>
+    <PackageReleaseNotes>Scan-only read-only snapshot and golden-file governance with init-only policy file creation.</PackageReleaseNotes>
     <AssemblyName>KeelMatrix.FixtureVault</AssemblyName>
     <RootNamespace>KeelMatrix.FixtureVault</RootNamespace>
     <NoWarn>$(NoWarn);NU5128</NoWarn>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Update="README.md"
+          Pack="true"
+          PackagePath="$(PackageReadmeFile)" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="KeelMatrix.Redaction" />

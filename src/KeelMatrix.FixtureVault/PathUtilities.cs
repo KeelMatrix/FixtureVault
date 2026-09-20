@@ -151,6 +151,32 @@ internal static class PathUtilities
         return (attributes & FileAttributes.ReparsePoint) != 0 || entry.LinkTarget is not null;
     }
 
+    internal static bool TryIsLinkedOrReparseFile(string path, out bool isLinkedOrReparse)
+    {
+        isLinkedOrReparse = false;
+        try
+        {
+            var file = new FileInfo(path);
+            if (file.LinkTarget is not null)
+            {
+                isLinkedOrReparse = true;
+                return true;
+            }
+
+            if (!file.Exists)
+            {
+                return true;
+            }
+
+            isLinkedOrReparse = (file.Attributes & FileAttributes.ReparsePoint) != 0;
+            return true;
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            return false;
+        }
+    }
+
     internal static bool IsWithin(string parent, string candidate)
     {
         string normalizedParent = EnsureTrailingSeparator(Path.GetFullPath(parent));
@@ -179,7 +205,7 @@ internal static class PathUtilities
             relative = relative[2..];
         }
 
-        return relative.Normalize(NormalizationForm.FormC);
+        return relative;
     }
 
     internal static string NormalizeComparisonPath(string relativePath)
@@ -202,6 +228,12 @@ internal sealed record WalkResult(
     IReadOnlyList<SafeFileEntry> Files,
     IReadOnlyList<string> ReparsePaths,
     ScanError? Error);
+
+internal delegate WalkResult FixtureFileWalk(
+    string repositoryRoot,
+    string root,
+    bool failOnAccessErrors,
+    Func<string, GlobMatchStatus>? shouldPruneDirectory);
 
 internal enum GlobMatchStatus
 {
@@ -413,8 +445,13 @@ internal sealed class GlobMatcher
             return false;
         }
 
-        string normalized = PathUtilities.NormalizeComparisonPath(pattern.Replace('\\', '/').TrimStart('/'));
-        if (Path.IsPathRooted(pattern) || normalized.StartsWith("../", StringComparison.Ordinal) || normalized == "..")
+        if (IsRootedOrDriveQualified(pattern))
+        {
+            return false;
+        }
+
+        string normalized = PathUtilities.NormalizeComparisonPath(pattern.Replace('\\', '/'));
+        if (normalized.Split('/').Any(segment => segment == ".."))
         {
             return false;
         }
@@ -456,6 +493,18 @@ internal sealed class GlobMatcher
 
         matcher = new GlobMatcher(tokens.ToArray(), globStarSlashOrdinals.ToArray());
         return true;
+    }
+
+    private static bool IsRootedOrDriveQualified(string pattern)
+    {
+        if (pattern[0] is '/' or '\\')
+        {
+            return true;
+        }
+
+        return pattern.Length >= 2 &&
+               pattern[1] == ':' &&
+               ((pattern[0] >= 'A' && pattern[0] <= 'Z') || (pattern[0] >= 'a' && pattern[0] <= 'z'));
     }
 
     internal int StateCount => stateCount;
@@ -513,7 +562,7 @@ internal sealed class GlobMatcher
                     switch (token.Kind)
                     {
                         case GlobTokenKind.Literal when token.Value == pathCharacter:
-                        case GlobTokenKind.SingleCharacter:
+                        case GlobTokenKind.SingleCharacter when pathCharacter != '/':
                             nextStates[state + 1] = true;
                             break;
                         case GlobTokenKind.SegmentStar when pathCharacter != '/':

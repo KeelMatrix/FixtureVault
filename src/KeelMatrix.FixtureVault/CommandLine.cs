@@ -106,7 +106,7 @@ internal static class CommandLineParser
                 continue;
             }
 
-            return new CommandLineParseResult(null, $"Unknown option '{argument}'.");
+            return new CommandLineParseResult(null, $"Unknown option at argument {index}.");
         }
 
         if (command == "init" && (roots.Count > 0 || format != OutputFormat.Console || strict))

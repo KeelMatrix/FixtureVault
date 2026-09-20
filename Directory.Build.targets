@@ -19,11 +19,6 @@
     <None Remove="**/.env*;**/keelmatrix.telemetry.json;**/.fixturevault.json;**/.fixturevault.manifest.json;**/KeelMatrix.FixtureVault.md;**/.gitignore;**/NuGet.config;**/global.json;**/AGENTS.md;**/CHANGELOG.md;**/SECURITY.md;**/PRIVACY.md;**/*.csproj;**/*.sln;**/*.yml;**/*.yaml;**/Directory.*;**/*.nupkg;**/*.snupkg;**/*.trx;**/*.coverage;**/*.coveragexml;**/coverage*.xml;**/*.log;**/*.cache;**/*.zip;**/TestResults/**;**/artifacts/**;**/bin/**;**/obj/**" />
     <Content Remove="**/.env*;**/keelmatrix.telemetry.json;**/.fixturevault.json;**/.fixturevault.manifest.json;**/KeelMatrix.FixtureVault.md;**/.gitignore;**/NuGet.config;**/global.json;**/AGENTS.md;**/CHANGELOG.md;**/SECURITY.md;**/PRIVACY.md;**/*.csproj;**/*.sln;**/*.yml;**/*.yaml;**/Directory.*;**/*.nupkg;**/*.snupkg;**/*.trx;**/*.coverage;**/*.coveragexml;**/coverage*.xml;**/*.log;**/*.cache;**/*.zip;**/TestResults/**;**/artifacts/**;**/bin/**;**/obj/**" />
     <EmbeddedResource Remove="**/.env*;**/keelmatrix.telemetry.json;**/.fixturevault.json;**/.fixturevault.manifest.json;**/KeelMatrix.FixtureVault.md;**/.gitignore;**/NuGet.config;**/global.json;**/AGENTS.md;**/CHANGELOG.md;**/SECURITY.md;**/PRIVACY.md;**/*.csproj;**/*.sln;**/*.yml;**/*.yaml;**/Directory.*;**/*.nupkg;**/*.snupkg;**/*.trx;**/*.coverage;**/*.coveragexml;**/coverage*.xml;**/*.log;**/*.cache;**/*.zip;**/TestResults/**;**/artifacts/**;**/bin/**;**/obj/**" />
-    <None Include="$(MSBuildThisFileDirectory)README.md"
-          Pack="true"
-          PackagePath=""
-          Link="README.md"
-          Condition="Exists('$(MSBuildThisFileDirectory)README.md') and '$(PackageReadmeFile)'!=''" />
     <None Include="$(MSBuildThisFileDirectory)LICENSE"
           Pack="true"
           PackagePath="LICENSE"

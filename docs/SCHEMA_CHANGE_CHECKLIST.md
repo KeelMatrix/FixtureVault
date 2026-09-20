@@ -10,6 +10,7 @@ Use this checklist before changing a FixtureVault contract. Treat the current be
 - `.fixturevault.manifest.json` file name, schema version, and `activeBaselines` path semantics.
 - JSON report `schemaVersion`, fields, finding shape, skipped diagnostics, errors, and exit-code mapping.
 - Stable rule IDs `FV001` through `FV008` and the meaning of each finding.
+- Stable `FV-SKIP-*` skipped-diagnostic codes, including the per-file diagnostic recorded when content inspection cannot run: no supported encoding decodes the bytes, or the decoded text contains `U+0000` whatever the declared encoding. The reported reason states the observed condition and names the declared encoding when a byte-order mark declared one, and stable `FV-E0xx` error codes keep their exit-code mapping.
 
 ## Compatibility Decision
 

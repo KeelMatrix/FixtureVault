@@ -1,4 +1,5 @@
-﻿using System.Security.Cryptography;
+﻿using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Xunit;
@@ -8,6 +9,8 @@ namespace KeelMatrix.FixtureVault.Tests;
 
 public sealed class FixtureVaultTests
 {
+    private const string SensitiveValue = "fixture-test-secret-1234567890";
+
     [Fact]
     public void Init_creates_only_the_versioned_policy_file()
     {
@@ -168,7 +171,139 @@ public sealed class FixtureVaultTests
 
         Assert.Equal(2, exitCode);
         Assert.Empty(output);
-        Assert.Contains("Unknown option '--unknown'", error, StringComparison.Ordinal);
+        Assert.Contains("Unknown option at argument 1", error, StringComparison.Ordinal);
+        Assert.DoesNotContain("--unknown", error, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("--token=CLI_CANARY_EQUALS", "CLI_CANARY_EQUALS", null, "console")]
+    [InlineData("--token=CLI_CANARY_EQUALS_JSON", "CLI_CANARY_EQUALS_JSON", null, "json")]
+    [InlineData("--api-key=CLI_CANARY_API_KEY", "CLI_CANARY_API_KEY", null, "console")]
+    [InlineData("--password=CLI_CANARY_PASSWORD", "CLI_CANARY_PASSWORD", null, "json")]
+    [InlineData("--token:CLI_CANARY_COLON", "CLI_CANARY_COLON", null, "console")]
+    [InlineData("--token:CLI_CANARY_COLON_JSON", "CLI_CANARY_COLON_JSON", null, "json")]
+    [InlineData("--token=\"CLI_CANARY_DOUBLE_QUOTED\"", "CLI_CANARY_DOUBLE_QUOTED", null, "console")]
+    [InlineData("--token='CLI_CANARY_SINGLE_QUOTED'", "CLI_CANARY_SINGLE_QUOTED", null, "json")]
+    [InlineData("-tCLI_CANARY_SHORT_ATTACHED", "CLI_CANARY_SHORT_ATTACHED", null, "console")]
+    [InlineData("-tCLI_CANARY_SHORT_ATTACHED_JSON", "CLI_CANARY_SHORT_ATTACHED_JSON", null, "json")]
+    [InlineData("--password", "CLI_CANARY_SEPARATE", "CLI_CANARY_SEPARATE", "console")]
+    [InlineData("--password", "CLI_CANARY_SEPARATE_JSON", "CLI_CANARY_SEPARATE_JSON", "json")]
+    [InlineData("-t", "CLI_CANARY_SHORT_SEPARATE", "CLI_CANARY_SHORT_SEPARATE", "console")]
+    [InlineData("-t", "CLI_CANARY_SHORT_SEPARATE_JSON", "CLI_CANARY_SHORT_SEPARATE_JSON", "json")]
+    public void Sensitive_shaped_cli_arguments_are_not_echoed_in_any_output(
+        string option,
+        string canary,
+        string? separateValue,
+        string format)
+    {
+        using var repository = new TemporaryRepository(createTestsDirectory: false);
+        string[] args = separateValue is null
+            ? ["scan", "--format", format, option]
+            : ["scan", "--format", format, option, separateValue];
+
+        int exitCode = repository.Run(args, new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        AssertNoCanary(canary, output, error);
+        Assert.Contains("Unknown option at argument", error, StringComparison.Ordinal);
+        Assert.Contains("fixturevault --help", error, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("--format", "CLI_CANARY_INVALID_FORMAT")]
+    [InlineData("--format=CLI_CANARY_INVALID_FORMAT_ATTACHED", "CLI_CANARY_INVALID_FORMAT_ATTACHED")]
+    public void Invalid_format_values_are_not_echoed_in_any_output(string option, string canary)
+    {
+        using var repository = new TemporaryRepository(createTestsDirectory: false);
+        string[] args = option == "--format"
+            ? ["scan", option, canary]
+            : ["scan", option];
+
+        int exitCode = repository.Run(args, new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        AssertNoCanary(canary, output, error);
+        Assert.Contains("--format option must be 'console' or 'json'", error, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("console", "--root", "CLI_CANARY_ROOT_SEPARATE")]
+    [InlineData("json", "--root=CLI_CANARY_ROOT_ATTACHED", "CLI_CANARY_ROOT_ATTACHED")]
+    public void Invalid_root_values_are_not_echoed_in_any_output(string format, string option, string canary)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        string[] args = option == "--root"
+            ? ["scan", option, canary, "--format", format]
+            : ["scan", option, "--format", format];
+
+        int exitCode = repository.Run(args, new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        AssertNoCanary(canary, output, error);
+        if (format == "json")
+        {
+            ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
+            Assert.Equal("FV-E008", Assert.Single(report.Errors).Code);
+        }
+        else
+        {
+            Assert.Empty(output);
+            Assert.Contains("FV-E008", error, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("console")]
+    [InlineData("json")]
+    public void Unsupported_sensitive_data_policy_values_are_not_echoed_in_any_output(string format)
+    {
+        const string canary = "CLI_CANARY_POLICY_SENSITIVE_RULE";
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.SensitiveDataRules = [$"unsupported-{canary}"]);
+
+        int exitCode = repository.Run(["scan", "--format", format], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        AssertNoCanary(canary, output, error);
+        if (format == "json")
+        {
+            ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
+            Assert.Equal("FV-E005", Assert.Single(report.Errors).Code);
+        }
+        else
+        {
+            Assert.Empty(output);
+            Assert.Contains("FV-E005", error, StringComparison.Ordinal);
+            Assert.Contains("Unsupported sensitiveDataRules entry", error, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("console")]
+    [InlineData("json")]
+    public void Unsupported_convention_policy_values_are_not_echoed_in_any_output(string format)
+    {
+        const string canary = "CLI_CANARY_POLICY_CONVENTION";
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Conventions = [$"future-{canary}"]);
+
+        int exitCode = repository.Run(["scan", "--format", format], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(0, exitCode);
+        AssertNoCanary(canary, output, error);
+        if (format == "json")
+        {
+            ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
+            SkippedDiagnostic skipped = Assert.Single(report.Skipped);
+            Assert.Equal("FV-SKIP-CONVENTION", skipped.Code);
+            Assert.Equal("unsupported", skipped.Convention);
+        }
+        else
+        {
+            Assert.Empty(error);
+            Assert.Contains("check(s) skipped conservatively", output, StringComparison.Ordinal);
+        }
     }
 
     [Theory]
@@ -430,6 +565,135 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
+    public void Linked_policy_is_rejected_without_reading_an_outside_target()
+    {
+        using var repository = new TemporaryRepository();
+        string outsideRoot = Path.Combine(Path.GetTempPath(), "fixturevault-policy-link", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideRoot);
+        string outsidePolicy = Path.Combine(outsideRoot, FixtureVaultContract.PolicyFileName);
+        File.WriteAllText(
+            outsidePolicy,
+            FixtureVaultContract.SerializePolicy(FixtureVaultPolicy.CreateDefault(testsDirectoryExists: false)),
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        string policyPath = Path.Combine(repository.Root, FixtureVaultContract.PolicyFileName);
+        File.Delete(policyPath);
+
+        try
+        {
+            CreateSymbolicFileOrSkip(policyPath, outsidePolicy);
+
+            int exitCode = repository.Run(["scan", "--format", "json"], new RecordingTelemetry(), out string output, out string error);
+            using JsonDocument report = JsonDocument.Parse(output);
+
+            Assert.Equal(2, exitCode);
+            Assert.Empty(error);
+            Assert.Contains(report.RootElement.GetProperty("errors").EnumerateArray(), item =>
+                item.GetProperty("code").GetString() == "FV-E004");
+            Assert.DoesNotContain("outside", output, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (Directory.Exists(outsideRoot))
+            {
+                Directory.Delete(outsideRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void Linked_manifest_is_rejected_without_reading_an_outside_target()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Conventions = ["generic", "fixturevault-manifest"]);
+        string outsideRoot = Path.Combine(Path.GetTempPath(), "fixturevault-manifest-link", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideRoot);
+        string outsideManifest = Path.Combine(outsideRoot, FixtureVaultContract.ManifestFileName);
+        File.WriteAllText(
+            outsideManifest,
+            "{\"version\":1,\"activeBaselines\":[]}\n",
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        string manifestPath = Path.Combine(repository.Root, FixtureVaultContract.ManifestFileName);
+        File.Delete(manifestPath);
+
+        try
+        {
+            CreateSymbolicFileOrSkip(manifestPath, outsideManifest);
+
+            ScanResult result = repository.Scan();
+
+            Assert.Equal(2, result.ExitCode);
+            ScanError error = Assert.Single(result.Report.Errors);
+            Assert.Equal("FV-E011", error.Code);
+            Assert.DoesNotContain("outside", error.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (Directory.Exists(outsideRoot))
+            {
+                Directory.Delete(outsideRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void Linked_manifest_failure_preserves_prior_collision_findings_in_console_and_json()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Conventions = ["generic", "fixturevault-manifest"]);
+        string composed = "tests/café.golden";
+        string decomposed = "tests/cafe\u0301.golden";
+        repository.WriteText(composed, "composed\n");
+        repository.WriteText(decomposed, "decomposed\n");
+        if (!File.Exists(Path.Combine(repository.Root, "tests", "café.golden")) ||
+            !File.Exists(Path.Combine(repository.Root, "tests", "cafe\u0301.golden")) ||
+            File.ReadAllText(Path.Combine(repository.Root, "tests", "café.golden")) ==
+            File.ReadAllText(Path.Combine(repository.Root, "tests", "cafe\u0301.golden")))
+        {
+            return;
+        }
+
+        string outsideRoot = Path.Combine(Path.GetTempPath(), "fixturevault-manifest-parity", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideRoot);
+        string outsideManifest = Path.Combine(outsideRoot, FixtureVaultContract.ManifestFileName);
+        File.WriteAllText(
+            outsideManifest,
+            "{\"version\":1,\"activeBaselines\":[]}\n",
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        string manifestPath = Path.Combine(repository.Root, FixtureVaultContract.ManifestFileName);
+        File.Delete(manifestPath);
+
+        try
+        {
+            CreateSymbolicFileOrSkip(manifestPath, outsideManifest);
+
+            int consoleExit = repository.Run(["scan"], new RecordingTelemetry(), out string consoleOutput, out string consoleError);
+            int jsonExit = repository.Run(["scan", "--format", "json"], new RecordingTelemetry(), out string jsonOutput, out string jsonError);
+            using JsonDocument jsonReport = JsonDocument.Parse(jsonOutput);
+
+            Assert.Equal(2, consoleExit);
+            Assert.Equal(2, jsonExit);
+            Assert.Empty(consoleOutput);
+            Assert.Empty(jsonError);
+            Assert.Contains("FV-E011", consoleError, StringComparison.Ordinal);
+            Assert.Contains("FV003", consoleError, StringComparison.Ordinal);
+            Assert.Equal(2, jsonReport.RootElement.GetProperty("findings").GetArrayLength());
+            Assert.All(
+                jsonReport.RootElement.GetProperty("findings").EnumerateArray(),
+                finding => Assert.Equal("FV003", finding.GetProperty("ruleId").GetString()));
+            Assert.Contains(
+                jsonReport.RootElement.GetProperty("errors").EnumerateArray(),
+                error => error.GetProperty("code").GetString() == "FV-E011");
+        }
+        finally
+        {
+            if (Directory.Exists(outsideRoot))
+            {
+                Directory.Delete(outsideRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void Policy_and_manifest_files_are_not_fixture_candidates()
     {
         using var repository = new TemporaryRepository();
@@ -468,6 +732,43 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
+    public void Unicode_normalization_colliding_paths_are_reported_when_the_filesystem_can_create_both()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        string composed = "tests/café.golden";
+        string decomposed = "tests/cafe\u0301.golden";
+        repository.WriteText(composed, "composed\n");
+        repository.WriteText(decomposed, "decomposed\n");
+        if (!File.Exists(Path.Combine(repository.Root, "tests", "café.golden")) ||
+            !File.Exists(Path.Combine(repository.Root, "tests", "cafe\u0301.golden")) ||
+            File.ReadAllText(Path.Combine(repository.Root, "tests", "café.golden")) ==
+            File.ReadAllText(Path.Combine(repository.Root, "tests", "cafe\u0301.golden")))
+        {
+            return;
+        }
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(2, result.Report.Findings.Count(item => item.RuleId == "FV003"));
+        Assert.Contains(result.Report.Findings, item => item.Path.Contains("café", StringComparison.Ordinal));
+        Assert.Contains(result.Report.Findings, item => item.Path.Contains("cafe\u0301", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Overlapping_roots_inspect_one_file_without_duplicate_findings()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Roots = ["tests", "tests/nested"]);
+        repository.WriteText("tests/nested/OrderTests.received.json", "received\n");
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(1, result.Report.FilesInspected);
+        Assert.Single(result.Report.Findings, item => item.RuleId == "FV001");
+    }
+
+    [Fact]
     public void Oversized_files_are_reported_without_being_read_as_content()
     {
         using var repository = new TemporaryRepository();
@@ -489,6 +790,30 @@ public sealed class FixtureVaultTests
 
         ScanResult result = repository.Scan();
 
+        Assert.Contains(result.Report.Findings, item => item.RuleId == "FV005");
+    }
+
+    [Fact]
+    public void Known_binary_extension_bypasses_content_decoding_boundary()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/image.png", [0x89, 0x50, 0x4E, 0x47, 0x00, 0x01]);
+        bool classifierCalled = false;
+        FixtureVaultPolicy policy = PolicyLoader.Load(repository.Root).Policy!;
+
+        ScanResult result = FixtureScanner.Scan(
+            repository.Root,
+            policy,
+            [],
+            strictOverride: false,
+            contentClassifier: _ =>
+            {
+                classifierCalled = true;
+                throw new Xunit.Sdk.XunitException("Known binary content must bypass text decoding.");
+            });
+
+        Assert.False(classifierCalled);
         Assert.Contains(result.Report.Findings, item => item.RuleId == "FV005");
     }
 
@@ -630,18 +955,588 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
-    public void Invalid_encoding_and_verify_newlines_are_detected_deterministically()
+    public void Verify_encoding_and_newline_variants_are_not_blocked_but_non_verify_invalid_encoding_is_detected()
     {
         using var repository = new TemporaryRepository();
         repository.WritePolicy();
         repository.WriteBytes("tests/bom.golden", [0xEF, 0xBB, 0xBF, 0x6F, 0x6B, 0x0A]);
         repository.WriteBytes("tests/verify.verified.json", [0xEF, 0xBB, 0xBF, 0x6F, 0x6E, 0x65, 0x0D, 0x0A, 0x74, 0x77, 0x6F]);
         repository.WriteBytes("tests/utf16.golden", [0xFF, 0xFE, 0x6F, 0x00, 0x6B, 0x00]);
+        repository.WriteBytes("tests/verify-utf16.verified.json", [0xFF, 0xFE, 0x6F, 0x00, 0x6E, 0x00, 0x65, 0x00]);
 
         ScanResult result = repository.Scan();
 
-        Assert.Equal(2, result.Report.Findings.Count(item => item.RuleId == "FV006"));
+        Assert.Equal(1, result.Report.Findings.Count(item => item.RuleId == "FV006"));
+        Assert.Contains(result.Report.Findings, item => item.RuleId == "FV006" && item.Path == "tests/utf16.golden");
         Assert.DoesNotContain(result.Report.Findings, item => item.Path == "tests/bom.golden");
+        Assert.DoesNotContain(result.Report.Findings, item => item.Path == "tests/verify.verified.json");
+        Assert.DoesNotContain(result.Report.Findings, item => item.Path == "tests/verify-utf16.verified.json");
+        Assert.Equal(1, result.ExitCode);
+    }
+
+    [Fact]
+    public void Verify_custom_encoding_and_newline_variants_are_clean_and_still_content_inspected()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/custom-encoding.verified.json", [0xFF, 0xFE, 0x6F, 0x00, 0x6E, 0x00, 0x65, 0x00]);
+        repository.WriteBytes("tests/carriage-return.verified.json", [0x6F, 0x6E, 0x65, 0x0D, 0x0A, 0x74, 0x77, 0x6F]);
+        repository.WriteBytes("tests/trailing-newline.verified.json", [0x6F, 0x6E, 0x65, 0x0A]);
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.Report.Findings);
+        Assert.Empty(result.Report.Errors);
+        Assert.DoesNotContain(result.Report.Skipped, item => item.Code == "FV-SKIP-ENCODING");
+    }
+
+    [Theory]
+    [InlineData("utf-16le")]
+    [InlineData("utf-16be")]
+    [InlineData("utf-32le")]
+    [InlineData("utf-32be")]
+    public void Verify_bom_declared_encoding_is_decoded_and_sensitive_data_is_still_detected(string encodingName)
+    {
+        const string sensitiveValue = "fixture-test-secret-1234567890";
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes(
+            "tests/Payments/Create.verified.json",
+            EncodeWithDeclaredBom(encodingName, $"{{\"apiKey\":\"{sensitiveValue}\"}}\n"));
+
+        ScanResult result = repository.Scan();
+        string json = result.Report.ToJson();
+
+        Assert.Equal(1, result.ExitCode);
+        Finding finding = Assert.Single(result.Report.Findings, item => item.RuleId == "FV007");
+        Assert.Equal("tests/Payments/Create.verified.json", finding.Path);
+        Assert.DoesNotContain(result.Report.Findings, item => item.RuleId == "FV006");
+        Assert.DoesNotContain(result.Report.Skipped, item => item.Code == "FV-SKIP-ENCODING");
+        Assert.Empty(result.Report.Errors);
+        Assert.Equal(1, result.Report.FilesInspected);
+        Assert.DoesNotContain(sensitiveValue, json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Nul_byte_verify_baseline_fails_closed_while_plain_utf8_still_reports_fv007()
+    {
+        const string sensitiveValue = "fixture-test-secret-1234567890";
+        string contents = $"{{\"apiKey\":\"{sensitiveValue}\"}}\n";
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/Payments/Create.verified.json", Encoding.UTF8.GetBytes(contents));
+
+        ScanResult control = repository.Scan();
+
+        Assert.Equal(1, control.ExitCode);
+        Assert.Empty(control.Report.Errors);
+        Assert.Equal(1, control.Report.FilesInspected);
+        Assert.Contains(control.Report.Findings, item =>
+            item.RuleId == "FV007" && item.Path == "tests/Payments/Create.verified.json");
+        Assert.DoesNotContain(control.Report.Skipped, item => item.Code == "FV-SKIP-ENCODING");
+
+        repository.WriteBytes(
+            "tests/Payments/Create.verified.json",
+            [.. Encoding.UTF8.GetBytes(contents), 0x00]);
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", "json"], telemetry, out string output, out string error);
+        using JsonDocument report = JsonDocument.Parse(output);
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(error);
+        Assert.Equal(0, telemetry.SuccessfulScans);
+        Assert.Equal(1, report.RootElement.GetProperty("filesInspected").GetInt32());
+        Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
+        JsonElement skip = Assert.Single(report.RootElement.GetProperty("skipped").EnumerateArray(), item =>
+            item.GetProperty("code").GetString() == FixtureVaultContract.UninspectableContentSkippedCode);
+        Assert.Equal("tests/Payments/Create.verified.json", skip.GetProperty("path").GetString());
+        Assert.Equal(FixtureVaultContract.UndeclaredNulContentSkippedReason, skip.GetProperty("reason").GetString());
+        JsonElement scanError = Assert.Single(report.RootElement.GetProperty("errors").EnumerateArray());
+        Assert.Equal(FixtureVaultContract.UninspectableContentErrorCode, scanError.GetProperty("code").GetString());
+        Assert.DoesNotContain(sensitiveValue, output, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("utf-16le")]
+    [InlineData("utf-16be")]
+    [InlineData("utf-32le")]
+    [InlineData("utf-32be")]
+    public void Bom_less_declared_encoding_verify_baseline_is_never_reported_as_fully_checked(string encodingName)
+    {
+        const string sensitiveValue = "fixture-test-secret-1234567890";
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes(
+            "tests/Payments/Create.verified.json",
+            EncodeWithoutBom(encodingName, $"{{\"apiKey\":\"{sensitiveValue}\"}}\n"));
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", "json"], telemetry, out string output, out string error);
+        using JsonDocument report = JsonDocument.Parse(output);
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(error);
+        Assert.Equal(0, telemetry.SuccessfulScans);
+        Assert.Equal(1, report.RootElement.GetProperty("filesInspected").GetInt32());
+        Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
+        JsonElement skip = Assert.Single(report.RootElement.GetProperty("skipped").EnumerateArray(), item =>
+            item.GetProperty("code").GetString() == FixtureVaultContract.UninspectableContentSkippedCode);
+        Assert.Equal("tests/Payments/Create.verified.json", skip.GetProperty("path").GetString());
+        Assert.Equal(FixtureVaultContract.UndeclaredNulContentSkippedReason, skip.GetProperty("reason").GetString());
+        JsonElement scanError = Assert.Single(report.RootElement.GetProperty("errors").EnumerateArray());
+        Assert.Equal(FixtureVaultContract.UninspectableContentErrorCode, scanError.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public void Nul_byte_split_mode_verify_baseline_is_never_reported_as_fully_checked()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes(
+            "tests/Payments/Create.verified/Order.json",
+            [.. Encoding.UTF8.GetBytes("{\"apiKey\":\"fixture-test-secret-1234567890\"}\n"), 0x00]);
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.Empty(result.Report.Findings);
+        Assert.Equal(1, result.Report.FilesInspected);
+        SkippedDiagnostic skip = Assert.Single(result.Report.Skipped, item =>
+            item.Code == FixtureVaultContract.UninspectableContentSkippedCode);
+        Assert.Equal("tests/Payments/Create.verified/Order.json", skip.Path);
+        Assert.Equal(FixtureVaultContract.UndeclaredNulContentSkippedReason, skip.Reason);
+        Assert.Contains(result.Report.Errors, item => item.Code == FixtureVaultContract.UninspectableContentErrorCode);
+    }
+
+    [Fact]
+    public void Verify_baseline_with_unclassified_binary_bytes_is_not_silently_accepted()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/Payments/Create.verified.json", [0x89, 0x50, 0x4E, 0x47, 0x00, 0x01]);
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.Empty(result.Report.Findings);
+        Assert.Equal(1, result.Report.FilesInspected);
+        SkippedDiagnostic skip = Assert.Single(result.Report.Skipped, item =>
+            item.Code == FixtureVaultContract.UninspectableContentSkippedCode);
+        Assert.Equal("tests/Payments/Create.verified.json", skip.Path);
+        Assert.Equal(FixtureVaultContract.UninspectableContentSkippedReason, skip.Reason);
+        Assert.Contains(result.Report.Errors, item => item.Code == FixtureVaultContract.UninspectableContentErrorCode);
+    }
+
+    [Fact]
+    public void Non_verify_nul_content_is_reported_as_unproven_encoding_instead_of_a_checked_fixture()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/nul-bytes.golden", [0x6F, 0x6B, 0x00, 0x0A]);
+
+        ScanResult result = repository.Scan();
+
+        Finding finding = Assert.Single(result.Report.Findings, item => item.RuleId == "FV006");
+        Assert.Equal("tests/nul-bytes.golden", finding.Path);
+        Assert.Equal(2, result.ExitCode);
+        Assert.DoesNotContain(result.Report.Findings, item => item.RuleId == "FV005");
+        SkippedDiagnostic skip = Assert.Single(result.Report.Skipped, item =>
+            item.Code == FixtureVaultContract.UninspectableContentSkippedCode);
+        Assert.Equal("tests/nul-bytes.golden", skip.Path);
+        Assert.Equal(FixtureVaultContract.UndeclaredNulContentSkippedReason, skip.Reason);
+    }
+
+    [Theory]
+    // Declared encoding | decoded content | whether the fixture also carries a synthetic sensitive value.
+    [InlineData("none", "text", false)]
+    [InlineData("none", "text", true)]
+    [InlineData("none", "nul", false)]
+    [InlineData("none", "nul", true)]
+    [InlineData("utf-8", "text", false)]
+    [InlineData("utf-8", "text", true)]
+    [InlineData("utf-8", "nul", false)]
+    [InlineData("utf-8", "nul", true)]
+    [InlineData("utf-16le", "text", false)]
+    [InlineData("utf-16le", "text", true)]
+    [InlineData("utf-16le", "nul", false)]
+    [InlineData("utf-16le", "nul", true)]
+    [InlineData("utf-16be", "text", false)]
+    [InlineData("utf-16be", "text", true)]
+    [InlineData("utf-16be", "nul", false)]
+    [InlineData("utf-16be", "nul", true)]
+    [InlineData("utf-32le", "text", false)]
+    [InlineData("utf-32le", "text", true)]
+    [InlineData("utf-32le", "nul", false)]
+    [InlineData("utf-32le", "nul", true)]
+    [InlineData("utf-32be", "text", false)]
+    [InlineData("utf-32be", "text", true)]
+    [InlineData("utf-32be", "nul", false)]
+    [InlineData("utf-32be", "nul", true)]
+    [InlineData("none", "undecodable", false)]
+    [InlineData("none", "undecodable", true)]
+    [InlineData("utf-8", "undecodable", false)]
+    [InlineData("utf-8", "undecodable", true)]
+    [InlineData("utf-16le", "undecodable", false)]
+    [InlineData("utf-16le", "undecodable", true)]
+    [InlineData("utf-16be", "undecodable", false)]
+    [InlineData("utf-16be", "undecodable", true)]
+    [InlineData("utf-32le", "undecodable", false)]
+    [InlineData("utf-32le", "undecodable", true)]
+    [InlineData("utf-32be", "undecodable", false)]
+    [InlineData("utf-32be", "undecodable", true)]
+    public void Content_classification_decides_the_encoding_decodability_nul_matrix(
+        string declaredEncoding,
+        string contentShape,
+        bool withSensitiveValue)
+    {
+        byte[] fixtureBytes = DeclaredEncodingFixtureBytes(declaredEncoding, contentShape, withSensitiveValue);
+        AssertSensitiveValueIsPlanted(fixtureBytes, contentShape, withSensitiveValue);
+
+        ContentClassification classification = ContentClassification.Classify(
+            fixtureBytes);
+
+        switch (contentShape)
+        {
+            case "text":
+                Assert.Equal(ContentDecodeOutcome.Decoded, classification.Outcome);
+                Assert.Contains(
+                    withSensitiveValue ? SensitiveValue : "orderId",
+                    classification.Text,
+                    StringComparison.Ordinal);
+                break;
+            case "nul":
+                Assert.Equal(ContentDecodeOutcome.DecodedWithNul, classification.Outcome);
+                Assert.Contains('\0', classification.Text);
+                break;
+            default:
+                Assert.Equal(ContentDecodeOutcome.Undecodable, classification.Outcome);
+                Assert.Equal(string.Empty, classification.Text);
+                break;
+        }
+
+        Assert.Equal(
+            declaredEncoding == "none" ? null : DeclaredEncodingName(declaredEncoding),
+            classification.DeclaredEncodingName);
+        Assert.Equal(
+            contentShape == "text" ? ContentKind.Inspected : ContentKind.Uninspectable,
+            ContentClassification.Resolve(classification, isKnownBinaryExtension: false, isVerifyFixture: true));
+        // A known binary extension is never decoded as text, whatever its bytes happen to decode to.
+        Assert.Equal(
+            ContentKind.BinaryAsset,
+            ContentClassification.Resolve(classification, isKnownBinaryExtension: true, isVerifyFixture: true));
+    }
+
+    [Fact]
+    public void Undecodable_nul_bytes_are_a_binary_asset_only_outside_the_verify_convention()
+    {
+        ContentClassification classification = ContentClassification.Classify(
+            [0x89, 0x50, 0x4E, 0x47, 0x00, 0x01]);
+
+        Assert.Equal(ContentDecodeOutcome.Undecodable, classification.Outcome);
+        Assert.Null(classification.DeclaredEncodingName);
+        Assert.True(classification.ProvesUndeclaredBinaryBlob);
+        Assert.Equal(
+            ContentKind.Uninspectable,
+            ContentClassification.Resolve(classification, isKnownBinaryExtension: false, isVerifyFixture: true));
+        Assert.Equal(
+            ContentKind.BinaryAsset,
+            ContentClassification.Resolve(classification, isKnownBinaryExtension: false, isVerifyFixture: false));
+    }
+
+    [Theory]
+    // Declared encoding | decoded content | whether the fixture also carries a synthetic sensitive value.
+    [InlineData("none", "text", false)]
+    [InlineData("none", "text", true)]
+    [InlineData("none", "nul", false)]
+    [InlineData("none", "nul", true)]
+    [InlineData("utf-8", "text", false)]
+    [InlineData("utf-8", "text", true)]
+    [InlineData("utf-8", "nul", false)]
+    [InlineData("utf-8", "nul", true)]
+    [InlineData("utf-16le", "text", false)]
+    [InlineData("utf-16le", "text", true)]
+    [InlineData("utf-16le", "nul", false)]
+    [InlineData("utf-16le", "nul", true)]
+    [InlineData("utf-16be", "text", false)]
+    [InlineData("utf-16be", "text", true)]
+    [InlineData("utf-16be", "nul", false)]
+    [InlineData("utf-16be", "nul", true)]
+    [InlineData("utf-32le", "text", false)]
+    [InlineData("utf-32le", "text", true)]
+    [InlineData("utf-32le", "nul", false)]
+    [InlineData("utf-32le", "nul", true)]
+    [InlineData("utf-32be", "text", false)]
+    [InlineData("utf-32be", "text", true)]
+    [InlineData("utf-32be", "nul", false)]
+    [InlineData("utf-32be", "nul", true)]
+    [InlineData("none", "undecodable", false)]
+    [InlineData("none", "undecodable", true)]
+    [InlineData("utf-8", "undecodable", false)]
+    [InlineData("utf-8", "undecodable", true)]
+    [InlineData("utf-16le", "undecodable", false)]
+    [InlineData("utf-16le", "undecodable", true)]
+    [InlineData("utf-16be", "undecodable", false)]
+    [InlineData("utf-16be", "undecodable", true)]
+    [InlineData("utf-32le", "undecodable", false)]
+    [InlineData("utf-32le", "undecodable", true)]
+    [InlineData("utf-32be", "undecodable", false)]
+    [InlineData("utf-32be", "undecodable", true)]
+    public void Content_classification_matrix_is_reflected_in_every_reported_field(
+        string declaredEncoding,
+        string contentShape,
+        bool withSensitiveValue)
+    {
+        const string path = "tests/Payments/Create.verified.json";
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        byte[] fixtureBytes = DeclaredEncodingFixtureBytes(declaredEncoding, contentShape, withSensitiveValue);
+        AssertSensitiveValueIsPlanted(fixtureBytes, contentShape, withSensitiveValue);
+        repository.WriteBytes(path, fixtureBytes);
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", "json"], telemetry, out string output, out string error);
+        using JsonDocument report = JsonDocument.Parse(output);
+        JsonElement root = report.RootElement;
+        JsonElement[] findings = [.. root.GetProperty("findings").EnumerateArray()];
+        JsonElement[] skipped = [.. root.GetProperty("skipped").EnumerateArray()];
+        JsonElement[] errors = [.. root.GetProperty("errors").EnumerateArray()];
+
+        Assert.Equal(1, root.GetProperty("filesInspected").GetInt32());
+
+        if (contentShape is "nul" or "undecodable")
+        {
+            // Content that cannot be trusted is never reported as a clean, fully checked fixture,
+            // whether or not a detector would have matched.
+            Assert.Equal(2, exitCode);
+            Assert.Empty(findings);
+            Assert.Empty(error);
+            Assert.Equal(0, telemetry.SuccessfulScans);
+            JsonElement scanError = Assert.Single(errors);
+            Assert.Equal(FixtureVaultContract.UninspectableContentErrorCode, scanError.GetProperty("code").GetString());
+            JsonElement skip = Assert.Single(skipped, item =>
+                item.GetProperty("code").GetString() == FixtureVaultContract.UninspectableContentSkippedCode);
+            Assert.Equal(path, skip.GetProperty("path").GetString());
+            string reason = skip.GetProperty("reason").GetString()!;
+            Assert.Equal(ExpectedSkipReason(declaredEncoding, contentShape), reason);
+            if (declaredEncoding != "none")
+            {
+                Assert.DoesNotContain("declare no byte-order mark", reason, StringComparison.Ordinal);
+                Assert.Contains(DeclaredEncodingName(declaredEncoding), reason, StringComparison.Ordinal);
+            }
+        }
+        else if (withSensitiveValue)
+        {
+            Assert.Equal(1, exitCode);
+            Assert.Empty(errors);
+            Assert.Empty(error);
+            Assert.Equal(1, telemetry.SuccessfulScans);
+            JsonElement finding = Assert.Single(findings);
+            Assert.Equal("FV007", finding.GetProperty("ruleId").GetString());
+            Assert.Equal(path, finding.GetProperty("path").GetString());
+            Assert.DoesNotContain(skipped, item =>
+                item.GetProperty("code").GetString() == FixtureVaultContract.UninspectableContentSkippedCode);
+        }
+        else
+        {
+            Assert.Equal(0, exitCode);
+            Assert.Empty(findings);
+            Assert.Empty(errors);
+            Assert.Empty(error);
+            Assert.Equal(1, telemetry.SuccessfulScans);
+            Assert.DoesNotContain(skipped, item =>
+                item.GetProperty("code").GetString() == FixtureVaultContract.UninspectableContentSkippedCode);
+        }
+
+        AssertNoCanary(SensitiveValue, output, error);
+    }
+
+    [Fact]
+    public void Nul_byte_verify_baseline_skip_is_reported_in_human_readable_output()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes(
+            "tests/Payments/Create.verified.json",
+            [.. Encoding.UTF8.GetBytes("{\"apiKey\":\"fixture-test-secret-1234567890\"}\n"), 0x00]);
+
+        int exitCode = repository.Run(["scan"], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains(FixtureVaultContract.UninspectableContentErrorCode, error, StringComparison.Ordinal);
+        Assert.Contains(FixtureVaultContract.UninspectableContentSkippedCode, error, StringComparison.Ordinal);
+        Assert.Contains("tests/Payments/Create.verified.json", error, StringComparison.Ordinal);
+        Assert.DoesNotContain("fixture-test-secret-1234567890", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("fixture-test-secret-1234567890", error, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("console")]
+    [InlineData("json")]
+    public void Single_malformed_fixture_preserves_fv006_in_failure_output(string format)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/malformed.golden", [0xC3, 0x28]);
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", format], telemetry, out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        Assert.Equal(0, telemetry.SuccessfulScans);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            Assert.Contains(report.RootElement.GetProperty("findings").EnumerateArray(), item =>
+                item.GetProperty("ruleId").GetString() == "FV006");
+            Assert.Contains(report.RootElement.GetProperty("errors").EnumerateArray(), item =>
+                item.GetProperty("code").GetString() == FixtureVaultContract.UninspectableContentErrorCode);
+            Assert.Empty(error);
+        }
+        else
+        {
+            Assert.Empty(output);
+            Assert.Contains("FV006", error, StringComparison.Ordinal);
+            Assert.Contains("Remediation:", error, StringComparison.Ordinal);
+            Assert.Contains("malformed.golden", error, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData(true, "console")]
+    [InlineData(true, "json")]
+    [InlineData(false, "console")]
+    [InlineData(false, "json")]
+    public void Mixed_sensitive_and_malformed_fixtures_preserve_findings_on_failure(bool strict, string format)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Ci!.Strict = strict);
+        repository.WriteText("tests/a-sensitive.golden", "{\"apiKey\":\"fixture-test-secret-1234567890\"}\n");
+        repository.WriteBytes("tests/z-malformed.golden", [0xC3, 0x28]);
+
+        int exitCode = repository.Run(["scan", "--format", format], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            JsonElement[] findings = [.. report.RootElement.GetProperty("findings").EnumerateArray()];
+            Assert.Contains(findings, item => item.GetProperty("ruleId").GetString() == "FV007");
+            Assert.Contains(findings, item => item.GetProperty("ruleId").GetString() == "FV006");
+            string expectedDisposition = strict ? "block" : "warn";
+            Assert.All(findings, item => Assert.Equal(expectedDisposition, item.GetProperty("disposition").GetString()));
+            Assert.Empty(error);
+        }
+        else
+        {
+            Assert.Empty(output);
+            Assert.Contains("FV007", error, StringComparison.Ordinal);
+            Assert.Contains("FV006", error, StringComparison.Ordinal);
+            Assert.Contains("Remediation:", error, StringComparison.Ordinal);
+            Assert.Contains("a-sensitive.golden", error, StringComparison.Ordinal);
+            Assert.Contains("z-malformed.golden", error, StringComparison.Ordinal);
+            Assert.Contains(strict ? "block" : "warn", error, StringComparison.Ordinal);
+        }
+
+        AssertNoCanary(SensitiveValue, output, error);
+    }
+
+    [Fact]
+    public void Verify_undecodable_fixture_is_skipped_and_fails_closed_when_sensitive_detection_is_enabled()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/undecodable.verified.json", [0xC3, 0x28]);
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", "json"], telemetry, out string output, out string error);
+        using JsonDocument report = JsonDocument.Parse(output);
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(error);
+        Assert.Equal(0, telemetry.SuccessfulScans);
+        JsonElement skip = Assert.Single(report.RootElement.GetProperty("skipped").EnumerateArray(), item =>
+            item.GetProperty("code").GetString() == FixtureVaultContract.UninspectableContentSkippedCode);
+        Assert.Equal("tests/undecodable.verified.json", skip.GetProperty("path").GetString());
+        JsonElement scanError = Assert.Single(report.RootElement.GetProperty("errors").EnumerateArray());
+        Assert.Equal(FixtureVaultContract.UninspectableContentErrorCode, scanError.GetProperty("code").GetString());
+        Assert.Equal(FixtureVaultContract.UninspectableContentErrorMessage, scanError.GetProperty("message").GetString());
+        Assert.DoesNotContain(report.RootElement.GetProperty("findings").EnumerateArray(), item =>
+            item.GetProperty("ruleId").GetString() is "FV006" or "FV007");
+    }
+
+    [Fact]
+    public void Verify_undecodable_fixture_skip_is_reported_in_human_readable_output()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/undecodable.verified.json", [0xC3, 0x28]);
+
+        int exitCode = repository.Run(["scan"], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains(FixtureVaultContract.UninspectableContentErrorCode, error, StringComparison.Ordinal);
+        Assert.Contains(FixtureVaultContract.UninspectableContentSkippedCode, error, StringComparison.Ordinal);
+        Assert.Contains("tests/undecodable.verified.json", error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Verify_undecodable_fixture_is_only_skipped_when_sensitive_detection_is_disabled()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WriteBytes("tests/undecodable.verified.json", [0xC3, 0x28]);
+        FixtureVaultPolicy policy = FixtureVaultPolicy.CreateDefault(testsDirectoryExists: true);
+        // The v1 policy loader always enables sensitive-data detection; this policy documents the
+        // documented contract for a scanner run whose configured policy disables it.
+        policy.SensitiveDataRules = [];
+
+        ScanResult result = FixtureScanner.Scan(repository.Root, policy, [], strictOverride: false);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.Report.Findings);
+        Assert.Empty(result.Report.Errors);
+        SkippedDiagnostic skip = Assert.Single(result.Report.Skipped, item =>
+            item.Code == FixtureVaultContract.UninspectableContentSkippedCode);
+        Assert.Equal("tests/undecodable.verified.json", skip.Path);
+    }
+
+    [Fact]
+    public void Verify_utf8_fixture_detects_sensitive_data_without_skip_or_encoding_finding()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/Payments/Create.verified.json", "{\"apiKey\":\"fixture-test-secret-1234567890\"}\n");
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains(result.Report.Findings, item =>
+            item.RuleId == "FV007" && item.Path == "tests/Payments/Create.verified.json");
+        Assert.DoesNotContain(result.Report.Findings, item => item.RuleId == "FV006");
+        Assert.DoesNotContain(result.Report.Skipped, item => item.Code == "FV-SKIP-ENCODING");
+        Assert.Empty(result.Report.Errors);
+    }
+
+    [Theory]
+    [InlineData(new byte[] { 0xFF, 0xFE, 0x6F, 0x00, 0x6B, 0x00 }, 1, false)]
+    [InlineData(new byte[] { 0xC3, 0x28 }, 2, true)]
+    public void Non_verify_non_utf8_text_still_blocks_with_fv006(byte[] bytes, int expectedExitCode, bool expectsSkip)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/utf16.golden", bytes);
+
+        ScanResult result = repository.Scan();
+
+        Finding finding = Assert.Single(result.Report.Findings, item => item.RuleId == "FV006");
+        Assert.Equal("tests/utf16.golden", finding.Path);
+        Assert.Equal("block", finding.Disposition);
+        Assert.Equal(expectedExitCode, result.ExitCode);
+        Assert.DoesNotContain(result.Report.Findings, item => item.RuleId == "FV007");
+        Assert.Equal(
+            expectsSkip,
+            result.Report.Skipped.Any(item => item.Code == "FV-SKIP-ENCODING"));
     }
 
     [Fact]
@@ -672,6 +1567,447 @@ public sealed class FixtureVaultTests
         Assert.DoesNotContain(sensitiveValue, json, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("console")]
+    [InlineData("json")]
+    public void Empty_and_already_redacted_api_key_query_values_are_not_sensitive_findings(string format)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText(
+            "tests/credentials.golden",
+            "https://example.test/?api_key=&page=1\n" +
+            "https://example.test/?api_key=\"  \"&page=1\n" +
+            "https://example.test/?api_key='  '&page=1\n" +
+            "https://example.test/?api_key=***&page=1\n" +
+            "https://example.test/?api_key=<redacted>&page=1\n" +
+            "https://example.test/?api_key=[REDACTED]&page=1\n");
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", format], telemetry, out string output, out string error);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, telemetry.SuccessfulScans);
+        Assert.Empty(error);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
+        }
+        else
+        {
+            Assert.DoesNotContain("FV007", output, StringComparison.Ordinal);
+            Assert.Contains("No policy-blocking findings", output, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("%20", "console")]
+    [InlineData("%20", "json")]
+    [InlineData("+", "console")]
+    [InlineData("+", "json")]
+    [InlineData("%09", "console")]
+    [InlineData("%09", "json")]
+    [InlineData("%0A", "console")]
+    [InlineData("%0A", "json")]
+    public void Url_encoded_empty_api_key_query_values_are_not_sensitive_findings(string encodedValue, string format)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/encoded-empty-credentials.golden", $"https://example.test/?api_key={encodedValue}&page=1\n");
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", format], telemetry, out string output, out string error);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, telemetry.SuccessfulScans);
+        Assert.Empty(error);
+        Assert.DoesNotContain("FV007", output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
+        }
+        else
+        {
+            Assert.Contains("No policy-blocking findings", output, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("console")]
+    [InlineData("json")]
+    public void Url_encoded_non_empty_api_key_query_values_remain_sensitive_without_disclosure(string format)
+    {
+        const string encodedValue = "encoded-secret%2Dcanary%2D1234567890";
+        const string decodedValue = "encoded-secret-canary-1234567890";
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/encoded-secret.golden", $"https://example.test/?api_key={encodedValue}&page=1\n");
+
+        int exitCode = repository.Run(["scan", "--format", format], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(1, exitCode);
+        Assert.Empty(error);
+        Assert.Contains("FV007", output, StringComparison.Ordinal);
+        Assert.DoesNotContain(encodedValue, output, StringComparison.Ordinal);
+        Assert.DoesNotContain(decodedValue, output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            JsonElement finding = Assert.Single(report.RootElement.GetProperty("findings").EnumerateArray());
+            Assert.Equal("FV007", finding.GetProperty("ruleId").GetString());
+            Assert.Equal("block", finding.GetProperty("disposition").GetString());
+        }
+    }
+
+    [Theory]
+    [InlineData("console")]
+    [InlineData("json")]
+    public void Non_empty_api_key_query_values_are_sensitive_without_disclosure(string format)
+    {
+        const string canary = "query-api-key-canary-1234567890";
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/query-credentials.golden", $"https://example.test/?api_key={canary}&page=1\n");
+
+        int exitCode = repository.Run(["scan", "--format", format], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(1, exitCode);
+        Assert.Empty(error);
+        Assert.DoesNotContain(canary, output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            JsonElement finding = Assert.Single(report.RootElement.GetProperty("findings").EnumerateArray());
+            Assert.Equal("FV007", finding.GetProperty("ruleId").GetString());
+            Assert.Equal("block", finding.GetProperty("disposition").GetString());
+        }
+        else
+        {
+            Assert.Contains("FV007", output, StringComparison.Ordinal);
+            Assert.Contains("block", output, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("console")]
+    [InlineData("json")]
+    public void Empty_header_and_assignment_credentials_are_not_sensitive_findings(string format)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText(
+            "tests/empty-credentials.golden",
+            "Authorization: Bearer \n" +
+            "password=\n" +
+            "Authorization: Bearer ***\n" +
+            "password=<redacted>\n");
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", format], telemetry, out string output, out string error);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, telemetry.SuccessfulScans);
+        Assert.Empty(error);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
+        }
+        else
+        {
+            Assert.DoesNotContain("FV007", output, StringComparison.Ordinal);
+            Assert.Contains("No policy-blocking findings", output, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("Cookie: a=; b=", "console")]
+    [InlineData("Cookie: a=; b=", "json")]
+    [InlineData("Cookie: session=<redacted>", "console")]
+    [InlineData("Cookie: session=<redacted>", "json")]
+    [InlineData("Cookie: a=***; b=***", "console")]
+    [InlineData("Cookie: a=***; b=***", "json")]
+    [InlineData("cookie: session=", "console")]
+    [InlineData("cookie: session=", "json")]
+    [InlineData("Set-Cookie: session=\"\"; Path=/", "console")]
+    [InlineData("Set-Cookie: session=\"\"; Path=/", "json")]
+    [InlineData(" cOoKiE : first =  ; second =  \"  \" ", "console")]
+    [InlineData(" cOoKiE : first =  ; second =  \"  \" ", "json")]
+    [InlineData("Cookie: session=***", "console")]
+    [InlineData("Cookie: session=***", "json")]
+    [InlineData("Cookie: session=[redacted]", "console")]
+    [InlineData("Cookie: session=[redacted]", "json")]
+    [InlineData("Cookie: session=redacted", "console")]
+    [InlineData("Cookie: session=redacted", "json")]
+    [InlineData("Cookie: session=masked", "console")]
+    [InlineData("Cookie: session=masked", "json")]
+    [InlineData("Cookie: session=removed", "console")]
+    [InlineData("Cookie: session=removed", "json")]
+    [InlineData("Set-Cookie: session=''; Path=/", "console")]
+    [InlineData("Set-Cookie: session=''; Path=/", "json")]
+    public void Empty_and_already_redacted_cookie_values_are_not_sensitive_findings(string header, string format)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/credentials.golden", header + "\n");
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", format], telemetry, out string output, out string error);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, telemetry.SuccessfulScans);
+        Assert.Empty(error);
+        Assert.DoesNotContain("FV007", output, StringComparison.Ordinal);
+        Assert.DoesNotContain(header, output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
+        }
+        else
+        {
+            Assert.Contains("No policy-blocking findings", output, StringComparison.Ordinal);
+        }
+    }
+
+    public static IEnumerable<object[]> QuotedPlaceholderCookieValues()
+    {
+        string[] placeholders = ["***", "<redacted>", "[redacted]", "redacted", "masked", "removed"];
+        string[] quotedValues =
+        [
+            "\" {0} \"",
+            "' {0} '",
+            "\"  {0}\t\"",
+            "'\t{0}  '",
+        ];
+
+        foreach (string headerName in new[] { "Cookie", "Set-Cookie" })
+        {
+            foreach (string format in new[] { "console", "json" })
+            {
+                foreach (string placeholder in placeholders)
+                {
+                    foreach (string quotedValue in quotedValues)
+                    {
+                        string value = string.Format(quotedValue, placeholder);
+                        string[] headers = headerName == "Cookie"
+                            ? [
+                                $"Cookie: session={value}",
+                                $"Cookie: first =  {value}  ; second={value}",
+                            ]
+                            : [$"Set-Cookie: session =  {value}  ; Path=/"];
+                        foreach (string header in headers)
+                        {
+                            yield return [header, format];
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(QuotedPlaceholderCookieValues))]
+    public void Quoted_placeholder_cookie_values_with_internal_whitespace_are_not_sensitive_findings(
+        string header,
+        string format)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/credentials.golden", header + "\n");
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", format], telemetry, out string output, out string error);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, telemetry.SuccessfulScans);
+        Assert.Empty(error);
+        Assert.DoesNotContain("FV007", output, StringComparison.Ordinal);
+        Assert.DoesNotContain(header, output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
+        }
+        else
+        {
+            Assert.Contains("No policy-blocking findings", output, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("Cookie: session=fixture-cookie-secret-1234567890", "console")]
+    [InlineData("Cookie: session=fixture-cookie-secret-1234567890", "json")]
+    [InlineData("Cookie: empty=; session=fixture-cookie-secret-1234567890", "console")]
+    [InlineData("Cookie: empty=; session=fixture-cookie-secret-1234567890", "json")]
+    [InlineData("Cookie: session=\"\"; sibling=fixture-cookie-secret-1234567890", "console")]
+    [InlineData("Cookie: session=\"\"; sibling=fixture-cookie-secret-1234567890", "json")]
+    [InlineData("Set-Cookie: session=fixture-cookie-secret-1234567890; Path=/", "console")]
+    [InlineData("Set-Cookie: session=fixture-cookie-secret-1234567890; Path=/", "json")]
+    public void Cookie_headers_with_secret_values_remain_sensitive_without_disclosure(string header, string format)
+    {
+        const string canary = "fixture-cookie-secret-1234567890";
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/credentials.golden", header + "\n");
+
+        int exitCode = repository.Run(["scan", "--format", format], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(1, exitCode);
+        Assert.Empty(error);
+        Assert.Contains("FV007", output, StringComparison.Ordinal);
+        Assert.DoesNotContain(canary, output, StringComparison.Ordinal);
+        Assert.DoesNotContain(header, output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            JsonElement finding = Assert.Single(report.RootElement.GetProperty("findings").EnumerateArray());
+            Assert.Equal("FV007", finding.GetProperty("ruleId").GetString());
+            Assert.Equal("block", finding.GetProperty("disposition").GetString());
+        }
+    }
+
+    [Theory]
+    [InlineData("X-Api-Key: \"\"", "console")]
+    [InlineData("X-Api-Key: \"\"", "json")]
+    [InlineData("ApiKey: ''", "console")]
+    [InlineData("ApiKey: ''", "json")]
+    [InlineData("XApiKey: \"  \"", "console")]
+    [InlineData("XApiKey: \"  \"", "json")]
+    [InlineData("X-API-KEY: \"\"", "console")]
+    [InlineData("X-API-KEY: \"\"", "json")]
+    [InlineData("x-api-key: '  '", "console")]
+    [InlineData("x-api-key: '  '", "json")]
+    [InlineData("aPiKeY: \"\"", "console")]
+    [InlineData("aPiKeY: \"\"", "json")]
+    [InlineData("Authorization: Bearer \"\"", "console")]
+    [InlineData("Authorization: Bearer \"\"", "json")]
+    [InlineData("authorization: bearer ''", "console")]
+    [InlineData("authorization: bearer ''", "json")]
+    [InlineData("AUTHORIZATION: BEARER \"  \"", "console")]
+    [InlineData("AUTHORIZATION: BEARER \"  \"", "json")]
+    [InlineData("Authorization: Bearer <redacted>", "console")]
+    [InlineData("Authorization: Bearer <redacted>", "json")]
+    [InlineData("Authorization: Bearer [REDACTED]", "console")]
+    [InlineData("Authorization: Bearer [REDACTED]", "json")]
+    public void Quoted_empty_credential_headers_are_not_sensitive_findings(string header, string format)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/empty-api-key-header.golden", header + "\n");
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", format], telemetry, out string output, out string error);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, telemetry.SuccessfulScans);
+        Assert.Empty(error);
+        Assert.DoesNotContain("FV007", output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
+        }
+        else
+        {
+            Assert.Contains("No policy-blocking findings", output, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("X-Api-Key", "console")]
+    [InlineData("X-Api-Key", "json")]
+    [InlineData("ApiKey", "console")]
+    [InlineData("ApiKey", "json")]
+    public void Non_empty_api_key_headers_are_sensitive_findings_without_disclosure(string headerName, string format)
+    {
+        const string canary = "header-api-key-canary-1234567890";
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/api-key-header.golden", $"{headerName}: {canary}\n");
+
+        int exitCode = repository.Run(["scan", "--format", format], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(1, exitCode);
+        Assert.Empty(error);
+        Assert.DoesNotContain(canary, output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            JsonElement finding = Assert.Single(report.RootElement.GetProperty("findings").EnumerateArray());
+            Assert.Equal("FV007", finding.GetProperty("ruleId").GetString());
+            Assert.Equal("block", finding.GetProperty("disposition").GetString());
+            Assert.Contains("Remove the sensitive value", finding.GetProperty("remediation").GetString(), StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.Contains("FV007", output, StringComparison.Ordinal);
+            Assert.Contains("block", output, StringComparison.Ordinal);
+            Assert.Contains("Remove the sensitive value", output, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("Authorization: Bearer header-bearer-canary-1234567890", "console")]
+    [InlineData("Authorization: Bearer header-bearer-canary-1234567890", "json")]
+    public void Non_empty_authorization_bearer_headers_are_sensitive_findings_without_disclosure(string header, string format)
+    {
+        const string canary = "header-bearer-canary-1234567890";
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/authorization-header.golden", header + "\n");
+
+        int exitCode = repository.Run(["scan", "--format", format], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(1, exitCode);
+        Assert.Empty(error);
+        Assert.DoesNotContain(canary, output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            JsonElement finding = Assert.Single(report.RootElement.GetProperty("findings").EnumerateArray());
+            Assert.Equal("FV007", finding.GetProperty("ruleId").GetString());
+            Assert.Equal("block", finding.GetProperty("disposition").GetString());
+            Assert.Contains("Remove the sensitive value", finding.GetProperty("remediation").GetString(), StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.Contains("FV007", output, StringComparison.Ordinal);
+            Assert.Contains("block", output, StringComparison.Ordinal);
+            Assert.Contains("Remove the sensitive value", output, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void Sensitive_detector_failure_fails_closed_without_telemetry_or_canary_leakage()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/clean.golden", "clean");
+        const string canary = "detector-canary-do-not-leak-9f2c";
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(
+            ["scan", "--format", "json"],
+            telemetry,
+            out string output,
+            out string error,
+            additionalSensitiveDataDetectors: [new ThrowingSensitiveDataDetector(canary)]);
+
+        using JsonDocument report = JsonDocument.Parse(output);
+        JsonElement errorEntry = Assert.Single(report.RootElement.GetProperty("errors").EnumerateArray());
+        Assert.Equal(2, exitCode);
+        Assert.Equal(0, telemetry.SuccessfulScans);
+        Assert.Empty(error);
+        Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
+        Assert.Equal(FixtureVaultContract.SensitiveDataDetectorErrorCode, errorEntry.GetProperty("code").GetString());
+        Assert.Equal(FixtureVaultContract.SensitiveDataDetectorErrorMessage, errorEntry.GetProperty("message").GetString());
+        AssertNoCanary(canary, output, error);
+        Assert.DoesNotContain(canary, errorEntry.GetRawText(), StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Unknown_sensitive_data_rule_fails_closed_instead_of_returning_a_false_clean_scan()
     {
@@ -684,7 +2020,8 @@ public sealed class FixtureVaultTests
         Assert.Equal(2, exitCode);
         Assert.Empty(output);
         Assert.Contains("sensitiveDataRules", error, StringComparison.Ordinal);
-        Assert.Contains("high-confidance", error, StringComparison.Ordinal);
+        Assert.DoesNotContain("high-confidance", error, StringComparison.Ordinal);
+        Assert.Contains("Unsupported sensitiveDataRules entry", error, StringComparison.Ordinal);
         Assert.Contains("high-confidence", error, StringComparison.Ordinal);
     }
 
@@ -727,6 +2064,11 @@ public sealed class FixtureVaultTests
     [InlineData("tests/*.golden", "tests/nested/result.golden", false)]
     [InlineData("tests/?.golden", "tests/a.golden", true)]
     [InlineData("tests/?.golden", "tests/ab.golden", false)]
+    [InlineData("tests?foo.received.json", "tests/foo.received.json", false)]
+    [InlineData("tests?foo.received.json", "tests\\foo.received.json", false)]
+    [InlineData("tests?foo.received.json", "testsAfoo.received.json", true)]
+    [InlineData("tests/??.golden", "tests/ab.golden", true)]
+    [InlineData("tests/??.golden", "tests/a/b.golden", false)]
     [InlineData("tests/*/result.golden", "tests/a/result.golden", true)]
     [InlineData("tests/*/result.golden", "tests/a/b/result.golden", false)]
     [InlineData("tests/**/result.golden", "tests/result.golden", true)]
@@ -757,12 +2099,49 @@ public sealed class FixtureVaultTests
 
     [Theory]
     [InlineData("/tests/**")]
+    [InlineData("\\tests\\**")]
+    [InlineData("\\\\server\\share\\tests\\**")]
+    [InlineData("//server/share/tests/**")]
+    [InlineData("C:\\tests\\**")]
+    [InlineData("C:/tests/**")]
+    [InlineData("C:tests/**")]
     [InlineData("../tests/**")]
     [InlineData("..\\tests\\**")]
     [InlineData("..")]
+    [InlineData("tests/../**")]
+    [InlineData("tests\\..\\**")]
     public void Ignored_glob_validation_rejects_rooted_and_parent_patterns(string pattern)
     {
         Assert.False(GlobMatcher.TryCreate(pattern, out _));
+    }
+
+    [Fact]
+    public void Ignored_glob_validation_rejects_nul_and_over_length_patterns()
+    {
+        Assert.False(GlobMatcher.TryCreate("tests/\0/**", out _));
+        Assert.False(GlobMatcher.TryCreate(new string('a', 257), out _));
+    }
+
+    [Theory]
+    [InlineData("/tests/**")]
+    [InlineData("\\tests\\**")]
+    [InlineData("\\\\server\\share\\tests\\**")]
+    [InlineData("//server/share/tests/**")]
+    [InlineData("C:\\tests\\**")]
+    [InlineData("C:/tests/**")]
+    [InlineData("C:tests/**")]
+    public void Rooted_ignored_glob_patterns_fail_closed_with_fv_e007(string pattern)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.IgnoredPaths = [pattern]);
+        repository.WriteText("tests/ignored.received.json", "received\n");
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.False(result.Completed);
+        Assert.Contains(result.Report.Errors, item => item.Code == "FV-E007");
+        Assert.Empty(result.Report.Findings);
     }
 
     [Fact]
@@ -810,6 +2189,64 @@ public sealed class FixtureVaultTests
         Assert.Contains(result.Report.Errors, item => item.Code == "FV-E013");
         Assert.Empty(result.Report.Findings);
         Assert.Equal(0, result.Report.FilesInspected);
+    }
+
+    [Fact]
+    public void Path_policy_walk_failure_fails_closed_without_a_false_fv008_result()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("outside.golden", "fixture outside roots\n");
+
+        bool? pathPolicyWalkFailOnAccessErrors = null;
+        FixtureFileWalk failingWalk = (repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory) =>
+        {
+            if (string.Equals(root, repositoryRoot, StringComparison.Ordinal))
+            {
+                pathPolicyWalkFailOnAccessErrors = failOnAccessErrors;
+                return new WalkResult([], [], new ScanError("FV-E002", "test-only injected walk failure"));
+            }
+
+            return SafeFileWalker.Walk(repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory);
+        };
+
+        ScanResult result = repository.Scan(fileWalk: failingWalk);
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.False(result.Completed);
+        Assert.True(pathPolicyWalkFailOnAccessErrors);
+        ScanError error = Assert.Single(result.Report.Errors);
+        Assert.Equal(FixtureVaultContract.PathPolicyTraversalErrorCode, error.Code);
+        Assert.Equal(FixtureVaultContract.PathPolicyTraversalErrorMessage, error.Message);
+        Assert.DoesNotContain(result.Report.Findings, item => item.RuleId == "FV008");
+    }
+
+    [Fact]
+    public void Inaccessible_path_policy_subtree_fails_closed_when_platform_can_create_it()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("unreadable/hidden.golden", "fixture outside roots\n");
+        string inaccessibleDirectory = Path.Combine(repository.Root, "unreadable");
+
+        if (!TryMakeDirectoryInaccessible(inaccessibleDirectory, out Action restore, out string skipReason))
+        {
+            throw SkipException.ForSkip(skipReason);
+        }
+
+        try
+        {
+            ScanResult result = repository.Scan();
+
+            Assert.Equal(2, result.ExitCode);
+            Assert.False(result.Completed);
+            Assert.Contains(result.Report.Errors, item => item.Code == FixtureVaultContract.PathPolicyTraversalErrorCode);
+            Assert.DoesNotContain(result.Report.Findings, item => item.RuleId == "FV008" && item.Path == "unreadable/hidden.golden");
+        }
+        finally
+        {
+            restore();
+        }
     }
 
     [Fact]
@@ -1155,6 +2592,11 @@ public sealed class FixtureVaultTests
         }
     }
 
+    private sealed class ThrowingSensitiveDataDetector(string canary) : ISensitiveDataDetector
+    {
+        public bool IsSensitive(string text) => throw new InvalidOperationException(canary);
+    }
+
     private sealed class TemporaryRepository : IDisposable
     {
         internal TemporaryRepository(bool createTestsDirectory = true)
@@ -1221,7 +2663,9 @@ public sealed class FixtureVaultTests
 
         internal ScanResult Scan(
             IReadOnlyList<string>? options = null,
-            GlobMatchBudget? matcherBudget = null)
+            GlobMatchBudget? matcherBudget = null,
+            IReadOnlyList<ISensitiveDataDetector>? additionalSensitiveDataDetectors = null,
+            FixtureFileWalk? fileWalk = null)
         {
             PolicyLoadResult policy = PolicyLoader.Load(Root);
             Assert.Null(policy.Error);
@@ -1239,18 +2683,29 @@ public sealed class FixtureVaultTests
                 policy.Policy!,
                 roots,
                 strictOverride: options?.Contains("--strict") == true,
-                matcherBudget: matcherBudget);
+                matcherBudget: matcherBudget,
+                additionalSensitiveDataDetectors: additionalSensitiveDataDetectors,
+                fileWalk: fileWalk);
         }
 
         internal int Run(
             string[] args,
             IUsageTelemetry telemetry,
             out string output,
-            out string error)
+            out string error,
+            IReadOnlyList<ISensitiveDataDetector>? additionalSensitiveDataDetectors = null,
+            FixtureFileWalk? fileWalk = null)
         {
             using var stdout = new StringWriter();
             using var stderr = new StringWriter();
-            int exitCode = FixtureVaultApplication.Run(args, Root, telemetry, stdout, stderr);
+            int exitCode = FixtureVaultApplication.Run(
+                args,
+                Root,
+                telemetry,
+                stdout,
+                stderr,
+                additionalSensitiveDataDetectors,
+                fileWalk);
             output = stdout.ToString();
             error = stderr.ToString();
             return exitCode;
@@ -1341,6 +2796,103 @@ public sealed class FixtureVaultTests
         }
     }
 
+    private static void CreateSymbolicFileOrSkip(string linkPath, string targetPath)
+    {
+        try
+        {
+            File.CreateSymbolicLink(linkPath, targetPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                throw SkipException.ForSkip(
+                    $"Windows symbolic-link capability is unavailable in this environment ({ex.GetType().Name}: {ex.Message}).");
+            }
+
+            throw;
+        }
+    }
+
+    private static byte[] DeclaredEncodingFixtureBytes(
+        string declaredEncoding,
+        string contentShape,
+        bool withSensitiveValue)
+    {
+        if (contentShape == "undecodable")
+        {
+            // Valid byte-order marks followed by bytes no supported encoding of that kind decodes.
+            byte[] sensitiveBytes = withSensitiveValue
+                ? Encoding.UTF8.GetBytes(SensitiveValue)
+                : [];
+            return declaredEncoding switch
+            {
+                "none" => [0xC3, 0x28, .. sensitiveBytes],
+                "utf-8" => [.. Encoding.UTF8.GetPreamble(), 0xC3, 0x28, .. sensitiveBytes],
+                "utf-16le" => [0xFF, 0xFE, 0x00, 0xD8, .. sensitiveBytes],
+                "utf-16be" => [0xFE, 0xFF, 0xD8, 0x00, .. sensitiveBytes],
+                "utf-32le" => [0xFF, 0xFE, 0x00, 0x00, 0x00, 0x00, 0x11, 0x00, .. sensitiveBytes],
+                "utf-32be" => [0x00, 0x00, 0xFE, 0xFF, 0x00, 0x11, 0x00, 0x00, .. sensitiveBytes],
+                _ => throw new ArgumentOutOfRangeException(nameof(declaredEncoding))
+            };
+        }
+
+        string text = withSensitiveValue
+            ? $"{{\"apiKey\":\"{SensitiveValue}\"}}\n"
+            : "{\"orderId\":\"1\"}\n";
+        if (contentShape == "nul")
+        {
+            text += "\0";
+        }
+
+        return declaredEncoding switch
+        {
+            "none" => Encoding.UTF8.GetBytes(text),
+            "utf-8" => Utf8Bom(text),
+            "utf-16le" or "utf-16be" or "utf-32le" or "utf-32be" => EncodeWithDeclaredBom(declaredEncoding, text),
+            _ => throw new ArgumentOutOfRangeException(nameof(declaredEncoding))
+        };
+    }
+
+    private static void AssertSensitiveValueIsPlanted(
+        byte[] fixtureBytes,
+        string contentShape,
+        bool withSensitiveValue)
+    {
+        if (contentShape == "undecodable" && withSensitiveValue)
+        {
+            byte[] sensitiveBytes = Encoding.UTF8.GetBytes(SensitiveValue);
+            Assert.True(
+                fixtureBytes.AsSpan().IndexOf(sensitiveBytes) >= 0,
+                "The undecodable sensitive fixture must contain the synthetic sensitive-value bytes.");
+        }
+    }
+
+    private static string DeclaredEncodingName(string declaredEncoding) => declaredEncoding switch
+    {
+        "utf-8" => ContentClassification.Utf8EncodingName,
+        "utf-16le" => ContentClassification.Utf16LittleEndianEncodingName,
+        "utf-16be" => ContentClassification.Utf16BigEndianEncodingName,
+        "utf-32le" => ContentClassification.Utf32LittleEndianEncodingName,
+        "utf-32be" => ContentClassification.Utf32BigEndianEncodingName,
+        _ => throw new ArgumentOutOfRangeException(nameof(declaredEncoding))
+    };
+
+    private static string ExpectedSkipReason(string declaredEncoding, string contentShape)
+    {
+        if (declaredEncoding == "none")
+        {
+            return contentShape == "nul"
+                ? FixtureVaultContract.UndeclaredNulContentSkippedReason
+                : FixtureVaultContract.UninspectableContentSkippedReason;
+        }
+
+        string name = DeclaredEncodingName(declaredEncoding);
+        return contentShape == "nul"
+            ? FixtureVaultContract.DeclaredNulContentSkippedReason(name)
+            : FixtureVaultContract.UndecodableDeclaredContentSkippedReason(name);
+    }
+
     private static string ReadCompatibilityFixture(string fileName)
     {
         string path = Path.Combine(AppContext.BaseDirectory, "fixtures", "v1", fileName);
@@ -1350,6 +2902,173 @@ public sealed class FixtureVaultTests
     private static byte[] Utf8Bom(string text) =>
         [.. Encoding.UTF8.GetPreamble(), .. Encoding.UTF8.GetBytes(text)];
 
+    private static byte[] EncodeWithDeclaredBom(string encodingName, string text)
+    {
+        Encoding encoding = encodingName switch
+        {
+            "utf-16le" => Encoding.Unicode,
+            "utf-16be" => Encoding.BigEndianUnicode,
+            "utf-32le" => Encoding.UTF32,
+            "utf-32be" => new UTF32Encoding(bigEndian: true, byteOrderMark: false),
+            _ => throw new ArgumentOutOfRangeException(nameof(encodingName))
+        };
+        byte[] preamble = encodingName switch
+        {
+            "utf-16le" => [0xFF, 0xFE],
+            "utf-16be" => [0xFE, 0xFF],
+            "utf-32le" => [0xFF, 0xFE, 0x00, 0x00],
+            "utf-32be" => [0x00, 0x00, 0xFE, 0xFF],
+            _ => throw new ArgumentOutOfRangeException(nameof(encodingName))
+        };
+        return [.. preamble, .. encoding.GetBytes(text)];
+    }
+
     private static byte[] PngBytes() =>
         [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0xFF];
+
+    private static byte[] EncodeWithoutBom(string encodingName, string text)
+    {
+        Encoding encoding = encodingName switch
+        {
+            "utf-16le" => new UnicodeEncoding(bigEndian: false, byteOrderMark: false, throwOnInvalidBytes: true),
+            "utf-16be" => new UnicodeEncoding(bigEndian: true, byteOrderMark: false, throwOnInvalidBytes: true),
+            "utf-32le" => new UTF32Encoding(bigEndian: false, byteOrderMark: false),
+            "utf-32be" => new UTF32Encoding(bigEndian: true, byteOrderMark: false),
+            _ => throw new ArgumentOutOfRangeException(nameof(encodingName))
+        };
+        return encoding.GetBytes(text);
+    }
+
+    private static bool TryMakeDirectoryInaccessible(
+        string path,
+        out Action restore,
+        out string skipReason)
+    {
+        restore = static () => { };
+        skipReason = "The test platform could not create a reliably inaccessible directory.";
+
+        if (OperatingSystem.IsWindows())
+        {
+            string? sid;
+            try
+            {
+                sid = System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value;
+            }
+            catch (Exception ex) when (ex is PlatformNotSupportedException or InvalidOperationException)
+            {
+                skipReason = $"Windows identity capability is unavailable ({ex.GetType().Name}).";
+                return false;
+            }
+
+            if (string.IsNullOrEmpty(sid) ||
+                !RunIcacls(path, "/inheritance:r") ||
+                !RunIcacls(path, "/deny", $"*{sid}:(OI)(CI)(RX)"))
+            {
+                skipReason = "icacls could not install a deny ACL for the current test identity.";
+                return false;
+            }
+
+            restore = () =>
+            {
+                _ = RunIcacls(path, "/remove:d", $"*{sid}");
+                _ = RunIcacls(path, "/reset", "/T", "/C");
+            };
+
+            try
+            {
+                _ = Directory.GetFileSystemEntries(path);
+                restore();
+                skipReason = "The installed Windows deny ACL did not prevent directory enumeration.";
+                return false;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return true;
+            }
+            catch (IOException)
+            {
+                restore();
+                skipReason = "The Windows ACL test directory could not be enumerated in a stable denied state.";
+                return false;
+            }
+        }
+
+        return TryMakePosixDirectoryInaccessible(path, out restore, out skipReason);
+    }
+
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    private static bool TryMakePosixDirectoryInaccessible(
+        string path,
+        out Action restore,
+        out string skipReason)
+    {
+        restore = static () => { };
+        skipReason = "The test platform could not create a reliably inaccessible directory.";
+        try
+        {
+            UnixFileMode originalMode = File.GetUnixFileMode(path);
+            File.SetUnixFileMode(path, UnixFileMode.None);
+            restore = () => File.SetUnixFileMode(path, originalMode);
+            try
+            {
+                _ = Directory.GetFileSystemEntries(path);
+                restore();
+                skipReason = "chmod 000 did not prevent directory enumeration for this test identity.";
+                return false;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return true;
+            }
+            catch (IOException)
+            {
+                restore();
+                skipReason = "The chmod 000 test directory could not be enumerated in a stable denied state.";
+                return false;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            skipReason = $"POSIX permission capability is unavailable ({ex.GetType().Name}).";
+            return false;
+        }
+    }
+
+    private static bool RunIcacls(string path, params string[] arguments)
+    {
+        try
+        {
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "icacls.exe",
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
+            };
+            process.StartInfo.ArgumentList.Add(path);
+            foreach (string argument in arguments)
+            {
+                process.StartInfo.ArgumentList.Add(argument);
+            }
+
+            if (!process.Start() || !process.WaitForExit(10_000))
+            {
+                return false;
+            }
+
+            return process.ExitCode == 0;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
+    }
+
+    private static void AssertNoCanary(string canary, string output, string error)
+    {
+        Assert.DoesNotContain(canary, output, StringComparison.Ordinal);
+        Assert.DoesNotContain(canary, error, StringComparison.Ordinal);
+    }
 }

@@ -41,7 +41,9 @@ internal static class FixtureVaultApplication
         string currentDirectory,
         IUsageTelemetry telemetry,
         TextWriter output,
-        TextWriter errorOutput)
+        TextWriter errorOutput,
+        IReadOnlyList<ISensitiveDataDetector>? additionalSensitiveDataDetectors = null,
+        FixtureFileWalk? fileWalk = null)
     {
         CommandLineParseResult parsed = CommandLineParser.Parse(args);
         if (parsed.Error is not null)
@@ -90,7 +92,9 @@ internal static class FixtureVaultApplication
                 repositoryRoot,
                 policyResult.Policy!,
                 parsed.Options.RootOverrides,
-                parsed.Options.StrictOverride);
+                parsed.Options.StrictOverride,
+                additionalSensitiveDataDetectors: additionalSensitiveDataDetectors,
+                fileWalk: fileWalk);
         }
         catch
         {
@@ -150,18 +154,19 @@ internal static class FixtureVaultApplication
                 errorOutput.WriteLine($"{scanError.Code}: {scanError.Message}");
             }
 
+            WriteFindings(result.Report.Findings, errorOutput);
+
+            if (result.Report.Skipped.Count > 0)
+            {
+                WriteSkippedDiagnostics(result.Report.Skipped, errorOutput);
+            }
+
             return result.ExitCode;
         }
 
         output.WriteLine("FixtureVault scan complete.");
         output.WriteLine($"{result.Report.FilesInspected} fixture file(s) inspected.");
-        foreach (Finding finding in result.Report.Findings)
-        {
-            output.WriteLine();
-            output.WriteLine($"{finding.RuleId} {finding.Disposition} {finding.Path}");
-            output.WriteLine(finding.Message);
-            output.WriteLine($"Remediation: {finding.Remediation}");
-        }
+        WriteFindings(result.Report.Findings, output);
 
         int blockingCount = result.Report.Findings.Count(finding => finding.Disposition == "block");
         output.WriteLine();
@@ -171,9 +176,35 @@ internal static class FixtureVaultApplication
 
         if (result.Report.Skipped.Count > 0)
         {
-            output.WriteLine($"{result.Report.Skipped.Count} check(s) skipped conservatively.");
+            WriteSkippedDiagnostics(result.Report.Skipped, output);
         }
 
         return result.ExitCode;
+    }
+
+    private static void WriteFindings(IReadOnlyList<Finding> findings, TextWriter writer)
+    {
+        foreach (Finding finding in findings)
+        {
+            writer.WriteLine();
+            writer.WriteLine($"{finding.RuleId} {finding.Disposition} {finding.Path}");
+            writer.WriteLine(finding.Message);
+            writer.WriteLine($"Remediation: {finding.Remediation}");
+        }
+    }
+
+    private static void WriteSkippedDiagnostics(IReadOnlyList<SkippedDiagnostic> skipped, TextWriter writer)
+    {
+        foreach (SkippedDiagnostic diagnostic in skipped)
+        {
+            writer.WriteLine(diagnostic switch
+            {
+                { Path: not null } => $"{diagnostic.Code} {diagnostic.Path}: {diagnostic.Reason}",
+                { Convention: not null } => $"{diagnostic.Code} {diagnostic.Convention}: {diagnostic.Reason}",
+                _ => $"{diagnostic.Code}: {diagnostic.Reason}"
+            });
+        }
+
+        writer.WriteLine($"{skipped.Count} check(s) skipped conservatively.");
     }
 }

@@ -129,7 +129,8 @@ jobs:
             throw "The packed FixtureVault 0.1.0 .snupkg was not found."
           }
 
-          pwsh -NoProfile -File ./scripts/inspect-package.ps1 -PackagePath $package.FullName -SymbolsPackagePath $symbols.FullName -ExpectedVersion 0.1.0
+          $expectedCommit = (git rev-parse HEAD).Trim()
+          pwsh -NoProfile -File ./scripts/inspect-package.ps1 -PackagePath $package.FullName -SymbolsPackagePath $symbols.FullName -ExpectedVersion 0.1.0 -ExpectedCommit $expectedCommit
 
       - name: Install and smoke-test packed tool
         shell: pwsh

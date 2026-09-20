@@ -5,6 +5,10 @@ param(
 
     [string]$ExpectedVersion = "0.1.0",
 
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{40}$')]
+    [string]$ExpectedCommit,
+
     [string]$SymbolsPackagePath
 )
 
@@ -24,6 +28,10 @@ function Assert-Contract {
 
 $resolvedPackage = (Resolve-Path -LiteralPath $PackagePath).Path
 Assert-Contract ([IO.Path]::GetExtension($resolvedPackage) -eq ".nupkg") "Package inspection requires a .nupkg file."
+$repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+$projectReadmePath = Join-Path $repositoryRoot "src/KeelMatrix.FixtureVault/README.md"
+Assert-Contract (Test-Path -LiteralPath $projectReadmePath -PathType Leaf) "Project-local package README is missing: $projectReadmePath"
+$expectedReadmeBytes = [IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $projectReadmePath).Path)
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive = [IO.Compression.ZipFile]::OpenRead($resolvedPackage)
@@ -41,6 +49,33 @@ try {
         "tools/net8.0/any/KeelMatrix.Telemetry.dll")) {
     Assert-Contract ($entries -contains $requiredEntry) "Expected package entry is missing: $requiredEntry"
     }
+
+    $readmeEntry = $archive.Entries | Where-Object { $_.FullName -eq "README.md" } | Select-Object -First 1
+    $readmeStream = $readmeEntry.Open()
+    try {
+        $packedReadmeBytes = [IO.MemoryStream]::new()
+        try {
+            $readmeStream.CopyTo($packedReadmeBytes)
+            $actualReadmeBytes = $packedReadmeBytes.ToArray()
+        }
+        finally {
+            $packedReadmeBytes.Dispose()
+        }
+    }
+    finally {
+        $readmeStream.Dispose()
+    }
+
+    $readmeMatches = $expectedReadmeBytes.Length -eq $actualReadmeBytes.Length
+    if ($readmeMatches) {
+        for ($index = 0; $index -lt $expectedReadmeBytes.Length; $index++) {
+            if ($expectedReadmeBytes[$index] -ne $actualReadmeBytes[$index]) {
+                $readmeMatches = $false
+                break
+            }
+        }
+    }
+    Assert-Contract $readmeMatches "Packed README.md does not match the project-local README at $projectReadmePath."
 
     $toolSettingsEntry = $archive.Entries | Where-Object { $_.FullName -eq "tools/net8.0/any/DotnetToolSettings.xml" } | Select-Object -First 1
     $toolSettingsReader = [IO.StreamReader]::new($toolSettingsEntry.Open())
@@ -129,6 +164,29 @@ try {
     $unexpectedAssemblies = @($toolAssemblies | Where-Object { $_ -notin $expectedAssemblies })
     Assert-Contract ($unexpectedAssemblies.Count -eq 0) "Unexpected tool dependency assemblies: $($unexpectedAssemblies -join ', ')"
     Assert-Contract ((($toolAssemblies | Sort-Object) -join ",") -eq (($expectedAssemblies | Sort-Object) -join ",")) "The tool dependency set must be FixtureVault, Redaction, and Telemetry only."
+
+    $repositoryCommit = [string]$metadata.repository.commit
+    Assert-Contract ($repositoryCommit -eq $ExpectedCommit) "Package repository commit is '$repositoryCommit', expected '$ExpectedCommit'."
+
+    $pdbEntry = $archive.Entries | Where-Object { $_.FullName -eq "tools/net8.0/any/KeelMatrix.FixtureVault.pdb" } | Select-Object -First 1
+    Assert-Contract ($null -ne $pdbEntry) "The package is missing the FixtureVault PDB required for SourceLink provenance inspection."
+    $pdbStream = $pdbEntry.Open()
+    try {
+        $pdbBytes = [IO.MemoryStream]::new()
+        try {
+            $pdbStream.CopyTo($pdbBytes)
+            $pdbText = [Text.Encoding]::UTF8.GetString($pdbBytes.ToArray())
+        }
+        finally {
+            $pdbBytes.Dispose()
+        }
+    }
+    finally {
+        $pdbStream.Dispose()
+    }
+
+    $expectedSourceLink = "https://raw.githubusercontent.com/KeelMatrix/FixtureVault/$ExpectedCommit/*"
+    Assert-Contract ($pdbText.Contains($expectedSourceLink, [StringComparison]::Ordinal)) "FixtureVault PDB SourceLink does not point at the expected repository commit '$ExpectedCommit'."
 
     Write-Host "Package contract passed: $([IO.Path]::GetFileName($resolvedPackage))"
 }

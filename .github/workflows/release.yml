@@ -20,6 +20,12 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check complete commit history
+        shell: bash
+        run: sh .githooks/check-history
 
       - name: Test release contract
         shell: pwsh
@@ -85,10 +91,12 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ steps.release-version.outputs.version }}"
+          $expectedCommit = (git rev-parse HEAD).Trim()
           pwsh -NoProfile -File ./scripts/inspect-package.ps1 `
             -PackagePath "./artifacts/packages/KeelMatrix.FixtureVault.$version.nupkg" `
             -SymbolsPackagePath "./artifacts/packages/KeelMatrix.FixtureVault.$version.snupkg" `
-            -ExpectedVersion $version
+            -ExpectedVersion $version `
+            -ExpectedCommit $expectedCommit
 
       - name: Smoke-test the release package
         shell: pwsh
