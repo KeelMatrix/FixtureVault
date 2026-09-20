@@ -87,26 +87,31 @@ function Invoke-CaseBatch {
 #!/bin/sh
 set -eu
 
-worker_limit=32
+worker_limit=16
 active_workers=0
 
 run_case() {
   expected=$1
   message_file=$2
   case_number=$3
+  mismatch_file=$4
   if timeout 5s ./.githooks/commit-msg "$message_file" >/dev/null 2>&1; then
     actual=0
   else
     actual=$?
   fi
-  printf '%s|%s|%s\n' "$case_number" "$expected" "$actual"
+  if [ "$actual" -ne "$expected" ]; then
+    printf '%s|%s|%s\n' "$case_number" "$expected" "$actual" > "$mismatch_file.$case_number"
+  fi
 }
 
+case_count=0
 while IFS='|' read -r expected message_file case_number; do
   if [ -z "$message_file" ]; then
     continue
   fi
-  run_case "$expected" "$message_file" "$case_number" &
+  case_count=$((case_count + 1))
+  run_case "$expected" "$message_file" "$case_number" "$2" &
   active_workers=$((active_workers + 1))
   if [ "$active_workers" -ge "$worker_limit" ]; then
     wait
@@ -114,11 +119,15 @@ while IFS='|' read -r expected message_file case_number; do
   fi
 done < "$1"
 wait
+printf '%s\n' "$case_count"
 '@
         [IO.File]::WriteAllText($runnerPath, $runner, [Text.Encoding]::ASCII)
     }
 
-    $command = "export PATH=/usr/bin:/bin:`$PATH; sh $runnerName $inputName"
+    $mismatchName = "$BatchName-mismatches.txt"
+    $mismatchPath = Join-Path $temporaryRoot $mismatchName
+    [IO.File]::WriteAllText($mismatchPath, "", [Text.Encoding]::ASCII)
+    $command = "export PATH=/usr/bin:/bin:`$PATH; sh $runnerName $inputName $mismatchName"
     $processInfo = [Diagnostics.ProcessStartInfo]::new()
     $processInfo.FileName = $shellPath
     $processInfo.WorkingDirectory = $temporaryRoot
@@ -135,11 +144,11 @@ wait
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $processInfo
     Assert-Contract $process.Start() "Could not start the $BatchName case runner."
-    $finished = $process.WaitForExit(150000)
+    $finished = $process.WaitForExit(45000)
     if (-not $finished) {
-        $process.Kill($true)
+        $process.Kill()
         $process.WaitForExit()
-        throw "$BatchName case runner exceeded its 150-second batch timeout."
+        throw "$BatchName case runner exceeded its 45-second batch timeout."
     }
 
     $output = $process.StandardOutput.ReadToEnd()
@@ -147,28 +156,41 @@ wait
     $exitCode = $process.ExitCode
     Assert-Contract ($exitCode -eq 0) "$BatchName case runner failed with exit $exitCode. Output: $output $errorOutput"
 
-    $results = [System.Collections.Generic.List[object]]::new()
+    $reportedCount = [int]$output.Trim()
+    Assert-Contract ($reportedCount -eq $Cases.Count) "$BatchName returned $reportedCount launched cases for $($Cases.Count) cases."
+    $actualByCase = @{}
     $mismatches = [System.Collections.Generic.List[string]]::new()
-    $outputLines = @($output -split "`r?`n" | Where-Object { $_ -ne "" })
-    foreach ($line in $outputLines) {
-        $fields = $line -split "\|"
-        Assert-Contract ($fields.Count -eq 3) "$BatchName case runner returned malformed output: $line"
-        $result = [pscustomobject]@{
-            CaseNumber = [int]$fields[0]
-            ExpectedExitCode = [int]$fields[1]
-            ActualExitCode = [int]$fields[2]
-        }
-        $null = $results.Add($result)
-        if ($result.ActualExitCode -eq 124 -or $result.ActualExitCode -eq 137) {
-            $script:timeoutCount++
-        }
-        if ($result.ActualExitCode -ne $result.ExpectedExitCode) {
-            $null = $mismatches.Add("case $($result.CaseNumber): expected $($result.ExpectedExitCode), got $($result.ActualExitCode)")
+    $mismatchFiles = @(Get-ChildItem -LiteralPath $temporaryRoot -File -Filter "$mismatchName.*")
+    foreach ($mismatchFile in $mismatchFiles) {
+        foreach ($line in [IO.File]::ReadAllLines($mismatchFile.FullName)) {
+            if ($line -eq "") {
+                continue
+            }
+            $fields = $line -split "\|"
+            Assert-Contract ($fields.Count -eq 3) "$BatchName case runner returned malformed output: $line"
+            $caseNumber = [int]$fields[0]
+            $expectedExitCode = [int]$fields[1]
+            $actualExitCode = [int]$fields[2]
+            $actualByCase[$caseNumber] = $actualExitCode
+            if ($actualExitCode -eq 124 -or $actualExitCode -eq 137) {
+                $script:timeoutCount++
+            }
+            $null = $mismatches.Add("case $caseNumber`: expected $expectedExitCode, got $actualExitCode")
         }
     }
 
-    Assert-Contract ($results.Count -eq $Cases.Count) "$BatchName returned $($results.Count) results for $($Cases.Count) cases."
     Assert-Contract ($mismatches.Count -eq 0) "$BatchName mismatches: $($mismatches -join '; ')"
+
+    $results = [System.Collections.Generic.List[object]]::new()
+    for ($index = 1; $index -le $Cases.Count; $index++) {
+        $expectedExitCode = $Cases[$index - 1].ExpectedExitCode
+        $actualExitCode = if ($actualByCase.ContainsKey($index)) { $actualByCase[$index] } else { $expectedExitCode }
+        $null = $results.Add([pscustomobject]@{
+                CaseNumber = $index
+                ExpectedExitCode = $expectedExitCode
+                ActualExitCode = $actualExitCode
+            })
+    }
 
     [pscustomobject]@{
         Count = $results.Count
@@ -320,6 +342,155 @@ $previousPositiveCorpus = @(
 )
 Assert-Contract ($previousPositiveCorpus.Count -eq 104) "The preserved positive corpus must contain exactly 104 lines."
 
+# Keep an immutable text manifest beside the executable corpus. The manifest
+# makes a removed, rewritten, or moved baseline line fail instead of relying
+# on a count and a claimed zero-change report.
+$previousPositiveCorpusManifest = @'
+Accept SHA-1 digests from legacy manifests
+Use SHA-224 for compatibility vectors
+Fix SHA-256 hashing
+Switch cache keys to SHA-384
+Retain SHA-512 integrity checks
+Parse SHA-3 digest labels
+Remove MD5 from the default integrity policy
+Compare HMAC-256 signatures in fixture metadata
+Preserve UTF-8 BOM handling in reports
+Decode UTF-16 fixture files with a byte-order mark
+Keep UTF-32 metadata round trips deterministic
+Verify UTF-16LE/BE and UTF-32LE/BE baseline decoding
+Preserve UTF-16/UTF-32 BOM detection
+Reject invalid Unicode surrogate pairs
+Normalize NFC filenames before comparison
+Handle Latin-1 fixture input explicitly
+Support HTTP-2 request fixtures
+Add HTTP-3 protocol coverage
+Require TLS-1 for legacy endpoint tests
+Upgrade TLS-1.1 negotiation checks
+Retain TLS-1.2 compatibility coverage
+Upgrade TLS-1.3 support
+Reject SSL-3 fallback
+Parse RFC-9110 headers
+Apply RFC-2119 requirement wording
+Normalize ISO-8601 timestamps
+Preserve IEEE-754 float round trips
+Read ECMA-335 metadata tokens
+Cover AES-128 encrypted fixtures
+Cover AES-256 encrypted fixtures
+Validate RSA-2048 key metadata
+Parse MIME-1 multipart boundaries
+Record CVE-2026-1234 advisory metadata
+Keep Git worktree paths repository relative
+Preserve merge-base detection for shallow clones
+Ignore untracked fixture outputs
+Handle detached HEAD during package smoke
+Run Linux and Windows fixture checks
+Cache NuGet restore packages in CI
+Fail CI on malformed policy input
+Publish test results after scan failures
+Retry transient restore metadata reads
+Normalize Windows path separators
+Guard Unix symlink traversal
+Reject relative path segments
+Preserve Unicode filenames on macOS
+Detect case collisions on NTFS
+Keep CRLF content stable across platforms
+Add KeelMatrix.FixtureVault package metadata
+Include README and license in the nupkg
+Verify SourceLink commit metadata
+Pack the net8.0 tool command
+Validate nuspec repository URL
+Keep snupkg symbols beside the package
+Parse SemVer 2.0 prerelease labels
+Reject invalid version ranges
+Align package and tool versions
+Compare major minor patch components
+Document version 0.1.0 defaults
+Bound fixture enumeration memory
+Avoid repeated UTF-8 allocations
+Hash large files in a single pass
+Measure scan throughput on cold disk
+Skip duplicate directory stats
+Return exit code 2 for configuration errors
+Keep malformed JSON diagnostics concise
+Fail closed when content is uninspectable
+Do not echo secret values in errors
+Preserve actionable remediation text
+Add FV007 sensitive-data diagnostics
+Document FV-E016 uninspectable content errors
+Keep net8.0 tool startup deterministic
+Guard case-insensitive extension matching
+Report unsupported fixture conventions
+Read policy files without mutation
+Keep JSON report schema versioned
+Separate console and JSON renderers
+Use bounded file-size checks
+Handle empty fixture roots gracefully
+Verify no fixture bytes leave the process
+Retain stable rule ordering
+Make scan output reproducible
+Use UTF-8 and UTF-16 encodings
+Preserve UTF-16LE byte order
+Preserve UTF-32BE byte order
+Hash with SHA-1
+Hash with SHA-256
+Hash with SHA-512
+Validate MD5-5 compatibility
+Negotiate HTTP-2
+Negotiate TLS-1.2
+Parse RFC-9110 metadata
+Apply ISO-8601 timestamps
+Read IEEE-754 values
+Inspect ECMA-335 metadata
+Encrypt with AES-256
+Authenticate with HMAC-256
+Load RSA-2048 keys
+Parse MIME-1 content
+Track CVE-2021-44228 advisories
+Run the net8.0 tool
+Report FV007 findings
+Report FV-E016 errors
+Skip FV-SKIP-ENCODING diagnostics
+'@ -split "`r?`n" | Where-Object { $_ -ne "" }
+Assert-Contract ($previousPositiveCorpusManifest.Count -eq $previousPositiveCorpus.Count) "The positive corpus manifest count changed."
+
+$corpusMoves = [System.Collections.Generic.List[string]]::new()
+$corpusRewrites = [System.Collections.Generic.List[string]]::new()
+$corpusRemovals = [System.Collections.Generic.List[string]]::new()
+$corpusAdditions = [System.Collections.Generic.List[string]]::new()
+for ($index = 0; $index -lt $previousPositiveCorpusManifest.Count; $index++) {
+    $expectedLine = $previousPositiveCorpusManifest[$index]
+    $actualLine = $previousPositiveCorpus[$index]
+    if ($actualLine -eq $expectedLine) {
+        continue
+    }
+    $actualIndex = [Array]::IndexOf($previousPositiveCorpusManifest, $actualLine)
+    $expectedIndex = [Array]::IndexOf($previousPositiveCorpus, $expectedLine)
+    if ($actualIndex -ge 0 -and $expectedIndex -ge 0) {
+        $null = $corpusMoves.Add("'$actualLine' moved from baseline position $($actualIndex + 1) to current position $($index + 1)")
+    }
+    else {
+        $null = $corpusRewrites.Add("baseline $($index + 1): '$expectedLine' -> '$actualLine'")
+    }
+}
+foreach ($line in $previousPositiveCorpusManifest) {
+    if (-not $previousPositiveCorpus.Contains($line)) {
+        $null = $corpusRemovals.Add($line)
+    }
+}
+foreach ($line in $previousPositiveCorpus) {
+    if (-not $previousPositiveCorpusManifest.Contains($line)) {
+        $null = $corpusAdditions.Add($line)
+    }
+}
+$corpusIntegrity = [pscustomobject]@{
+    Preserved = $previousPositiveCorpus.Count - $corpusMoves.Count - $corpusRewrites.Count - $corpusRemovals.Count
+    Moved = $corpusMoves.Count
+    Rewritten = $corpusRewrites.Count
+    Removed = $corpusRemovals.Count
+    Added = $corpusAdditions.Count
+}
+Assert-Contract (($corpusIntegrity.Moved + $corpusIntegrity.Rewritten + $corpusIntegrity.Removed) -eq 0) "The preserved positive corpus changed. Moves: $($corpusMoves -join '; '); rewrites: $($corpusRewrites -join '; '); removals: $($corpusRemovals -join '; ')"
+
 $additionalPositiveCorpus = @(
     "Document SHA-256/384 compatibility aliases"
     "Track net8.0.1 patch behavior"
@@ -351,6 +522,10 @@ for ($index = 0; $index -lt $previousPositiveCorpus.Count; $index++) {
 for ($index = 0; $index -lt $additionalPositiveCorpus.Count; $index++) {
     Add-TestCase -List $positiveCases -Name "positive-added-$($index + 1)" -Body $additionalPositiveCorpus[$index] -ExpectedExitCode 0
 }
+$bodyLabelLineBreaks = @("`n", "`r", "`r`n")
+foreach ($lineBreak in $bodyLabelLineBreaks) {
+    Add-TestCase -List $positiveCases -Name "positive-body-label-$($lineBreak.Length)" -Body ("Agent: parser role" + $lineBreak + "Continue ordinary body text") -ExpectedExitCode 0
+}
 
 $asciiPunctuation = @(
     '!', '"', '#', '$', '%', '&', "'", '(', ')', '*', '+', ',', '-', '.', '/',
@@ -370,8 +545,8 @@ $negativeLayouts = @(
     [pscustomobject]@{ Name = "vertical-tab"; Before = "`v"; After = "`v" }
     [pscustomobject]@{ Name = "whitespace-run"; Before = "  "; After = "  " }
 )
-$matrixLayouts = @($negativeLayouts[0], $negativeLayouts[1], $negativeLayouts[3])
-$matrixSuffixes = @("1", "12345678")
+$matrixLayouts = @($negativeLayouts)
+$matrixSuffixes = @("", "1", "12345678")
 
 foreach ($prefix in $internalPrefixes) {
     Add-TestCase -List $negativeCases -Name "prefix-alone-$prefix" -Body $prefix -ExpectedExitCode 1
@@ -382,41 +557,45 @@ foreach ($prefix in $internalPrefixes) {
         foreach ($suffix in $matrixSuffixes) {
             foreach ($layout in $matrixLayouts) {
                 $message = $prefix + $layout.Before + $separator + $layout.After + $suffix
-                Add-TestCase -List $matrixCases -Name "matrix-$prefix-$($layout.Name)-$suffix" -Body $message -ExpectedExitCode 1
+                Add-TestCase -List $matrixCases -Name "matrix-$prefix-$($layout.Name)-$suffix-$separator" -Body $message -ExpectedExitCode 1
             }
         }
     }
-    Add-TestCase -List $negativeCases -Name "keyword-led-reference-$prefix" -Body "refs $prefix-3" -ExpectedExitCode 1
-    Add-TestCase -List $negativeCases -Name "keyword-led-reference-line-$prefix" -Body ("refs`n" + $prefix + "`n-3") -ExpectedExitCode 1
+    foreach ($layout in $negativeLayouts) {
+        $keywordBefore = if ($layout.Name -eq "direct") { " " } else { $layout.Before }
+        $keywordAfter = if ($layout.Name -eq "direct") { " " } else { $layout.After }
+        Add-TestCase -List $negativeCases -Name "keyword-led-reference-$prefix-$($layout.Name)" -Body ("refs" + $keywordBefore + $prefix + $keywordAfter + "-3") -ExpectedExitCode 1
+    }
 }
 
 $internalVocabulary = @("paperclip", "codex", "chatgpt", "openai", "claude", "copilot", "gemini", "anthropic", "orchestration", "orchestrator")
 foreach ($word in $internalVocabulary) {
     Add-TestCase -List $negativeCases -Name "vocabulary-$word" -Body $word -ExpectedExitCode 1
     Add-TestCase -List $negativeCases -Name "vocabulary-case-$word" -Body ("Fix " + $word.ToUpperInvariant() + " metadata") -ExpectedExitCode 1
-    foreach ($separator in @(" ", "-", "_", ".", "/", " ", "—")) {
-        Add-TestCase -List $negativeCases -Name "vocabulary-boundary-$word" -Body ("Fix" + $separator + $word + $separator + "metadata") -ExpectedExitCode 1
+    foreach ($layout in $negativeLayouts) {
+        $wordBefore = if ($layout.Name -eq "direct") { " " } else { $layout.Before }
+        $wordAfter = if ($layout.Name -eq "direct") { " " } else { $layout.After }
+        Add-TestCase -List $negativeCases -Name "vocabulary-boundary-$word-$($layout.Name)" -Body ("Fix" + $wordBefore + $word + $wordAfter + "metadata") -ExpectedExitCode 1
     }
 }
 
 $trailerLabels = @("co-authored-by", "signed-off-by", "reviewed-by", "tested-by", "acked-by", "reported-by", "approved-by", "agent", "model", "prompt")
 $trailerLayouts = @("`n", "`r", "`r`n")
+$trailerValueLayouts = @(" ", "  ", "`t", " ", "`f", "`v", "—")
 foreach ($label in $trailerLabels) {
     foreach ($lineBreak in $trailerLayouts) {
-        Add-TestCase -List $negativeCases -Name "trailer-$label-$($lineBreak.Length)" -Body ("Update parser" + $lineBreak + $label + ": Example <example@example.com>") -ExpectedExitCode 1
+        foreach ($valueLayout in $trailerValueLayouts) {
+            Add-TestCase -List $negativeCases -Name "trailer-$label-$($lineBreak.Length)-$($valueLayout.Length)" -Body ("Update parser" + $lineBreak + $label + ":" + $valueLayout + "Example <example@example.com>") -ExpectedExitCode 1
+        }
     }
 }
 
 $phraseLayouts = @(" ", "  ", "`n", "`r", "`r`n", "`t", " ", "`f", "`v")
 $reviewPhrases = @("frontier", "review round", "review pass", "acceptance round", "acceptance pass")
 foreach ($phrase in $reviewPhrases) {
-    if ($phrase -eq "frontier") {
-        Add-TestCase -List $negativeCases -Name "review-$phrase" -Body $phrase -ExpectedExitCode 1
-    }
-    else {
-        foreach ($layout in $phraseLayouts) {
-            Add-TestCase -List $negativeCases -Name "review-$($phrase.Replace(' ', '-'))-$($layout.Length)" -Body $phrase.Replace(" ", $layout) -ExpectedExitCode 1
-        }
+    foreach ($layout in $phraseLayouts) {
+        $phraseBody = if ($phrase -eq "frontier") { "Use" + $layout + $phrase + $layout + "checks" } else { "Use" + $layout + $phrase.Replace(" ", $layout) + $layout + "checks" }
+        Add-TestCase -List $negativeCases -Name "review-$($phrase.Replace(' ', '-'))-$($layout.Length)" -Body $phraseBody -ExpectedExitCode 1
     }
 }
 
@@ -434,7 +613,7 @@ try {
 
     $positiveResult = Invoke-CaseBatch -Cases $positiveCases -BatchName "positive"
     $positiveCount = $positiveResult.Count
-    Assert-Contract ($positiveCount -eq $positiveCorpus.Count) "Positive corpus result count did not match the corpus."
+    Assert-Contract ($positiveCount -eq $positiveCases.Count) "Positive corpus result count did not match the corpus and targeted regressions."
 
     $negativeResult = Invoke-CaseBatch -Cases $negativeCases -BatchName "negative"
     $negativeCount = $negativeResult.Count
@@ -445,11 +624,12 @@ try {
     $matrixAcceptedCount = $acceptedCells.Count
     Assert-Contract ($matrixAcceptedCount -eq 0) "The generated internal-prefix matrix accepted $matrixAcceptedCount cells."
 
-    Write-Host "Positive corpus: preserved=104, added=$($additionalPositiveCorpus.Count), total=$positiveCount, all exit 0."
+    Write-Host "Positive corpus: preserved=$($previousPositiveCorpus.Count), added=$($additionalPositiveCorpus.Count), targeted=$($positiveCases.Count - $positiveCorpus.Count), corpus=$($positiveCorpus.Count), total=$positiveCount, all exit 0."
     Write-Host "Negative corpus: cases=$negativeCount, all exit 1."
     Write-Host "Generated matrix: cells=$matrixCount, accepted-cell list:"
     Write-Host "  (empty)"
-    Write-Host "Corpus integrity: preserved=104; moved=0; rewritten=0; added=$($additionalPositiveCorpus.Count)."
+    Write-Host "Corpus integrity: preserved=$($corpusIntegrity.Preserved); moved=$($corpusIntegrity.Moved); rewritten=$($corpusIntegrity.Rewritten); removed=$($corpusIntegrity.Removed); baseline-added=$($corpusIntegrity.Added); corpus-added=$($additionalPositiveCorpus.Count)."
+    Write-Host "Corpus moves: $($(if ($corpusMoves.Count -eq 0) { '(none)' } else { $corpusMoves -join '; ' }))"
 
     $init = Invoke-Git @("init", "--quiet")
     Assert-Contract ($init.ExitCode -eq 0) "Could not initialize the temporary history repository: $($init.Output -join [Environment]::NewLine)"

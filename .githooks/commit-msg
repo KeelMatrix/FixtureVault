@@ -33,7 +33,7 @@ if decision=$(LC_ALL=C awk \
     count = split(list, configured, /[[:space:]]+/)
     for (item = 1; item <= count; item++) {
       if (configured[item] != "") {
-        pattern = "(^|[^[:alnum:]])" tolower(configured[item]) "([0-9]+([^[:alnum:]]|$)|[^[:alnum:]]|$)"
+        pattern = "(^|[^[:alnum:]])" tolower(configured[item]) "([0-9]|[^[:alnum:]]|$)"
         if (text ~ pattern) {
           return 1
         }
@@ -65,11 +65,14 @@ if decision=$(LC_ALL=C awk \
     }
     return 0
   }
+  function is_trailer_line(text) {
+    return text ~ /^[A-Za-z][A-Za-z-]*:/
+  }
   function has_trailer(text, list, count, item, separator, name) {
-    if (text !~ /^[A-Za-z][A-Za-z-]*:/) {
+    if (!is_trailer_line(text)) {
       return 0
     }
-    separator = match(text, /:/)
+    separator = index(text, ":")
     name = tolower(substr(text, 1, separator - 1))
     count = split(list, configured, /[[:space:]]+/)
     for (item = 1; item <= count; item++) {
@@ -105,12 +108,14 @@ if decision=$(LC_ALL=C awk \
       last--
     }
     first = last
-    while (first > 1 && raw_line[first - 1] != "") {
+    while (first > 1 && is_trailer_line(raw_line[first - 1])) {
       first--
     }
-    for (item = first; item <= last; item++) {
-      if (has_trailer(raw_line[item], labels)) {
-        exit 3
+    if (is_trailer_line(raw_line[last])) {
+      for (item = first; item <= last; item++) {
+        if (has_trailer(raw_line[item], labels)) {
+          exit 3
+        }
       }
     }
 
