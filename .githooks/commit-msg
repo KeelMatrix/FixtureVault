@@ -159,7 +159,7 @@ if LC_ALL=C awk -v prefixes="$internal_prefixes" '
   function has_letter(value) { return value ~ /[A-Za-z]/ }
   function has_digit(value) { return value ~ /[0-9]/ }
   function has_separator_joined_digits(value) {
-    return value ~ /^[A-Za-z][^[:space:]]*[^A-Za-z0-9[:space:]][^[:space:]]*[0-9]+/
+    return value ~ /^[A-Za-z][A-Za-z0-9]*[^A-Za-z0-9[:space:]][^A-Za-z0-9[:space:]]*[0-9]+/
   }
   function numeric_continuation(value) {
     return has_digit(value) && value !~ /[A-Za-z]/
@@ -176,6 +176,18 @@ if LC_ALL=C awk -v prefixes="$internal_prefixes" '
       trimmed = substr(trimmed, 1, length(trimmed) - 1)
     }
     return trimmed != value && allowlisted(trimmed)
+  }
+  function allowlisted_prefix_numeric_tail(value, lower, base, tail) {
+    lower = tolower(value)
+    for (base in technical) {
+      if (index(lower, base) == 1) {
+        tail = substr(lower, length(base) + 1)
+        if (tail ~ /[^A-Za-z0-9[:space:]][^A-Za-z0-9[:space:]]*[0-9]+/) {
+          return 1
+        }
+      }
+    }
+    return 0
   }
   function violation() {
     exit 0
@@ -210,7 +222,7 @@ if LC_ALL=C awk -v prefixes="$internal_prefixes" '
       if (current == "") {
         continue
       }
-      if (has_separator_joined_digits(current) && !allowlisted_or_terminal_punctuation(current)) {
+      if ((has_separator_joined_digits(current) || allowlisted_prefix_numeric_tail(current)) && !allowlisted_or_terminal_punctuation(current)) {
         violation()
       }
     }
