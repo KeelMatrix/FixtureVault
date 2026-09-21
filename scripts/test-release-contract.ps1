@@ -114,6 +114,7 @@ Assert-Contract ($gitExitCode -eq 0 -and $script:RepositoryCommit -match '^[0-9a
 $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ("fixturevault-changelog-contract-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $fixtureRoot | Out-Null
 $fixtureChangelogPath = Join-Path $fixtureRoot "CHANGELOG.md"
+$contractRepositoryRoot = Join-Path $fixtureRoot "repository"
 $today = [DateTime]::UtcNow.ToString("yyyy-MM-dd")
 
 # Keep child output on separate raw streams. PowerShell's 2>&1 conversion renders
@@ -175,7 +176,7 @@ function Invoke-ChangelogContract {
         "-ChangelogPath", $fixtureChangelogPath,
         "-ExpectedPackageVersion", $PackageVersion,
         "-ExpectedCommit", $Commit,
-        "-RepositoryRoot", $repositoryRoot
+        "-RepositoryRoot", $contractRepositoryRoot
     )
 }
 
@@ -200,6 +201,18 @@ function Assert-ChangelogCase {
 }
 
 try {
+    # All changelog/README probes below intentionally run in an isolated clone
+    # of the exact candidate commit. The probes mutate their inputs to verify
+    # fail-closed behavior; mutating the active worktree would let concurrent
+    # runs observe synthetic versions and could leave tracked files modified
+    # when a process is interrupted.
+    & git clone --quiet --local --no-hardlinks --no-checkout $repositoryRoot $contractRepositoryRoot 2>&1 | Out-Null
+    $gitExitCode = $LASTEXITCODE
+    Assert-Contract ($gitExitCode -eq 0) "Could not create the isolated changelog contract repository."
+    & git -C $contractRepositoryRoot checkout --quiet --detach $script:RepositoryCommit 2>&1 | Out-Null
+    $gitExitCode = $LASTEXITCODE
+    Assert-Contract ($gitExitCode -eq 0) "Could not check out the isolated changelog contract repository."
+
     $env:GITHUB_OUTPUT = ""
     foreach ($invalidTag in @("v0.1", "v0.1.1", "release-v0.1.0", "v0.1.0\n")) {
         $env:RELEASE_TAG = $invalidTag
@@ -611,7 +624,7 @@ $($headingCase.Body)
         $budgetCase.StandardOutput.Contains("200000", [StringComparison]::Ordinal) -and
         $budgetCase.StandardOutput.Contains("200008", [StringComparison]::Ordinal)) "The target section token budget case did not fail with the expected budget and observed count on the stable output channel: $($budgetCase.Output)"
 
-    $readmePath = Join-Path $repositoryRoot "README.md"
+    $readmePath = Join-Path $contractRepositoryRoot "README.md"
     $originalReadme = [IO.File]::ReadAllText($readmePath)
     try {
         [IO.File]::WriteAllText($readmePath, @"
@@ -713,7 +726,7 @@ dotnet tool install --global KeelMatrix.FixtureVault \
         [IO.File]::WriteAllText($readmePath, $originalReadme, [Text.UTF8Encoding]::new($false))
     }
 
-    $projectReadmePath = Join-Path $repositoryRoot "src/KeelMatrix.FixtureVault/README.md"
+    $projectReadmePath = Join-Path $contractRepositoryRoot "src/KeelMatrix.FixtureVault/README.md"
     Assert-Contract (Test-Path -LiteralPath $projectReadmePath -PathType Leaf) "The project-local README is required for the version-consistency contract test."
     $originalProjectReadme = [IO.File]::ReadAllText($projectReadmePath)
     try {
@@ -735,13 +748,13 @@ dotnet tool install --global KeelMatrix.FixtureVault --version 0.2.0
         [IO.File]::WriteAllText($projectReadmePath, $originalProjectReadme, [Text.UTF8Encoding]::new($false))
     }
 
-    $trackedChangelogPath = Join-Path $repositoryRoot "CHANGELOG.md"
+    $trackedChangelogPath = Join-Path $contractRepositoryRoot "CHANGELOG.md"
     $realContractParameters = @{
         ExpectedVersion = "0.1.0"
         ExpectedPackageVersion = "0.1.0"
         ExpectedCommit = $script:RepositoryCommit
         ChangelogPath = $trackedChangelogPath
-        RepositoryRoot = $repositoryRoot
+        RepositoryRoot = $contractRepositoryRoot
     }
     $realChangelogResult = Invoke-PwshScript -ScriptPath $changelogScriptPath -Arguments @(
         "-ExpectedVersion", $realContractParameters.ExpectedVersion,
@@ -796,7 +809,7 @@ dotnet tool install --global KeelMatrix.FixtureVault --version 0.2.0
             "-ExpectedVersion", "0.1.0",
             "-ExpectedPackageVersion", "0.1.0",
             "-ExpectedCommit", $script:RepositoryCommit,
-            "-RepositoryRoot", $repositoryRoot
+            "-RepositoryRoot", $contractRepositoryRoot
         )
         Assert-Contract ($trackedMismatch.ExitCode -ne 0) "A tracked changelog modified after the checked-out commit passed the publication gate."
     }
