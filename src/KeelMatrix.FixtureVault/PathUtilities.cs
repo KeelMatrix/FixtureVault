@@ -1,5 +1,8 @@
 ﻿using System.Text;
 
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
 namespace KeelMatrix.FixtureVault;
 
 internal static class PathUtilities
@@ -214,11 +217,487 @@ internal static class PathUtilities
         return normalized.ToUpperInvariant();
     }
 
+    internal static string EscapeDiagnosticPath(string path)
+    {
+        var escaped = new StringBuilder(path.Length);
+        foreach (char character in path)
+        {
+            switch (character)
+            {
+                case '\0':
+                    escaped.Append("\\0");
+                    break;
+                case '\a':
+                    escaped.Append("\\a");
+                    break;
+                case '\b':
+                    escaped.Append("\\b");
+                    break;
+                case '\t':
+                    escaped.Append("\\t");
+                    break;
+                case '\n':
+                    escaped.Append("\\n");
+                    break;
+                case '\v':
+                    escaped.Append("\\v");
+                    break;
+                case '\f':
+                    escaped.Append("\\f");
+                    break;
+                case '\r':
+                    escaped.Append("\\r");
+                    break;
+                case '\u001b':
+                    escaped.Append("\\x1B");
+                    break;
+                case char control when char.IsControl(control) || control == '\u007f':
+                    escaped.Append("\\u").Append(((int)character).ToString("X4", System.Globalization.CultureInfo.InvariantCulture));
+                    break;
+                default:
+                    escaped.Append(character);
+                    break;
+            }
+        }
+
+        return escaped.ToString();
+    }
+
     private static string EnsureTrailingSeparator(string path)
     {
         return path.EndsWith(Path.DirectorySeparatorChar) || path.EndsWith(Path.AltDirectorySeparatorChar)
             ? path
             : path + Path.DirectorySeparatorChar;
+    }
+}
+
+internal enum SafeFileReadStatus
+{
+    Success,
+    Missing,
+    FileTooLarge,
+    TotalLimitExceeded,
+    Changed,
+    Unsafe,
+    Failed
+}
+
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000", Justification = "The opened stream is transferred to the caller on success and disposed on every failure path.")]
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Interoperability", "CA2101", Justification = "Unix path arguments use the runtime's UTF-8 narrow-string ABI on Linux and macOS.")]
+internal static class SafeFileReader
+{
+    private const int ReadBufferSize = 32 * 1024;
+    private const int UnixReadOnly = 0;
+    private const int LinuxNonBlocking = 0x800;
+    private const int LinuxCloseOnExec = 0x80000;
+    private const int LinuxDirectory = 0x10000;
+    private const int LinuxNoFollow = 0x20000;
+    private const int MacNonBlocking = 0x4;
+    private const int MacCloseOnExec = 0x01000000;
+    private const int MacDirectory = 0x00100000;
+    private const int MacNoFollow = 0x00000100;
+    private const int UnixFileTypeMask = 0xF000;
+    private const int UnixRegularFile = 0x8000;
+
+    internal static SafeFileReadStatus TryReadBytes(
+        string repositoryRoot,
+        string path,
+        long maximumBytes,
+        long? remainingTotalBytes,
+        out byte[] bytes,
+        Action? afterInitialLengthRead = null)
+    {
+        bytes = [];
+        if (maximumBytes < 0 || remainingTotalBytes is < 0)
+        {
+            return SafeFileReadStatus.Failed;
+        }
+
+        if (!TryOpenRegularFile(repositoryRoot, path, out FileStream? stream, out SafeFileReadStatus openStatus))
+        {
+            return openStatus;
+        }
+
+        FileStream fileStream = stream!;
+        using (fileStream)
+        {
+            long initialLength;
+            try
+            {
+                initialLength = fileStream.Length;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+            {
+                return SafeFileReadStatus.Failed;
+            }
+
+            afterInitialLengthRead?.Invoke();
+            SafeFileReadStatus initialLimit = CheckLimits(initialLength, maximumBytes, remainingTotalBytes);
+            if (initialLimit != SafeFileReadStatus.Success)
+            {
+                return initialLimit;
+            }
+
+            using var contents = new MemoryStream((int)initialLength);
+            byte[] buffer = new byte[ReadBufferSize];
+            long totalRead = 0;
+            try
+            {
+                while (true)
+                {
+                    int read = fileStream.Read(buffer, 0, buffer.Length);
+                    if (read == 0)
+                    {
+                        break;
+                    }
+
+                    totalRead += read;
+                    SafeFileReadStatus readLimit = CheckLimits(totalRead, maximumBytes, remainingTotalBytes);
+                    if (readLimit != SafeFileReadStatus.Success)
+                    {
+                        return readLimit;
+                    }
+
+                    contents.Write(buffer, 0, read);
+                }
+
+                long finalLength = fileStream.Length;
+                if (initialLength != totalRead || finalLength != totalRead)
+                {
+                    return SafeFileReadStatus.Changed;
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ObjectDisposedException)
+            {
+                return SafeFileReadStatus.Changed;
+            }
+
+            bytes = contents.ToArray();
+            return SafeFileReadStatus.Success;
+        }
+    }
+
+    private static SafeFileReadStatus CheckLimits(long length, long maximumBytes, long? remainingTotalBytes)
+    {
+        if (length > maximumBytes)
+        {
+            return remainingTotalBytes is not null && length > remainingTotalBytes.Value
+                ? SafeFileReadStatus.TotalLimitExceeded
+                : SafeFileReadStatus.FileTooLarge;
+        }
+
+        return remainingTotalBytes is not null && length > remainingTotalBytes.Value
+            ? SafeFileReadStatus.TotalLimitExceeded
+            : SafeFileReadStatus.Success;
+    }
+
+    private static bool TryOpenRegularFile(
+        string repositoryRoot,
+        string path,
+        out FileStream? stream,
+        out SafeFileReadStatus status)
+    {
+        stream = null;
+        status = SafeFileReadStatus.Unsafe;
+        bool success = false;
+        string fullRoot;
+        string fullPath;
+        string relativePath;
+        try
+        {
+            fullRoot = Path.GetFullPath(repositoryRoot);
+            fullPath = Path.GetFullPath(path);
+            if (!PathUtilities.IsWithin(fullRoot, fullPath) ||
+                fullPath.Equals(fullRoot, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            relativePath = Path.GetRelativePath(fullRoot, fullPath);
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException)
+        {
+            status = SafeFileReadStatus.Failed;
+            return false;
+        }
+
+        if (!TryValidateRegularFilePath(fullRoot, fullPath, relativePath, out bool exists))
+        {
+            status = exists ? SafeFileReadStatus.Unsafe : SafeFileReadStatus.Missing;
+            return false;
+        }
+
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            success = TryOpenUnixRegularFile(fullRoot, relativePath, out stream, out status);
+            return success;
+        }
+
+        SafeFileHandle? handle = null;
+        try
+        {
+            handle = File.OpenHandle(
+                fullPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite,
+                FileOptions.SequentialScan);
+            stream = new FileStream(handle!, FileAccess.Read, ReadBufferSize, isAsync: false);
+            if (!TryValidateRegularFilePath(fullRoot, fullPath, relativePath, out exists) ||
+                !exists ||
+                !TryGetFinalWindowsPath(handle!, out string resolvedPath) ||
+                !PathUtilities.IsWithin(fullRoot, resolvedPath))
+            {
+                stream.Dispose();
+                stream = null;
+                handle = null;
+                status = SafeFileReadStatus.Unsafe;
+                return false;
+            }
+
+            handle = null;
+            status = SafeFileReadStatus.Success;
+            success = true;
+            return true;
+        }
+        catch (FileNotFoundException)
+        {
+            status = SafeFileReadStatus.Missing;
+            return false;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            status = SafeFileReadStatus.Unsafe;
+            return false;
+        }
+        finally
+        {
+            handle?.Dispose();
+            if (!success)
+            {
+                stream?.Dispose();
+                stream = null;
+            }
+        }
+    }
+
+    private static bool TryValidateRegularFilePath(
+        string fullRoot,
+        string fullPath,
+        string relativePath,
+        out bool exists)
+    {
+        exists = false;
+        var root = new DirectoryInfo(fullRoot);
+        if (!TryReadFileSystemAttributes(root, out FileAttributes rootAttributes, out bool rootExists) ||
+            !rootExists ||
+            IsReparse(rootAttributes, root))
+        {
+            return false;
+        }
+
+        string[] components = relativePath.Split(
+            [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+            StringSplitOptions.RemoveEmptyEntries);
+        string currentPath = fullRoot;
+        for (int index = 0; index < components.Length; index++)
+        {
+            currentPath = Path.Combine(currentPath, components[index]);
+            FileSystemInfo entry = index == components.Length - 1
+                ? new FileInfo(currentPath)
+                : new DirectoryInfo(currentPath);
+            if (!TryReadFileSystemAttributes(entry, out FileAttributes attributes, out bool entryExists))
+            {
+                return false;
+            }
+
+            if (!entryExists)
+            {
+                return false;
+            }
+
+            exists = true;
+            if (IsReparse(attributes, entry) ||
+                index < components.Length - 1 && (entry is not DirectoryInfo || (attributes & FileAttributes.Directory) == 0) ||
+                index == components.Length - 1 && (entry is DirectoryInfo || (attributes & FileAttributes.Directory) != 0))
+            {
+                return false;
+            }
+        }
+
+        return components.Length > 0;
+    }
+
+    private static bool TryReadFileSystemAttributes(FileSystemInfo entry, out FileAttributes attributes, out bool exists)
+    {
+        try
+        {
+            attributes = entry.Attributes;
+            exists = entry.Exists;
+            return true;
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            attributes = default;
+            exists = false;
+            return false;
+        }
+    }
+
+    private static bool IsReparse(FileAttributes attributes, FileSystemInfo entry) =>
+        (attributes & FileAttributes.ReparsePoint) != 0 || entry.LinkTarget is not null;
+
+    [DllImport("libc", EntryPoint = "open", CharSet = CharSet.Ansi, SetLastError = true)]
+    private static extern int UnixOpen([MarshalAs(UnmanagedType.LPStr)] string path, int flags);
+
+    [DllImport("libc", EntryPoint = "openat", CharSet = CharSet.Ansi, SetLastError = true)]
+    private static extern int UnixOpenAt(int directoryFileDescriptor, [MarshalAs(UnmanagedType.LPStr)] string path, int flags);
+
+    [DllImport("libc", EntryPoint = "lstat", CharSet = CharSet.Ansi, SetLastError = true)]
+    private static extern int UnixLStat([MarshalAs(UnmanagedType.LPStr)] string path, IntPtr buffer);
+
+    [DllImport("libc", EntryPoint = "fstat", SetLastError = true)]
+    private static extern int UnixFStat(int fileDescriptor, IntPtr buffer);
+
+    private static bool TryOpenUnixRegularFile(
+        string fullRoot,
+        string relativePath,
+        out FileStream? stream,
+        out SafeFileReadStatus status)
+    {
+        stream = null;
+        status = SafeFileReadStatus.Unsafe;
+        int closeOnExec = OperatingSystem.IsMacOS() ? MacCloseOnExec : LinuxCloseOnExec;
+        int directory = OperatingSystem.IsMacOS() ? MacDirectory : LinuxDirectory;
+        int noFollow = OperatingSystem.IsMacOS() ? MacNoFollow : LinuxNoFollow;
+        int nonBlocking = OperatingSystem.IsMacOS() ? MacNonBlocking : LinuxNonBlocking;
+        int directoryFlags = closeOnExec | directory | noFollow;
+        int rootDescriptor = UnixOpen(fullRoot, UnixReadOnly | directoryFlags);
+        if (rootDescriptor < 0)
+        {
+            return false;
+        }
+
+        var directoryHandles = new List<SafeFileHandle>
+        {
+            new SafeFileHandle((IntPtr)rootDescriptor, ownsHandle: true)
+        };
+        try
+        {
+            string[] components = relativePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            SafeFileHandle current = directoryHandles[0];
+            for (int index = 0; index < components.Length - 1; index++)
+            {
+                int descriptor = UnixOpenAt(current.DangerousGetHandle().ToInt32(), components[index], UnixReadOnly | directoryFlags);
+                if (descriptor < 0)
+                {
+                    return false;
+                }
+
+                var handle = new SafeFileHandle((IntPtr)descriptor, ownsHandle: true);
+                directoryHandles.Add(handle);
+                current = handle;
+            }
+
+            if (!IsUnixRegularPath(Path.Combine(fullRoot, relativePath)))
+            {
+                return false;
+            }
+
+            int fileFlags = UnixReadOnly | closeOnExec | noFollow | nonBlocking;
+            int fileDescriptor = UnixOpenAt(current.DangerousGetHandle().ToInt32(), components[^1], fileFlags);
+            if (fileDescriptor < 0)
+            {
+                return false;
+            }
+
+            SafeFileHandle? fileHandle = new SafeFileHandle((IntPtr)fileDescriptor, ownsHandle: true);
+            try
+            {
+                if (!IsUnixRegularFile(fileDescriptor))
+                {
+                    return false;
+                }
+
+                stream = new FileStream(fileHandle, FileAccess.Read, ReadBufferSize, isAsync: false);
+                fileHandle = null;
+                status = SafeFileReadStatus.Success;
+                return true;
+            }
+            finally
+            {
+                fileHandle?.Dispose();
+            }
+        }
+        finally
+        {
+            foreach (SafeFileHandle handle in directoryHandles)
+            {
+                handle.Dispose();
+            }
+        }
+    }
+
+    private static bool IsUnixRegularPath(string path)
+    {
+        IntPtr statBuffer = Marshal.AllocHGlobal(256);
+        try
+        {
+            return UnixLStat(path, statBuffer) == 0 && IsRegularMode(ReadUnixMode(statBuffer));
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(statBuffer);
+        }
+    }
+
+    private static bool IsUnixRegularFile(int fileDescriptor)
+    {
+        IntPtr statBuffer = Marshal.AllocHGlobal(256);
+        try
+        {
+            return UnixFStat(fileDescriptor, statBuffer) == 0 && IsRegularMode(ReadUnixMode(statBuffer));
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(statBuffer);
+        }
+    }
+
+    private static int ReadUnixMode(IntPtr statBuffer) => OperatingSystem.IsMacOS()
+        ? Marshal.ReadInt16(statBuffer, 4)
+        : Marshal.ReadInt32(statBuffer, 24);
+
+    private static bool IsRegularMode(int mode) => (mode & UnixFileTypeMask) == UnixRegularFile;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetFinalPathNameByHandle(
+        SafeFileHandle fileHandle,
+        [Out] char[] path,
+        uint pathLength,
+        uint flags);
+
+    private static bool TryGetFinalWindowsPath(SafeFileHandle handle, out string path)
+    {
+        path = string.Empty;
+        char[] buffer = new char[512];
+        uint length = GetFinalPathNameByHandle(handle, buffer, (uint)buffer.Length, 0);
+        if (length == 0 || length >= buffer.Length)
+        {
+            return false;
+        }
+
+        path = new string(buffer, 0, (int)length);
+        if (path.StartsWith("\\\\?\\UNC\\", StringComparison.OrdinalIgnoreCase))
+        {
+            path = "\\\\" + path[8..];
+        }
+        else if (path.StartsWith("\\\\?\\", StringComparison.Ordinal))
+        {
+            path = path[4..];
+        }
+
+        return true;
     }
 }
 
@@ -311,10 +790,62 @@ internal static class SafeFileWalker
         while (pending.Count > 0)
         {
             DirectoryInfo directory = pending.Pop();
-            FileSystemInfo[] entries;
             try
             {
-                entries = directory.GetFileSystemInfos();
+                foreach (FileSystemInfo entry in directory.EnumerateFileSystemInfos())
+                {
+                    if (!IsWithinEntryLimit(ref entriesSeen))
+                    {
+                        return new WalkResult(files, reparsePaths, new ScanError(
+                            "FV-E003",
+                            "The scan exceeded its filesystem entry safety limit."));
+                    }
+
+                    FileAttributes attributes;
+                    try
+                    {
+                        attributes = entry.Attributes;
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FileNotFoundException)
+                    {
+                        if (!failOnAccessErrors)
+                        {
+                            continue;
+                        }
+
+                        return new WalkResult(files, reparsePaths, new ScanError(
+                            "FV-E002",
+                            "A configured fixture root could not be inspected completely."));
+                    }
+
+                    string relativePath = PathUtilities.NormalizeRelative(repositoryRoot, entry.FullName);
+                    if ((attributes & FileAttributes.ReparsePoint) != 0)
+                    {
+                        reparsePaths.Add(relativePath);
+                        continue;
+                    }
+
+                    if (entry is DirectoryInfo childDirectory)
+                    {
+                        GlobMatchStatus directoryStatus = shouldPruneDirectory?.Invoke(relativePath) ?? GlobMatchStatus.NoMatch;
+                        if (directoryStatus == GlobMatchStatus.Failure)
+                        {
+                            return new WalkResult(
+                                files,
+                                reparsePaths,
+                                new ScanError(FixtureVaultContract.IgnoredPathMatchingErrorCode, "Ignored path matching could not be completed safely."));
+                        }
+
+                        if (directoryStatus != GlobMatchStatus.Match)
+                        {
+                            pending.Push(childDirectory);
+                        }
+                    }
+                    else
+                    {
+                        files.Add(new SafeFileEntry(entry.FullName, relativePath));
+                    }
+                }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DirectoryNotFoundException)
             {
@@ -326,84 +857,6 @@ internal static class SafeFileWalker
                 return new WalkResult(files, reparsePaths, new ScanError(
                     "FV-E002",
                     "A configured fixture root could not be inspected completely."));
-            }
-
-            foreach (FileSystemInfo entry in entries)
-            {
-                FileAttributes attributes;
-                try
-                {
-                    attributes = entry.Attributes;
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FileNotFoundException)
-                {
-                    if (!failOnAccessErrors)
-                    {
-                        if (!IsWithinEntryLimit(ref entriesSeen))
-                        {
-                            return new WalkResult(files, reparsePaths, new ScanError(
-                                "FV-E003",
-                                "The scan exceeded its filesystem entry safety limit."));
-                        }
-
-                        continue;
-                    }
-
-                    return new WalkResult(files, reparsePaths, new ScanError(
-                        "FV-E002",
-                        "A configured fixture root could not be inspected completely."));
-                }
-
-                string relativePath = PathUtilities.NormalizeRelative(repositoryRoot, entry.FullName);
-                if ((attributes & FileAttributes.ReparsePoint) != 0)
-                {
-                    if (!IsWithinEntryLimit(ref entriesSeen))
-                    {
-                        return new WalkResult(files, reparsePaths, new ScanError(
-                            "FV-E003",
-                            "The scan exceeded its filesystem entry safety limit."));
-                    }
-
-                    reparsePaths.Add(relativePath);
-                    continue;
-                }
-
-                if (entry is DirectoryInfo childDirectory)
-                {
-                    GlobMatchStatus directoryStatus = shouldPruneDirectory?.Invoke(relativePath) ?? GlobMatchStatus.NoMatch;
-                    if (directoryStatus == GlobMatchStatus.Failure)
-                    {
-                        return new WalkResult(
-                            files,
-                            reparsePaths,
-                            new ScanError(FixtureVaultContract.IgnoredPathMatchingErrorCode, "Ignored path matching could not be completed safely."));
-                    }
-
-                    if (directoryStatus == GlobMatchStatus.Match)
-                    {
-                        continue;
-                    }
-
-                    if (!IsWithinEntryLimit(ref entriesSeen))
-                    {
-                        return new WalkResult(files, reparsePaths, new ScanError(
-                            "FV-E003",
-                            "The scan exceeded its filesystem entry safety limit."));
-                    }
-
-                    pending.Push(childDirectory);
-                }
-                else
-                {
-                    if (!IsWithinEntryLimit(ref entriesSeen))
-                    {
-                        return new WalkResult(files, reparsePaths, new ScanError(
-                            "FV-E003",
-                            "The scan exceeded its filesystem entry safety limit."));
-                    }
-
-                    files.Add(new SafeFileEntry(entry.FullName, relativePath));
-                }
             }
         }
 

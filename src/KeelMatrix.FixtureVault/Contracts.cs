@@ -21,6 +21,8 @@ internal static class FixtureVaultContract
     internal const string PathPolicyTraversalErrorMessage = "Repository path-policy discovery could not be completed safely.";
     internal const string UninspectableContentErrorCode = "FV-E016";
     internal const string UninspectableContentErrorMessage = "Content inspection could not be completed because no encoding suitable for inspection could be established.";
+    internal const string DiagnosticBudgetErrorCode = "FV-E017";
+    internal const string DiagnosticBudgetErrorMessage = "The scan exceeded its diagnostic safety limit before a trustworthy report could be produced.";
     internal const string UninspectableContentSkippedCode = "FV-SKIP-ENCODING";
     internal const string UninspectableContentSkippedReason = "Content-dependent checks, including sensitive-data detection, did not run for this fixture because no encoding suitable for content inspection could be established.";
     internal const string UndeclaredNulContentSkippedReason = "Content-dependent checks, including sensitive-data detection, did not run for this fixture because its decoded content contains a NUL (U+0000) character and no byte-order mark declares a text encoding, so the decoded text cannot be trusted.";
@@ -180,6 +182,9 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
     private static readonly Regex EmptyCredentialAssignment = new(
         "^\\s*[^=;&\\s]+\\s*=\\s*(?:\\\"\\s*\\\"|'\\s*')?\\s*$",
         RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
+    private static readonly Regex ConnectionStringCredential = new(
+        "\\b(?<name>Password|Pwd)\\s*=\\s*(?<value>\\\"[^\\\"]*\\\"|'[^']*'|[^;]*)",
+        RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
 
     public bool IsSensitive(string text)
     {
@@ -199,6 +204,11 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
 
     private bool IsSensitiveLine(string text)
     {
+        if (redactor is ConnectionStringPasswordRedactor)
+        {
+            return HasNonEmptyConnectionStringCredential(text);
+        }
+
         if (redactor is CookieRedactor && HasOnlyEmptyOrAlreadyRedactedCookieValues(text))
         {
             return false;
@@ -253,6 +263,19 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         return changedInput.Length > 0 &&
             !AlreadyRedactedValue.IsMatch(changedInput) &&
             !EmptyCredentialAssignment.IsMatch(changedInput);
+    }
+
+    private static bool HasNonEmptyConnectionStringCredential(string text)
+    {
+        foreach (Match match in ConnectionStringCredential.Matches(text))
+        {
+            if (!IsEmptyOrAlreadyRedactedValue(match.Groups["value"].Value))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool HasOnlyEmptyOrAlreadyRedactedCookieValues(string text)

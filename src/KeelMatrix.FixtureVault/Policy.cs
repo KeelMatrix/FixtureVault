@@ -7,7 +7,7 @@ internal sealed record PolicyLoadResult(FixtureVaultPolicy? Policy, ScanError? E
 
 internal static class PolicyLoader
 {
-    internal static PolicyLoadResult Load(string repositoryRoot)
+    internal static PolicyLoadResult Load(string repositoryRoot, Action? afterInitialLengthRead = null)
     {
         string path = Path.Combine(repositoryRoot, FixtureVaultContract.PolicyFileName);
         if (!PathUtilities.TryIsLinkedOrReparseFile(path, out bool isLinkedOrReparse) || isLinkedOrReparse)
@@ -26,14 +26,27 @@ internal static class PolicyLoader
 
         try
         {
-            var fileInfo = new FileInfo(path);
-            if (fileInfo.Length <= 0 || fileInfo.Length > 64 * 1024)
+            SafeFileReadStatus readStatus = SafeFileReader.TryReadBytes(
+                repositoryRoot,
+                path,
+                64 * 1024,
+                remainingTotalBytes: null,
+                out byte[] policyBytes,
+                afterInitialLengthRead);
+            if (readStatus == SafeFileReadStatus.FileTooLarge ||
+                readStatus == SafeFileReadStatus.Success && policyBytes.Length == 0)
             {
                 return InvalidPolicy();
             }
 
-            string json = File.ReadAllText(path);
-            var policy = JsonSerializer.Deserialize<FixtureVaultPolicy>(json, FixtureVaultContract.JsonOptions);
+            if (readStatus != SafeFileReadStatus.Success)
+            {
+                return new PolicyLoadResult(null, new ScanError(
+                    "FV-E004",
+                    "The policy file could not be read safely."));
+            }
+
+            var policy = JsonSerializer.Deserialize<FixtureVaultPolicy>(policyBytes, FixtureVaultContract.JsonOptions);
             string? validationError = null;
             if (policy is null || !TryValidate(policy, out validationError))
             {

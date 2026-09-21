@@ -8,6 +8,7 @@ namespace KeelMatrix.FixtureVault;
 internal sealed class FixtureScanner
 {
     private const long MaximumTotalBytes = 128 * 1024 * 1024;
+    private const int MaximumCollisionPaths = 1_024;
     private static readonly string[] SupportedConventions =
         ["verify", "snapshooter", "generic", "fixturevault-manifest"];
     private static readonly string[] KnownBinaryExtensions =
@@ -22,7 +23,8 @@ internal sealed class FixtureScanner
         GlobMatchBudget? matcherBudget = null,
         IReadOnlyList<ISensitiveDataDetector>? additionalSensitiveDataDetectors = null,
         FixtureFileWalk? fileWalk = null,
-        Func<byte[], ContentClassification>? contentClassifier = null)
+        Func<byte[], ContentClassification>? contentClassifier = null,
+        Action? afterManifestInitialLengthRead = null)
     {
         var findings = new List<Finding>();
         var skipped = new List<SkippedDiagnostic>();
@@ -130,9 +132,14 @@ internal sealed class FixtureScanner
             return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
         }
 
-        AddCaseCollisionFindings(fixtureFiles, policy, findings);
+        ScanError? collisionError = AddCaseCollisionFindings(fixtureFiles, policy, findings);
+        if (collisionError is not null)
+        {
+            errors.Add(collisionError);
+            return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
+        }
 
-        ManifestLoadResult manifest = LoadManifest(repositoryRoot, policy);
+        ManifestLoadResult manifest = LoadManifest(repositoryRoot, policy, afterManifestInitialLengthRead);
         if (manifest.Error is not null)
         {
             errors.Add(manifest.Error);
@@ -176,18 +183,13 @@ internal sealed class FixtureScanner
                     "Review it and either approve it through the existing framework or remove it.");
             }
 
-            if (!TryGetFileLength(file.FullPath, out long length))
-            {
-                errors.Add(new ScanError("FV-E009", "A fixture file could not be inspected safely."));
-                return CompleteWithErrors(
-                    errors,
-                    strict,
-                    fixtureFiles.Count(fileEntry => fileEntry.RelativePath != string.Empty),
-                    findings,
-                    skipped);
-            }
-
-            if (length > policy.MaxFileBytes)
+            SafeFileReadStatus readStatus = SafeFileReader.TryReadBytes(
+                repositoryRoot,
+                file.FullPath,
+                policy.MaxFileBytes,
+                MaximumTotalBytes - totalBytesRead,
+                out byte[] bytes);
+            if (readStatus == SafeFileReadStatus.FileTooLarge)
             {
                 AddFinding(
                     findings,
@@ -199,19 +201,19 @@ internal sealed class FixtureScanner
                 continue;
             }
 
-            if (totalBytesRead + length > MaximumTotalBytes)
+            if (readStatus == SafeFileReadStatus.TotalLimitExceeded)
             {
                 errors.Add(new ScanError("FV-E010", "The scan exceeded its total byte safety limit."));
                 return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
             }
 
-            if (!TryReadBytes(file.FullPath, length, out byte[] bytes))
+            if (readStatus != SafeFileReadStatus.Success)
             {
                 errors.Add(new ScanError("FV-E009", "A fixture file could not be inspected safely."));
                 return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
             }
 
-            totalBytesRead += length;
+            totalBytesRead += bytes.LongLength;
             ScanError? contentError = InspectContent(
                 file,
                 bytes,
@@ -302,39 +304,58 @@ internal sealed class FixtureScanner
         }
     }
 
-    private static void AddCaseCollisionFindings(
+    private static ScanError? AddCaseCollisionFindings(
         IReadOnlyList<SafeFileEntry> files,
         FixtureVaultPolicy policy,
         ICollection<Finding> findings)
     {
-        var groups = files.GroupBy(file => PathUtilities.NormalizeComparisonPath(file.RelativePath), StringComparer.Ordinal);
-        foreach (IGrouping<string, SafeFileEntry> group in groups)
+        var groups = new Dictionary<string, List<SafeFileEntry>>(StringComparer.Ordinal);
+        foreach (SafeFileEntry file in files)
         {
-            List<SafeFileEntry> collisions = group
-                .GroupBy(file => file.RelativePath, StringComparer.Ordinal)
-                .Select(grouping => grouping.First())
-                .OrderBy(file => file.RelativePath, StringComparer.Ordinal)
-                .ToList();
+            string key = PathUtilities.NormalizeComparisonPath(file.RelativePath);
+            if (!groups.TryGetValue(key, out List<SafeFileEntry>? collisions))
+            {
+                collisions = [];
+                groups.Add(key, collisions);
+            }
+
+            if (collisions.Count >= MaximumCollisionPaths)
+            {
+                return new ScanError(
+                    FixtureVaultContract.DiagnosticBudgetErrorCode,
+                    FixtureVaultContract.DiagnosticBudgetErrorMessage);
+            }
+
+            collisions.Add(file);
+        }
+
+        foreach (List<SafeFileEntry> collisions in groups.Values)
+        {
             if (collisions.Count < 2)
             {
                 continue;
             }
 
-            string names = string.Join(", ", collisions.Select(file => file.RelativePath));
-            foreach (SafeFileEntry collision in collisions)
+            string message = $"This fixture path case-collides with another fixture path in a group of {collisions.Count} paths.";
+            foreach (SafeFileEntry collision in collisions.OrderBy(file => file.RelativePath, StringComparer.Ordinal))
             {
                 AddFinding(
                     findings,
                     policy,
                     "FV003",
                     collision.RelativePath,
-                    $"This fixture path case-collides with another fixture path: {names}.",
+                    message,
                     "Rename one path so its repository-relative spelling is unique across case-sensitive and case-insensitive filesystems.");
             }
         }
+
+        return null;
     }
 
-    private static ManifestLoadResult LoadManifest(string repositoryRoot, FixtureVaultPolicy policy)
+    private static ManifestLoadResult LoadManifest(
+        string repositoryRoot,
+        FixtureVaultPolicy policy,
+        Action? afterInitialLengthRead = null)
     {
         if (!HasConvention(policy, "fixturevault-manifest"))
         {
@@ -358,8 +379,14 @@ internal sealed class FixtureScanner
 
         try
         {
-            var fileInfo = new FileInfo(path);
-            if (fileInfo.Length <= 0 || fileInfo.Length > 64 * 1024)
+            SafeFileReadStatus readStatus = SafeFileReader.TryReadBytes(
+                repositoryRoot,
+                path,
+                64 * 1024,
+                remainingTotalBytes: null,
+                out byte[] manifestBytes,
+                afterInitialLengthRead);
+            if (readStatus != SafeFileReadStatus.Success)
             {
                 return new ManifestLoadResult(null, new ScanError(
                     "FV-E011",
@@ -367,7 +394,7 @@ internal sealed class FixtureScanner
             }
 
             var manifest = JsonSerializer.Deserialize<FixtureVaultManifest>(
-                File.ReadAllText(path),
+                manifestBytes,
                 FixtureVaultContract.JsonOptions);
             if (manifest is null || manifest.Version != FixtureVaultContract.PolicySchemaVersion ||
                 manifest.ActiveBaselines is null || manifest.ActiveBaselines.Count > 100_000)
@@ -783,38 +810,6 @@ internal sealed class FixtureScanner
                 null,
                 path,
                 "Reparse points and symbolic links are not followed."));
-        }
-    }
-
-    private static bool TryGetFileLength(string path, out long length)
-    {
-        try
-        {
-            var fileInfo = new FileInfo(path);
-            length = fileInfo.Length;
-            return fileInfo.Exists;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FileNotFoundException)
-        {
-            length = 0;
-            return false;
-        }
-    }
-
-    private static bool TryReadBytes(string path, long length, out byte[] bytes)
-    {
-        bytes = [];
-        try
-        {
-            bytes = new byte[checked((int)length)];
-            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-            stream.ReadExactly(bytes);
-            return true;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FileNotFoundException or OverflowException)
-        {
-            bytes = [];
-            return false;
         }
     }
 

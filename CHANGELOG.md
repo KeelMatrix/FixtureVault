@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Hardened fixture, policy, and manifest reads at the open boundary, including bounded growth detection and rejection of special files.
+- Bounded directory enumeration and case-collision diagnostics with explicit incomplete-scan errors instead of unbounded report construction.
+- Corrected connection-string credential detection for empty and already-redacted `Password`/`Pwd` values, while retaining real-secret detection.
+- Escaped control characters in human-readable paths without changing JSON path values.
+
 ## [0.1.0] - 2026-09-15
 
 ### Added

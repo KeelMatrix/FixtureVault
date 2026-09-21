@@ -187,7 +187,7 @@ internal static class FixtureVaultApplication
         foreach (Finding finding in findings)
         {
             writer.WriteLine();
-            writer.WriteLine($"{finding.RuleId} {finding.Disposition} {finding.Path}");
+            writer.WriteLine($"{finding.RuleId} {finding.Disposition} {PathUtilities.EscapeDiagnosticPath(finding.Path)}");
             writer.WriteLine(finding.Message);
             writer.WriteLine($"Remediation: {finding.Remediation}");
         }
@@ -199,7 +199,7 @@ internal static class FixtureVaultApplication
         {
             writer.WriteLine(diagnostic switch
             {
-                { Path: not null } => $"{diagnostic.Code} {diagnostic.Path}: {diagnostic.Reason}",
+                { Path: not null } => $"{diagnostic.Code} {PathUtilities.EscapeDiagnosticPath(diagnostic.Path)}: {diagnostic.Reason}",
                 { Convention: not null } => $"{diagnostic.Code} {diagnostic.Convention}: {diagnostic.Reason}",
                 _ => $"{diagnostic.Code}: {diagnostic.Reason}"
             });

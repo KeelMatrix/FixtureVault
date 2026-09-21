@@ -10,7 +10,7 @@ Use this checklist before changing a FixtureVault contract. Treat the current be
 - `.fixturevault.manifest.json` file name, schema version, and `activeBaselines` path semantics.
 - JSON report `schemaVersion`, fields, finding shape, skipped diagnostics, errors, and exit-code mapping.
 - Stable rule IDs `FV001` through `FV008` and the meaning of each finding.
-- Stable `FV-SKIP-*` skipped-diagnostic codes, including the per-file diagnostic recorded when content inspection cannot run: no supported encoding decodes the bytes, or the decoded text contains `U+0000` whatever the declared encoding. The reported reason states the observed condition and names the declared encoding when a byte-order mark declared one, and stable `FV-E0xx` error codes keep their exit-code mapping.
+- Stable `FV-SKIP-*` skipped-diagnostic codes, including the per-file diagnostic recorded when content inspection cannot run: no supported encoding decodes the bytes, or the decoded text contains `U+0000` whatever the declared encoding. The reported reason states the observed condition and names the declared encoding when a byte-order mark declared one, and stable `FV-E0xx` error codes keep their exit-code mapping. `FV-E017` is the fail-closed resource/diagnostic-budget error; it never represents a silently truncated report.
 
 ## Compatibility Decision
 
@@ -25,6 +25,8 @@ Use this checklist before changing a FixtureVault contract. Treat the current be
 - Add round-trip tests for policy, manifest, and report JSON where serialization is involved.
 - Add compatibility tests that read representative prior-version documents and verify the intended result.
 - Test console and JSON findings together when report behavior changes.
+- Test human-readable escaping for control-character paths while asserting that JSON round-trips the actual path value.
+- Test open-boundary replacement, regular-file checks, bounded growth, incremental entry limits, and collision diagnostic limits; incomplete scans must not activate successful-scan telemetry.
 - Run the affected tests, full test project, format verification, and package inspection.
 
 ## Documentation and Release Notes

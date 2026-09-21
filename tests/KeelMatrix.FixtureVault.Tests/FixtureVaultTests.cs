@@ -694,6 +694,165 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
+    public void Replacing_a_discovered_fixture_with_a_link_fails_at_the_read_boundary()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        string fixturePath = Path.Combine(repository.Root, "tests", "replacement.golden");
+        string outsideRoot = Path.Combine(Path.GetTempPath(), "fixturevault-fixture-replacement", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideRoot);
+        string outsidePath = Path.Combine(outsideRoot, "replacement.golden");
+        File.WriteAllText(outsidePath, "Password=fixture-test-secret-1234567890;\n");
+        repository.WriteText("tests/replacement.golden", "clean\n");
+        bool replaced = false;
+
+        try
+        {
+            FixtureFileWalk replacingWalk = (repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory) =>
+            {
+                WalkResult result = SafeFileWalker.Walk(repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory);
+                if (!replaced && Path.GetFullPath(root).Equals(Path.Combine(repository.Root, "tests"), StringComparison.Ordinal))
+                {
+                    replaced = true;
+                    File.Delete(fixturePath);
+                    CreateSymbolicFileOrSkip(fixturePath, outsidePath);
+                }
+
+                return result;
+            };
+
+            var telemetry = new RecordingTelemetry();
+            int exitCode = repository.Run(
+                ["scan", "--format", "json"],
+                telemetry,
+                out string output,
+                out string error,
+                fileWalk: replacingWalk);
+            using JsonDocument report = JsonDocument.Parse(output);
+
+            Assert.Equal(2, exitCode);
+            Assert.Empty(error);
+            Assert.Equal(0, telemetry.SuccessfulScans);
+            Assert.Contains(report.RootElement.GetProperty("errors").EnumerateArray(), item => item.GetProperty("code").GetString() == "FV-E009");
+            Assert.DoesNotContain("fixture-test-secret-1234567890", output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(outsideRoot))
+            {
+                Directory.Delete(outsideRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void Replacing_a_discovered_parent_directory_with_a_link_fails_at_the_read_boundary()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        string nestedPath = Path.Combine(repository.Root, "tests", "nested");
+        string fixturePath = Path.Combine(nestedPath, "replacement.golden");
+        string outsideRoot = Path.Combine(Path.GetTempPath(), "fixturevault-parent-replacement", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideRoot);
+        File.WriteAllText(Path.Combine(outsideRoot, "replacement.golden"), "Password=fixture-test-secret-1234567890;\n");
+        repository.WriteText("tests/nested/replacement.golden", "clean\n");
+        bool replaced = false;
+
+        try
+        {
+            FixtureFileWalk replacingWalk = (repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory) =>
+            {
+                WalkResult result = SafeFileWalker.Walk(repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory);
+                if (!replaced && Path.GetFullPath(root).Equals(Path.Combine(repository.Root, "tests"), StringComparison.Ordinal))
+                {
+                    replaced = true;
+                    Directory.Delete(nestedPath, recursive: true);
+                    CreateSymbolicDirectoryOrSkip(nestedPath, outsideRoot);
+                }
+
+                return result;
+            };
+
+            var telemetry = new RecordingTelemetry();
+            int exitCode = repository.Run(
+                ["scan", "--format", "json"],
+                telemetry,
+                out string output,
+                out string error,
+                fileWalk: replacingWalk);
+            using JsonDocument report = JsonDocument.Parse(output);
+
+            Assert.Equal(2, exitCode);
+            Assert.Empty(error);
+            Assert.Equal(0, telemetry.SuccessfulScans);
+            Assert.Contains(report.RootElement.GetProperty("errors").EnumerateArray(), item => item.GetProperty("code").GetString() == "FV-E009");
+            Assert.DoesNotContain("fixture-test-secret-1234567890", output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(outsideRoot))
+            {
+                Directory.Delete(outsideRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void Fixture_growth_after_the_initial_length_check_is_not_accepted_as_complete()
+    {
+        using var repository = new TemporaryRepository();
+        string path = Path.Combine(repository.Root, "tests", "growing.golden");
+        repository.WriteText("tests/growing.golden", "1234");
+
+        SafeFileReadStatus status = SafeFileReader.TryReadBytes(
+            repository.Root,
+            path,
+            maximumBytes: 4,
+            remainingTotalBytes: null,
+            out _,
+            afterInitialLengthRead: () => File.AppendAllText(path, "5"));
+
+        Assert.Equal(SafeFileReadStatus.FileTooLarge, status);
+    }
+
+    [Fact]
+    public void Policy_growth_beyond_the_read_limit_fails_closed()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        string policyPath = Path.Combine(repository.Root, FixtureVaultContract.PolicyFileName);
+        string policyJson = File.ReadAllText(policyPath).TrimEnd();
+        File.WriteAllText(policyPath, policyJson + new string(' ', 65_536 - policyJson.Length));
+
+        PolicyLoadResult result = PolicyLoader.Load(repository.Root, () => File.AppendAllText(policyPath, " "));
+
+        Assert.Null(result.Policy);
+        Assert.Equal("FV-E005", result.Error!.Code);
+    }
+
+    [Fact]
+    public void Manifest_growth_beyond_the_read_limit_fails_closed()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Conventions = ["generic", "fixturevault-manifest"]);
+        string manifestPath = Path.Combine(repository.Root, FixtureVaultContract.ManifestFileName);
+        string manifestJson = "{\"version\":1,\"activeBaselines\":[]}";
+        File.WriteAllText(manifestPath, manifestJson + new string(' ', 65_536 - manifestJson.Length));
+        FixtureVaultPolicy policy = PolicyLoader.Load(repository.Root).Policy!;
+
+        ScanResult result = FixtureScanner.Scan(
+            repository.Root,
+            policy,
+            [],
+            strictOverride: false,
+            afterManifestInitialLengthRead: () => File.AppendAllText(manifestPath, " "));
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.False(result.Completed);
+        Assert.Contains(result.Report.Errors, item => item.Code == "FV-E011");
+    }
+
+    [Fact]
     public void Policy_and_manifest_files_are_not_fixture_candidates()
     {
         using var repository = new TemporaryRepository();
@@ -729,6 +888,9 @@ public sealed class FixtureVaultTests
         ScanResult result = repository.Scan();
 
         Assert.Equal(2, result.Report.Findings.Count(item => item.RuleId == "FV003"));
+        Assert.All(
+            result.Report.Findings.Where(item => item.RuleId == "FV003"),
+            finding => Assert.DoesNotContain("Case.snap", finding.Message, StringComparison.Ordinal));
     }
 
     [Fact]
@@ -779,6 +941,59 @@ public sealed class FixtureVaultTests
 
         Finding finding = Assert.Single(result.Report.Findings, item => item.RuleId == "FV004");
         Assert.Equal("tests/large.golden", finding.Path);
+    }
+
+    [Fact]
+    public void A_single_oversized_directory_fails_before_retaining_unbounded_entries()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteEmptyFiles("tests/entries", 100_001);
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.False(result.Completed);
+        Assert.Contains(result.Report.Errors, item => item.Code == "FV-E003");
+    }
+
+    [Fact]
+    public void A_large_case_collision_group_fails_with_a_bounded_incomplete_diagnostic()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        const string basename = "abcdefghijklm";
+        for (int mask = 0; mask < 8_192; mask++)
+        {
+            var name = new StringBuilder(basename.Length);
+            for (int bit = 0; bit < basename.Length; bit++)
+            {
+                char character = basename[bit];
+                name.Append((mask & (1 << bit)) == 0 ? character : char.ToUpperInvariant(character));
+            }
+
+            repository.WriteText($"tests/{name}.golden", "\n");
+        }
+
+        if (Directory.EnumerateFiles(Path.Combine(repository.Root, "tests")).Count() < 8_192)
+        {
+            return;
+        }
+
+        int exitCode = repository.Run(
+            ["scan", "--format", "json"],
+            new RecordingTelemetry(),
+            out string output,
+            out string error);
+        using JsonDocument report = JsonDocument.Parse(output);
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(error);
+        Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
+        Assert.Contains(
+            report.RootElement.GetProperty("errors").EnumerateArray(),
+            item => item.GetProperty("code").GetString() == FixtureVaultContract.DiagnosticBudgetErrorCode);
+        Assert.True(output.Length < 1_000_000);
     }
 
     [Fact]
@@ -1565,6 +1780,41 @@ public sealed class FixtureVaultTests
 
         Assert.Contains(result.Report.Findings, item => item.RuleId == "FV007");
         Assert.DoesNotContain(sensitiveValue, json, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("Password=\"\";", "console", false)]
+    [InlineData("Password=\"\";", "json", false)]
+    [InlineData("Pwd='';", "console", false)]
+    [InlineData("Pwd='';", "json", false)]
+    [InlineData(" Password =  *** ; ", "console", false)]
+    [InlineData(" Password =  *** ; ", "json", false)]
+    [InlineData("Password=[REDACTED];Pwd=[REDACTED];", "console", false)]
+    [InlineData("Password=[REDACTED];Pwd=[REDACTED];", "json", false)]
+    [InlineData("Password=[REDACTED]; Pwd = 'real-connection-secret-1234567890';", "console", true)]
+    [InlineData("Password=[REDACTED]; Pwd = 'real-connection-secret-1234567890';", "json", true)]
+    public void Connection_string_adapter_only_reports_real_password_values(
+        string connectionString,
+        string format,
+        bool expectsFinding)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/connection-string.golden", connectionString + "\n");
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", format], telemetry, out string output, out string error);
+
+        Assert.Equal(expectsFinding ? 1 : 0, exitCode);
+        Assert.Empty(error);
+        Assert.Equal(1, telemetry.SuccessfulScans);
+        Assert.Equal(expectsFinding, output.Contains("FV007", StringComparison.Ordinal));
+        Assert.DoesNotContain("real-connection-secret-1234567890", output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            Assert.Equal(expectsFinding, report.RootElement.GetProperty("findings").EnumerateArray().Any());
+        }
     }
 
     [Theory]
@@ -2814,6 +3064,132 @@ public sealed class FixtureVaultTests
         }
     }
 
+    [Fact]
+    public void Unix_fifo_fixture_is_rejected_without_blocking_the_scan()
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+        {
+            return;
+        }
+
+        using var repository = new TemporaryRepository();
+        Assert.Equal(0, repository.Run(["init"], new RecordingTelemetry(), out _, out _));
+        string fifoPath = Path.Combine(repository.Root, "tests", "hang.golden");
+        using Process mkfifo = StartProcessOrSkip("mkfifo", fifoPath);
+        Assert.True(mkfifo.WaitForExit(5_000));
+        Assert.Equal(0, mkfifo.ExitCode);
+
+        using var scan = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = Environment.ProcessPath!,
+                WorkingDirectory = repository.Root,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            }
+        };
+        scan.StartInfo.ArgumentList.Add(typeof(FixtureVaultApplication).Assembly.Location);
+        scan.StartInfo.ArgumentList.Add("scan");
+        scan.StartInfo.ArgumentList.Add("--format");
+        scan.StartInfo.ArgumentList.Add("json");
+        Assert.True(scan.Start());
+        bool exited = scan.WaitForExit(5_000);
+        if (!exited)
+        {
+            scan.Kill(entireProcessTree: true);
+        }
+
+        Assert.True(exited, "The scan must reject a FIFO before opening it for a blocking read.");
+        string output = scan.StandardOutput.ReadToEnd();
+        Assert.Equal(2, scan.ExitCode);
+        using JsonDocument report = JsonDocument.Parse(output);
+        Assert.Contains(report.RootElement.GetProperty("errors").EnumerateArray(), item => item.GetProperty("code").GetString() == "FV-E009");
+    }
+
+    [Fact]
+    public void Human_diagnostics_escape_control_character_paths_without_changing_json_paths()
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+        {
+            return;
+        }
+
+        string dangerousFindingPath = "tests/bad\n\r\u001b[31m.received.json";
+        using (var repository = new TemporaryRepository())
+        {
+            repository.WritePolicy();
+            repository.WriteText(dangerousFindingPath, "received\n");
+
+            int consoleExit = repository.Run(["scan"], new RecordingTelemetry(), out string console, out string consoleError);
+            int jsonExit = repository.Run(["scan", "--format", "json"], new RecordingTelemetry(), out string json, out string jsonError);
+
+            Assert.Equal(1, consoleExit);
+            Assert.Equal(1, jsonExit);
+            Assert.Empty(consoleError);
+            Assert.Empty(jsonError);
+            string escaped = "tests/bad\\n\\r\\x1B[31m.received.json";
+            Assert.Contains(escaped, console, StringComparison.Ordinal);
+            Assert.DoesNotContain(dangerousFindingPath, console, StringComparison.Ordinal);
+            using JsonDocument report = JsonDocument.Parse(json);
+            Assert.Equal(dangerousFindingPath, Assert.Single(report.RootElement.GetProperty("findings").EnumerateArray()).GetProperty("path").GetString());
+        }
+
+        string dangerousErrorPath = "tests/error\n\r\u001b[2J.received.json";
+        using (var repository = new TemporaryRepository())
+        {
+            repository.WritePolicy(policy => policy.Conventions = ["verify", "generic", "fixturevault-manifest"]);
+            repository.WriteText(dangerousErrorPath, "received\n");
+
+            int exitCode = repository.Run(["scan"], new RecordingTelemetry(), out string output, out string error);
+
+            Assert.Equal(2, exitCode);
+            Assert.Empty(output);
+            Assert.Contains("tests/error\\n\\r\\x1B[2J.received.json", error, StringComparison.Ordinal);
+            Assert.DoesNotContain(dangerousErrorPath, error, StringComparison.Ordinal);
+        }
+
+        string dangerousSkippedPath = "tests/skip\n\r\u001b[8m.golden";
+        using (var repository = new TemporaryRepository())
+        {
+            repository.WritePolicy();
+            string outside = Path.Combine(Path.GetTempPath(), "fixturevault-skipped-path", Guid.NewGuid().ToString("N"));
+            File.WriteAllText(outside, "outside\n");
+            try
+            {
+                CreateSymbolicFileOrSkip(Path.Combine(repository.Root, dangerousSkippedPath.Replace('/', Path.DirectorySeparatorChar)), outside);
+                int exitCode = repository.Run(["scan"], new RecordingTelemetry(), out string output, out string error);
+
+                Assert.Equal(0, exitCode);
+                Assert.Empty(error);
+                Assert.Contains("tests/skip\\n\\r\\x1B[8m.golden", output, StringComparison.Ordinal);
+            }
+            finally
+            {
+                File.Delete(outside);
+            }
+        }
+    }
+
+    private static void CreateSymbolicDirectoryOrSkip(string linkPath, string targetPath)
+    {
+        try
+        {
+            Directory.CreateSymbolicLink(linkPath, targetPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                throw SkipException.ForSkip(
+                    $"Windows symbolic-link capability is unavailable in this environment ({ex.GetType().Name}: {ex.Message}).");
+            }
+
+            throw;
+        }
+    }
+
     private static byte[] DeclaredEncodingFixtureBytes(
         string declaredEncoding,
         string contentShape,
@@ -3063,6 +3439,37 @@ public sealed class FixtureVaultTests
         catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
         {
             return false;
+        }
+    }
+
+    private static Process StartProcessOrSkip(string fileName, params string[] arguments)
+    {
+        try
+        {
+            var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = fileName,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
+            };
+            foreach (string argument in arguments)
+            {
+                process.StartInfo.ArgumentList.Add(argument);
+            }
+
+            if (!process.Start())
+            {
+                throw SkipException.ForSkip($"The {fileName} test helper could not be started.");
+            }
+
+            return process;
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            throw SkipException.ForSkip($"The {fileName} test helper is unavailable ({ex.Message}).");
         }
     }
 

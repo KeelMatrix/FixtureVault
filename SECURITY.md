@@ -29,3 +29,5 @@ Security fixes are prioritized for the latest maintained package line. Older ver
 
 - Do not post vulnerability details, credentials, personal data, or fixture contents in public repositories or issue trackers.
 - Include enough safe information to reproduce and resolve the issue without disclosing secrets.
+- `scan` treats configured roots as hard boundaries at traversal and file-open time, rejects links/reparse points and non-regular files, and fails closed when bounded reads detect replacement or growth.
+- Human-readable diagnostics escape control characters in untrusted repository-relative filenames; JSON retains the actual path value for machine use.
