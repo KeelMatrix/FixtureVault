@@ -132,6 +132,10 @@ internal static class CommandLineParser
               0  Scan completed without policy-blocking findings.
               1  Scan completed with policy-blocking findings.
               2  Configuration, input, or execution error prevented a trustworthy scan.
+
+            Safety:
+              Findings and skipped diagnostics share a 4,096-record / 1 MiB report-field budget.
+              Exhaustion returns FV-E017, an incomplete scan, and exit code 2.
             """;
     }
 

@@ -24,11 +24,50 @@ internal sealed class FixtureScanner
         IReadOnlyList<ISensitiveDataDetector>? additionalSensitiveDataDetectors = null,
         FixtureFileWalk? fileWalk = null,
         Func<byte[], ContentClassification>? contentClassifier = null,
-        Action? afterManifestInitialLengthRead = null)
+        Action? afterManifestInitialLengthRead = null,
+        Action? afterFixtureInitialLengthRead = null)
+    {
+        bool strict = strictOverride || policy.Ci?.Strict == true;
+        try
+        {
+            return ScanCore(
+                repositoryRoot,
+                policy,
+                rootOverrides,
+                strictOverride,
+                matcherBudget,
+                additionalSensitiveDataDetectors,
+                fileWalk,
+                contentClassifier,
+                afterManifestInitialLengthRead,
+                afterFixtureInitialLengthRead);
+        }
+        catch (DiagnosticBudgetExceededException)
+        {
+            return CompleteWithErrors(
+                [new ScanError(
+                    FixtureVaultContract.DiagnosticBudgetErrorCode,
+                    FixtureVaultContract.DiagnosticBudgetErrorMessage)],
+                strict);
+        }
+    }
+
+    private static ScanResult ScanCore(
+        string repositoryRoot,
+        FixtureVaultPolicy policy,
+        IReadOnlyList<string> rootOverrides,
+        bool strictOverride,
+        GlobMatchBudget? matcherBudget,
+        IReadOnlyList<ISensitiveDataDetector>? additionalSensitiveDataDetectors,
+        FixtureFileWalk? fileWalk,
+        Func<byte[], ContentClassification>? contentClassifier,
+        Action? afterManifestInitialLengthRead,
+        Action? afterFixtureInitialLengthRead)
     {
         var findings = new List<Finding>();
         var skipped = new List<SkippedDiagnostic>();
         var errors = new List<ScanError>();
+        var diagnosticBudget = new DiagnosticBudget();
         // The strictness decision is fixed before any early failure so an error report never claims a
         // blocking disposition that the configured policy does not support.
         bool strict = strictOverride || policy.Ci?.Strict == true;
@@ -71,7 +110,7 @@ internal sealed class FixtureScanner
             }
         }
 
-        AddConventionSkips(policy, skipped);
+        AddConventionSkips(policy, skipped, diagnosticBudget);
         List<SafeFileEntry> fixtureFiles = [];
         var seenFiles = new HashSet<string>(
             OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
@@ -82,7 +121,7 @@ internal sealed class FixtureScanner
                 root.FullPath,
                 failOnAccessErrors: true,
                 shouldPruneDirectory: relativePath => IsIgnoredDirectory(relativePath, ignoredMatchers, ignoreBudget));
-            AddReparseSkips(walk, skipped);
+            AddReparseSkips(walk, skipped, diagnosticBudget);
             if (walk.Error is not null)
             {
                 errors.Add(walk.Error);
@@ -126,13 +165,14 @@ internal sealed class FixtureScanner
             findings,
             skipped,
             errors,
-            walkFunction);
+            walkFunction,
+            diagnosticBudget);
         if (errors.Count > 0)
         {
             return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
         }
 
-        ScanError? collisionError = AddCaseCollisionFindings(fixtureFiles, policy, findings);
+        ScanError? collisionError = AddCaseCollisionFindings(fixtureFiles, policy, findings, diagnosticBudget);
         if (collisionError is not null)
         {
             errors.Add(collisionError);
@@ -159,13 +199,14 @@ internal sealed class FixtureScanner
                         "FV002",
                         file.RelativePath,
                         "This baseline is not listed by the explicit FixtureVault manifest.",
-                        "Add the baseline to .fixturevault.manifest.json or remove the stale baseline.");
+                        "Add the baseline to .fixturevault.manifest.json or remove the stale baseline.",
+                        diagnosticBudget);
                 }
             }
         }
         else if (fixtureFiles.Count > 0)
         {
-            AddOrphanProofSkips(policy, skipped);
+            AddOrphanProofSkips(policy, skipped, diagnosticBudget);
         }
 
         long totalBytesRead = 0;
@@ -180,7 +221,8 @@ internal sealed class FixtureScanner
                     "FV001",
                     file.RelativePath,
                     "A received/unapproved snapshot artifact is present in the configured fixture tree.",
-                    "Review it and either approve it through the existing framework or remove it.");
+                    "Review it and either approve it through the existing framework or remove it.",
+                    diagnosticBudget);
             }
 
             SafeFileReadStatus readStatus = SafeFileReader.TryReadBytes(
@@ -188,7 +230,8 @@ internal sealed class FixtureScanner
                 file.FullPath,
                 policy.MaxFileBytes,
                 MaximumTotalBytes - totalBytesRead,
-                out byte[] bytes);
+                out byte[] bytes,
+                afterFixtureInitialLengthRead);
             if (readStatus == SafeFileReadStatus.FileTooLarge)
             {
                 AddFinding(
@@ -197,7 +240,8 @@ internal sealed class FixtureScanner
                     "FV004",
                     file.RelativePath,
                     "The fixture file exceeds the configured maximum size.",
-                    "Reduce the fixture size or raise maxFileBytes deliberately in .fixturevault.json.");
+                    "Reduce the fixture size or raise maxFileBytes deliberately in .fixturevault.json.",
+                    diagnosticBudget);
                 continue;
             }
 
@@ -221,7 +265,8 @@ internal sealed class FixtureScanner
                 findings,
                 skipped,
                 detectors,
-                contentClassifier ?? ContentClassification.Classify);
+                contentClassifier ?? ContentClassification.Classify,
+                diagnosticBudget);
             if (contentError is not null)
             {
                 errors.Add(contentError);
@@ -258,14 +303,15 @@ internal sealed class FixtureScanner
         ICollection<Finding> findings,
         ICollection<SkippedDiagnostic> skipped,
         List<ScanError> errors,
-        FixtureFileWalk walkFunction)
+        FixtureFileWalk walkFunction,
+        DiagnosticBudget diagnosticBudget)
     {
         WalkResult walk = walkFunction(
             repositoryRoot,
             repositoryRoot,
             failOnAccessErrors: true,
             shouldPruneDirectory: relativePath => IsIgnoredDirectory(relativePath, ignoredMatchers, matcherBudget));
-        AddReparseSkips(walk, skipped);
+        AddReparseSkips(walk, skipped, diagnosticBudget);
         if (walk.Error is not null)
         {
             errors.Add(walk.Error.Code == "FV-E002"
@@ -300,14 +346,16 @@ internal sealed class FixtureScanner
                 "FV008",
                 file.RelativePath,
                 "A fixture-looking file is outside the approved fixture roots.",
-                "Move the fixture below an approved root or update the roots in .fixturevault.json.");
+                "Move the fixture below an approved root or update the roots in .fixturevault.json.",
+                diagnosticBudget);
         }
     }
 
     private static ScanError? AddCaseCollisionFindings(
         IReadOnlyList<SafeFileEntry> files,
         FixtureVaultPolicy policy,
-        ICollection<Finding> findings)
+        ICollection<Finding> findings,
+        DiagnosticBudget diagnosticBudget)
     {
         var groups = new Dictionary<string, List<SafeFileEntry>>(StringComparer.Ordinal);
         foreach (SafeFileEntry file in files)
@@ -345,7 +393,8 @@ internal sealed class FixtureScanner
                     "FV003",
                     collision.RelativePath,
                     message,
-                    "Rename one path so its repository-relative spelling is unique across case-sensitive and case-insensitive filesystems.");
+                    "Rename one path so its repository-relative spelling is unique across case-sensitive and case-insensitive filesystems.",
+                    diagnosticBudget);
             }
         }
 
@@ -461,7 +510,8 @@ internal sealed class FixtureScanner
         ICollection<Finding> findings,
         ICollection<SkippedDiagnostic> skipped,
         IReadOnlyList<ISensitiveDataDetector> sensitiveDataDetectors,
-        Func<byte[], ContentClassification> contentClassifier)
+        Func<byte[], ContentClassification> contentClassifier,
+        DiagnosticBudget diagnosticBudget)
     {
         bool isVerifyFixture = HasConvention(policy, "verify") && IsVerifySnapshotPath(file.RelativePath);
         bool isKnownBinaryExtension = IsKnownBinaryExtension(file.RelativePath);
@@ -490,11 +540,19 @@ internal sealed class FixtureScanner
                     "FV005",
                     file.RelativePath,
                     "An unexpected binary asset is present in the fixture tree.",
-                    "Remove the binary asset or keep only supported text fixtures.");
+                    "Remove the binary asset or keep only supported text fixtures.",
+                    diagnosticBudget);
                 return null;
 
             case ContentKind.Uninspectable:
-                return ReportUninspectableContent(file, classification, isVerifyFixture, policy, findings, skipped);
+                return ReportUninspectableContent(
+                    file,
+                    classification,
+                    isVerifyFixture,
+                    policy,
+                    findings,
+                    skipped,
+                    diagnosticBudget);
 
             default:
                 break;
@@ -508,7 +566,8 @@ internal sealed class FixtureScanner
                 "FV006",
                 file.RelativePath,
                 FixtureVaultContract.NonUtf8EncodingDiagnosticMessage,
-                FixtureVaultContract.NonUtf8EncodingRemediation);
+                FixtureVaultContract.NonUtf8EncodingRemediation,
+                diagnosticBudget);
         }
 
         SensitiveDataDetectionResult sensitiveDataResult = HasSensitiveData(classification.Text, policy, sensitiveDataDetectors);
@@ -527,7 +586,8 @@ internal sealed class FixtureScanner
                 "FV007",
                 file.RelativePath,
                 "Potential sensitive data was detected in this fixture.",
-                "Remove the sensitive value from the fixture; FixtureVault never prints the matched value.");
+                "Remove the sensitive value from the fixture; FixtureVault never prints the matched value.",
+                diagnosticBudget);
         }
 
         return null;
@@ -539,15 +599,18 @@ internal sealed class FixtureScanner
         bool isVerifyFixture,
         FixtureVaultPolicy policy,
         ICollection<Finding> findings,
-        ICollection<SkippedDiagnostic> skipped)
+        ICollection<SkippedDiagnostic> skipped,
+        DiagnosticBudget diagnosticBudget)
     {
         // Content inspection is impossible without a proven text encoding, so the report must never
         // look like a fully checked clean scan for this file.
-        skipped.Add(new SkippedDiagnostic(
+        var skippedDiagnostic = new SkippedDiagnostic(
             FixtureVaultContract.UninspectableContentSkippedCode,
             null,
             file.RelativePath,
-            classification.SkippedReason));
+            classification.SkippedReason);
+        diagnosticBudget.Reserve(skippedDiagnostic);
+        skipped.Add(skippedDiagnostic);
 
         if (!isVerifyFixture)
         {
@@ -557,7 +620,8 @@ internal sealed class FixtureScanner
                 "FV006",
                 file.RelativePath,
                 classification.DiagnosticMessage,
-                classification.Remediation);
+                classification.Remediation,
+                diagnosticBudget);
         }
 
         return IsSensitiveDataDetectionEnabled(policy)
@@ -766,50 +830,68 @@ internal sealed class FixtureScanner
         string ruleId,
         string path,
         string message,
-        string remediation)
+        string remediation,
+        DiagnosticBudget diagnosticBudget)
     {
-        findings.Add(new Finding(ruleId, "error", "block", path, message, remediation));
+        var finding = new Finding(ruleId, "error", "block", path, message, remediation);
+        diagnosticBudget.Reserve(finding);
+        findings.Add(finding);
     }
 
-    private static void AddConventionSkips(FixtureVaultPolicy policy, List<SkippedDiagnostic> skipped)
+    private static void AddConventionSkips(
+        FixtureVaultPolicy policy,
+        List<SkippedDiagnostic> skipped,
+        DiagnosticBudget diagnosticBudget)
     {
         foreach (string convention in policy.Conventions ?? [])
         {
             if (!SupportedConventions.Contains(convention, StringComparer.OrdinalIgnoreCase))
             {
-                skipped.Add(new SkippedDiagnostic(
+                var diagnostic = new SkippedDiagnostic(
                     "FV-SKIP-CONVENTION",
                     FixtureVaultContract.UnsupportedConventionDiagnosticValue,
                     null,
-                    "This convention hint is not supported by this version and was not guessed; the unsupported value is not shown."));
+                    "This convention hint is not supported by this version and was not guessed; the unsupported value is not shown.");
+                diagnosticBudget.Reserve(diagnostic);
+                skipped.Add(diagnostic);
             }
         }
     }
 
-    private static void AddOrphanProofSkips(FixtureVaultPolicy policy, List<SkippedDiagnostic> skipped)
+    private static void AddOrphanProofSkips(
+        FixtureVaultPolicy policy,
+        List<SkippedDiagnostic> skipped,
+        DiagnosticBudget diagnosticBudget)
     {
         foreach (string convention in new[] { "verify", "snapshooter", "generic" })
         {
             if (HasConvention(policy, convention))
             {
-                skipped.Add(new SkippedDiagnostic(
+                var diagnostic = new SkippedDiagnostic(
                     "FV-SKIP-ORPHAN",
                     convention,
                     null,
-                    "No explicit relationship proves orphanhood for this convention, so no orphan claim was made."));
+                    "No explicit relationship proves orphanhood for this convention, so no orphan claim was made.");
+                diagnosticBudget.Reserve(diagnostic);
+                skipped.Add(diagnostic);
             }
         }
     }
 
-    private static void AddReparseSkips(WalkResult walk, ICollection<SkippedDiagnostic> skipped)
+    private static void AddReparseSkips(
+        WalkResult walk,
+        ICollection<SkippedDiagnostic> skipped,
+        DiagnosticBudget diagnosticBudget)
     {
         foreach (string path in walk.ReparsePaths)
         {
-            skipped.Add(new SkippedDiagnostic(
+            var diagnostic = new SkippedDiagnostic(
                 "FV-SKIP-REPARSE",
                 null,
                 path,
-                "Reparse points and symbolic links are not followed."));
+                "Reparse points and symbolic links are not followed.");
+            diagnosticBudget.Reserve(diagnostic);
+            skipped.Add(diagnostic);
         }
     }
 

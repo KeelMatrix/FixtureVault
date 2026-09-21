@@ -132,6 +132,7 @@ public sealed class FixtureVaultTests
         Assert.Empty(error);
         Assert.Contains("Usage:", output, StringComparison.Ordinal);
         Assert.Contains("fixturevault", output, StringComparison.Ordinal);
+        Assert.Contains("4,096-record / 1 MiB report-field budget", output, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -813,6 +814,140 @@ public sealed class FixtureVaultTests
             afterInitialLengthRead: () => File.AppendAllText(path, "5"));
 
         Assert.Equal(SafeFileReadStatus.FileTooLarge, status);
+    }
+
+    [Fact]
+    public void Fixture_shrink_after_the_initial_length_check_fails_closed_at_the_scan_boundary()
+    {
+        using var directRepository = new TemporaryRepository();
+        directRepository.WritePolicy();
+        string directPath = Path.Combine(directRepository.Root, "tests", "shrinking.golden");
+        directRepository.WriteText("tests/shrinking.golden", "1234");
+
+        ScanResult directResult = directRepository.Scan(
+            afterFixtureInitialLengthRead: () => TruncateFile(directPath));
+
+        Assert.Equal(2, directResult.ExitCode);
+        Assert.False(directResult.Completed);
+        Assert.Contains(directResult.Report.Errors, item => item.Code == "FV-E009");
+
+        using var applicationRepository = new TemporaryRepository();
+        applicationRepository.WritePolicy();
+        string applicationPath = Path.Combine(applicationRepository.Root, "tests", "shrinking.golden");
+        applicationRepository.WriteText("tests/shrinking.golden", "1234");
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = applicationRepository.Run(
+            ["scan", "--format", "json"],
+            telemetry,
+            out string output,
+            out string error,
+            afterFixtureInitialLengthRead: () => TruncateFile(applicationPath));
+
+        using JsonDocument report = JsonDocument.Parse(output);
+        Assert.Equal(2, exitCode);
+        Assert.Empty(error);
+        Assert.Equal(0, telemetry.SuccessfulScans);
+        Assert.Contains(
+            report.RootElement.GetProperty("errors").EnumerateArray(),
+            item => item.GetProperty("code").GetString() == "FV-E009");
+        Assert.DoesNotContain("FixtureVault scan complete.", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Aggregate_diagnostic_budget_fails_closed_for_many_small_collision_groups()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Conventions = ["generic"]);
+        const int groupCount = 3_000;
+        var entries = new List<SafeFileEntry>(groupCount * 2);
+        for (int index = 0; index < groupCount; index++)
+        {
+            string directory = $"tests/group-{index:D4}";
+            entries.Add(new SafeFileEntry(
+                Path.Combine(repository.Root, directory, "café.golden"),
+                $"{directory}/café.golden"));
+            entries.Add(new SafeFileEntry(
+                Path.Combine(repository.Root, directory, "cafe\u0301.golden"),
+                $"{directory}/cafe\u0301.golden"));
+        }
+
+        FixtureFileWalk walk = (repositoryRoot, root, _, _) =>
+            Path.GetFullPath(root).Equals(Path.Combine(repository.Root, "tests"), StringComparison.Ordinal)
+                ? new WalkResult(entries, [], null)
+                : new WalkResult([], [], null);
+
+        ScanResult result = repository.Scan(fileWalk: walk);
+        Assert.Equal(2, result.ExitCode);
+        Assert.False(result.Completed);
+        Assert.Contains(result.Report.Errors, item => item.Code == FixtureVaultContract.DiagnosticBudgetErrorCode);
+        Assert.Empty(result.Report.Findings);
+
+        var telemetry = new RecordingTelemetry();
+        int exitCode = repository.Run(
+            ["scan", "--format", "json"],
+            telemetry,
+            out string output,
+            out string error,
+            fileWalk: walk);
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(error);
+        Assert.Equal(0, telemetry.SuccessfulScans);
+        using JsonDocument report = JsonDocument.Parse(output);
+        Assert.Contains(
+            report.RootElement.GetProperty("errors").EnumerateArray(),
+            item => item.GetProperty("code").GetString() == FixtureVaultContract.DiagnosticBudgetErrorCode);
+        Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
+    }
+
+    [Fact]
+    public void Aggregate_diagnostic_budget_covers_ordinary_findings()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        const int findingCount = 3_000;
+        var entries = new List<SafeFileEntry>(findingCount);
+        for (int index = 0; index < findingCount; index++)
+        {
+            string relativePath = $"tests/case-{index:D4}.received.json";
+            repository.WriteBytes(relativePath, []);
+            entries.Add(new SafeFileEntry(Path.Combine(repository.Root, relativePath.Replace('/', Path.DirectorySeparatorChar)), relativePath));
+        }
+        FixtureFileWalk walk = (repositoryRoot, root, _, _) =>
+            Path.GetFullPath(root).Equals(Path.Combine(repository.Root, "tests"), StringComparison.Ordinal)
+                ? new WalkResult(entries, [], null)
+                : new WalkResult([], [], null);
+
+        ScanResult result = repository.Scan(fileWalk: walk);
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.False(result.Completed);
+        Assert.Contains(result.Report.Errors, item => item.Code == FixtureVaultContract.DiagnosticBudgetErrorCode);
+    }
+
+    [Fact]
+    public void Aggregate_diagnostic_budget_covers_skipped_diagnostics()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        const int skippedCount = 3_000;
+        var reparsePaths = Enumerable.Range(0, skippedCount)
+            .Select(index => $"tests/link-{index:D4}")
+            .ToList();
+        FixtureFileWalk walk = (_, _, _, _) => new WalkResult([], reparsePaths, null);
+
+        ScanResult result = repository.Scan(fileWalk: walk);
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.False(result.Completed);
+        Assert.Contains(result.Report.Errors, item => item.Code == FixtureVaultContract.DiagnosticBudgetErrorCode);
+    }
+
+    private static void TruncateFile(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite);
+        stream.SetLength(0);
     }
 
     [Fact]
@@ -2915,7 +3050,8 @@ public sealed class FixtureVaultTests
             IReadOnlyList<string>? options = null,
             GlobMatchBudget? matcherBudget = null,
             IReadOnlyList<ISensitiveDataDetector>? additionalSensitiveDataDetectors = null,
-            FixtureFileWalk? fileWalk = null)
+            FixtureFileWalk? fileWalk = null,
+            Action? afterFixtureInitialLengthRead = null)
         {
             PolicyLoadResult policy = PolicyLoader.Load(Root);
             Assert.Null(policy.Error);
@@ -2935,7 +3071,8 @@ public sealed class FixtureVaultTests
                 strictOverride: options?.Contains("--strict") == true,
                 matcherBudget: matcherBudget,
                 additionalSensitiveDataDetectors: additionalSensitiveDataDetectors,
-                fileWalk: fileWalk);
+                fileWalk: fileWalk,
+                afterFixtureInitialLengthRead: afterFixtureInitialLengthRead);
         }
 
         internal int Run(
@@ -2944,7 +3081,8 @@ public sealed class FixtureVaultTests
             out string output,
             out string error,
             IReadOnlyList<ISensitiveDataDetector>? additionalSensitiveDataDetectors = null,
-            FixtureFileWalk? fileWalk = null)
+            FixtureFileWalk? fileWalk = null,
+            Action? afterFixtureInitialLengthRead = null)
         {
             using var stdout = new StringWriter();
             using var stderr = new StringWriter();
@@ -2955,7 +3093,8 @@ public sealed class FixtureVaultTests
                 stdout,
                 stderr,
                 additionalSensitiveDataDetectors,
-                fileWalk);
+                fileWalk,
+                afterFixtureInitialLengthRead);
             output = stdout.ToString();
             error = stderr.ToString();
             return exitCode;

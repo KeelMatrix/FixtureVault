@@ -26,7 +26,7 @@ Use this checklist before changing a FixtureVault contract. Treat the current be
 - Add compatibility tests that read representative prior-version documents and verify the intended result.
 - Test console and JSON findings together when report behavior changes.
 - Test human-readable escaping for control-character paths while asserting that JSON round-trips the actual path value.
-- Test open-boundary replacement, regular-file checks, bounded growth, incremental entry limits, and collision diagnostic limits; incomplete scans must not activate successful-scan telemetry.
+- Test open-boundary replacement, regular-file checks, bounded growth and shrinkage, incremental entry limits, and the aggregate 4,096-record / 1 MiB JSON-field diagnostic budget across findings, skipped diagnostics, and collision diagnostics; incomplete scans must not activate successful-scan telemetry.
 - Run the affected tests, full test project, format verification, and package inspection.
 
 ## Documentation and Release Notes

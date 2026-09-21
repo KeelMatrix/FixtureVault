@@ -8,8 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
-- Hardened fixture, policy, and manifest reads at the open boundary, including bounded growth detection and rejection of special files.
-- Bounded directory enumeration and case-collision diagnostics with explicit incomplete-scan errors instead of unbounded report construction.
+- Hardened fixture, policy, and manifest reads at the open boundary, including bounded growth/shrinkage detection and rejection of special files.
+- Added an aggregate 4,096-record / 1 MiB JSON-field budget for findings and skipped diagnostics, with explicit `FV-E017` incomplete-scan results instead of unbounded report construction or silent truncation.
 - Corrected connection-string credential detection for empty and already-redacted `Password`/`Pwd` values, while retaining real-secret detection.
 - Escaped control characters in human-readable paths without changing JSON path values.
 

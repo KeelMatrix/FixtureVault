@@ -63,7 +63,7 @@ jobs:
       - name: Build Release
         run: dotnet build KeelMatrix.FixtureVault.sln --configuration Release --no-restore -p:Version=${{ steps.release-version.outputs.version }}
 
-      - name: Run tests
+      - name: Run tests (diagnostic-budget and read-boundary safety included)
         run: dotnet test KeelMatrix.FixtureVault.sln --configuration Release --no-build --no-restore
 
       - name: Pack KeelMatrix.FixtureVault

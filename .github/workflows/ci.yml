@@ -44,7 +44,7 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -File ./scripts/test-release-contract.ps1
 
-      - name: Run tests
+      - name: Run tests (diagnostic-budget and read-boundary safety included)
         run: >
           dotnet test KeelMatrix.FixtureVault.sln
           -c Release

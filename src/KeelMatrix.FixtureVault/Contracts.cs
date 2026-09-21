@@ -23,6 +23,8 @@ internal static class FixtureVaultContract
     internal const string UninspectableContentErrorMessage = "Content inspection could not be completed because no encoding suitable for inspection could be established.";
     internal const string DiagnosticBudgetErrorCode = "FV-E017";
     internal const string DiagnosticBudgetErrorMessage = "The scan exceeded its diagnostic safety limit before a trustworthy report could be produced.";
+    internal const int MaximumDiagnosticCount = DiagnosticBudget.MaximumDiagnosticCount;
+    internal const long MaximumDiagnosticBytes = DiagnosticBudget.MaximumEstimatedBytes;
     internal const string UninspectableContentSkippedCode = "FV-SKIP-ENCODING";
     internal const string UninspectableContentSkippedReason = "Content-dependent checks, including sensitive-data detection, did not run for this fixture because no encoding suitable for content inspection could be established.";
     internal const string UndeclaredNulContentSkippedReason = "Content-dependent checks, including sensitive-data detection, did not run for this fixture because its decoded content contains a NUL (U+0000) character and no byte-order mark declares a text encoding, so the decoded text cannot be trusted.";
