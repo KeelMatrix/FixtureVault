@@ -231,7 +231,9 @@ internal sealed class FixtureScanner
                 policy.MaxFileBytes,
                 MaximumTotalBytes - totalBytesRead,
                 out byte[] bytes,
+                out long bytesRead,
                 afterFixtureInitialLengthRead);
+            totalBytesRead += bytesRead;
             if (readStatus == SafeFileReadStatus.FileTooLarge)
             {
                 AddFinding(
@@ -242,6 +244,16 @@ internal sealed class FixtureScanner
                     "The fixture file exceeds the configured maximum size.",
                     "Reduce the fixture size or raise maxFileBytes deliberately in .fixturevault.json.",
                     diagnosticBudget);
+                continue;
+            }
+
+            if (readStatus == SafeFileReadStatus.GrewBeyondLimit)
+            {
+                if (!errors.Any(error => error.Code == "FV-E009"))
+                {
+                    errors.Add(new ScanError("FV-E009", "A fixture file could not be inspected safely."));
+                }
+
                 continue;
             }
 
@@ -257,7 +269,6 @@ internal sealed class FixtureScanner
                 return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
             }
 
-            totalBytesRead += bytes.LongLength;
             ScanError? contentError = InspectContent(
                 file,
                 bytes,
@@ -272,6 +283,11 @@ internal sealed class FixtureScanner
                 errors.Add(contentError);
                 return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
             }
+        }
+
+        if (errors.Count > 0)
+        {
+            return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
         }
 
         if (!strict)
@@ -434,6 +450,7 @@ internal sealed class FixtureScanner
                 64 * 1024,
                 remainingTotalBytes: null,
                 out byte[] manifestBytes,
+                out _,
                 afterInitialLengthRead);
             if (readStatus != SafeFileReadStatus.Success)
             {

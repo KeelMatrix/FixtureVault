@@ -799,7 +799,79 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
-    public void Fixture_growth_after_the_initial_length_check_is_not_accepted_as_complete()
+    public void Replacing_a_pending_directory_during_repository_walk_fails_closed_without_disclosing_outside_paths()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        string pendingPath = Path.Combine(repository.Root, "misc", "pending");
+        Directory.CreateDirectory(pendingPath);
+        string outsideRoot = Path.Combine(Path.GetTempPath(), "fixturevault-pending-directory", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideRoot);
+        File.WriteAllText(Path.Combine(outsideRoot, "outside.received.json"), "received outside the repository\n");
+        bool replaced = false;
+
+        try
+        {
+            FixtureFileWalk replacingWalk = (repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory) =>
+                SafeFileWalker.Walk(
+                    repositoryRoot,
+                    root,
+                    failOnAccessErrors,
+                    relativePath =>
+                    {
+                        if (!replaced &&
+                            Path.GetFullPath(root).Equals(repository.Root, StringComparison.Ordinal) &&
+                            relativePath.Equals("misc/pending", StringComparison.Ordinal))
+                        {
+                            replaced = true;
+                            Directory.Delete(pendingPath, recursive: true);
+                            CreateSymbolicDirectoryOrSkip(pendingPath, outsideRoot);
+                        }
+
+                        return shouldPruneDirectory?.Invoke(relativePath) ?? GlobMatchStatus.NoMatch;
+                    });
+
+            ScanResult directResult = repository.Scan(fileWalk: replacingWalk);
+
+            Assert.True(replaced);
+            Assert.Equal(2, directResult.ExitCode);
+            Assert.False(directResult.Completed);
+            Assert.Contains(directResult.Report.Errors, item => item.Code == FixtureVaultContract.PathPolicyTraversalErrorCode);
+            Assert.DoesNotContain(directResult.Report.Findings, item => item.Path.Contains("outside.received.json", StringComparison.Ordinal));
+
+            Directory.Delete(pendingPath, recursive: true);
+            Directory.CreateDirectory(pendingPath);
+            replaced = false;
+            var telemetry = new RecordingTelemetry();
+
+            int exitCode = repository.Run(
+                ["scan", "--format", "json"],
+                telemetry,
+                out string output,
+                out string error,
+                fileWalk: replacingWalk);
+            using JsonDocument report = JsonDocument.Parse(output);
+
+            Assert.Equal(2, exitCode);
+            Assert.Empty(error);
+            Assert.Equal(0, telemetry.SuccessfulScans);
+            Assert.Contains(
+                report.RootElement.GetProperty("errors").EnumerateArray(),
+                item => item.GetProperty("code").GetString() == FixtureVaultContract.PathPolicyTraversalErrorCode);
+            Assert.DoesNotContain("outside.received.json", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("FixtureVault scan complete.", output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(outsideRoot))
+            {
+                Directory.Delete(outsideRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void Fixture_growth_after_the_initial_length_check_is_reported_as_a_changed_read()
     {
         using var repository = new TemporaryRepository();
         string path = Path.Combine(repository.Root, "tests", "growing.golden");
@@ -811,9 +883,86 @@ public sealed class FixtureVaultTests
             maximumBytes: 4,
             remainingTotalBytes: null,
             out _,
+            out _,
             afterInitialLengthRead: () => File.AppendAllText(path, "5"));
 
-        Assert.Equal(SafeFileReadStatus.FileTooLarge, status);
+        Assert.Equal(SafeFileReadStatus.GrewBeyondLimit, status);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Fixture_growth_is_an_incomplete_execution_error_for_both_strictness_settings(bool strict)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy =>
+        {
+            policy.Ci!.Strict = strict;
+            policy.MaxFileBytes = 4;
+        });
+        string path = Path.Combine(repository.Root, "tests", "growing.golden");
+        repository.WriteText("tests/growing.golden", "1234");
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(
+            ["scan", "--format", "json"],
+            telemetry,
+            out string output,
+            out string error,
+            afterFixtureInitialLengthRead: () => File.AppendAllText(path, "5"));
+        using JsonDocument report = JsonDocument.Parse(output);
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(error);
+        Assert.Equal(0, telemetry.SuccessfulScans);
+        Assert.Contains(report.RootElement.GetProperty("errors").EnumerateArray(), item => item.GetProperty("code").GetString() == "FV-E009");
+        Assert.DoesNotContain(report.RootElement.GetProperty("findings").EnumerateArray(), item => item.GetProperty("ruleId").GetString() == "FV004");
+        Assert.DoesNotContain("FixtureVault scan complete.", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Rejected_growing_fixture_reads_count_toward_the_aggregate_byte_budget()
+    {
+        using var repository = new TemporaryRepository();
+        const int fixtureCount = 129;
+        const long maximumFileBytes = 1 * 1024 * 1024;
+        repository.WritePolicy(policy =>
+        {
+            policy.Ci!.Strict = false;
+            policy.MaxFileBytes = maximumFileBytes;
+        });
+        for (int index = 0; index < fixtureCount; index++)
+        {
+            repository.WriteText($"tests/fixture-{index:D3}.golden", "x");
+        }
+
+        int grownCount = 0;
+        Action growNextFixture = () =>
+        {
+            string? next = Directory.EnumerateFiles(Path.Combine(repository.Root, "tests"))
+                .OrderBy(path => path, StringComparer.Ordinal)
+                .FirstOrDefault(path => new FileInfo(path).Length == 1);
+            Assert.NotNull(next);
+            using var stream = new FileStream(next!, FileMode.Open, FileAccess.Write, FileShare.ReadWrite);
+            stream.SetLength(maximumFileBytes + 1);
+            grownCount++;
+        };
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(
+            ["scan", "--format", "json"],
+            telemetry,
+            out string output,
+            out string error,
+            afterFixtureInitialLengthRead: growNextFixture);
+        using JsonDocument report = JsonDocument.Parse(output);
+
+        Assert.True(grownCount >= 128);
+        Assert.Equal(2, exitCode);
+        Assert.Empty(error);
+        Assert.Equal(0, telemetry.SuccessfulScans);
+        Assert.Contains(report.RootElement.GetProperty("errors").EnumerateArray(), item => item.GetProperty("code").GetString() == "FV-E010");
+        Assert.DoesNotContain("FixtureVault scan complete.", output, StringComparison.Ordinal);
     }
 
     [Fact]

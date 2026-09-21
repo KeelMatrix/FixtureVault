@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- Rejects directories replaced by links before enumeration, uses platform-correct Linux filesystem ABI checks including ARM64, and treats fixture growth during bounded reads as an incomplete scan while accounting every byte read toward the aggregate limit.
 - Hardened fixture, policy, and manifest reads at the open boundary, including bounded growth/shrinkage detection and rejection of special files.
 - Added an aggregate 4,096-record / 1 MiB JSON-field budget for findings and skipped diagnostics, with explicit `FV-E017` incomplete-scan results instead of unbounded report construction or silent truncation.
 - Corrected connection-string credential detection for empty and already-redacted `Password`/`Pwd` values, while retaining real-secret detection.

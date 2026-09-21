@@ -276,6 +276,7 @@ internal enum SafeFileReadStatus
     Success,
     Missing,
     FileTooLarge,
+    GrewBeyondLimit,
     TotalLimitExceeded,
     Changed,
     Unsafe,
@@ -290,14 +291,21 @@ internal static class SafeFileReader
     private const int UnixReadOnly = 0;
     private const int LinuxNonBlocking = 0x800;
     private const int LinuxCloseOnExec = 0x80000;
-    private const int LinuxDirectory = 0x10000;
-    private const int LinuxNoFollow = 0x20000;
+    private const int LinuxGenericDirectory = 0x10000;
+    private const int LinuxGenericNoFollow = 0x20000;
+    private const int LinuxArmDirectory = 0x4000;
+    private const int LinuxArmNoFollow = 0x8000;
     private const int MacNonBlocking = 0x4;
     private const int MacCloseOnExec = 0x01000000;
     private const int MacDirectory = 0x00100000;
     private const int MacNoFollow = 0x00000100;
     private const int UnixFileTypeMask = 0xF000;
     private const int UnixRegularFile = 0x8000;
+    private const int LinuxAtFileDescriptor = -100;
+    private const int LinuxAtSymlinkNoFollow = 0x100;
+    private const int LinuxAtEmptyPath = 0x1000;
+    private const uint LinuxStatxType = 0x00000001;
+    private const int LinuxStatxModeOffset = 0x1C;
 
     internal static SafeFileReadStatus TryReadBytes(
         string repositoryRoot,
@@ -305,9 +313,11 @@ internal static class SafeFileReader
         long maximumBytes,
         long? remainingTotalBytes,
         out byte[] bytes,
+        out long bytesRead,
         Action? afterInitialLengthRead = null)
     {
         bytes = [];
+        bytesRead = 0;
         if (maximumBytes < 0 || remainingTotalBytes is < 0)
         {
             return SafeFileReadStatus.Failed;
@@ -353,9 +363,18 @@ internal static class SafeFileReader
 
                     totalRead += read;
                     SafeFileReadStatus readLimit = CheckLimits(totalRead, maximumBytes, remainingTotalBytes);
-                    if (readLimit != SafeFileReadStatus.Success)
+                    bytesRead = totalRead;
+                    if (readLimit == SafeFileReadStatus.TotalLimitExceeded)
                     {
                         return readLimit;
+                    }
+
+                    if (readLimit == SafeFileReadStatus.FileTooLarge)
+                    {
+                        // The initial length was within the per-file limit, so crossing it while
+                        // reading proves that the file changed during inspection. Preserve the
+                        // distinction from a file that was already oversized when it was opened.
+                        return SafeFileReadStatus.GrewBeyondLimit;
                     }
 
                     contents.Write(buffer, 0, read);
@@ -364,15 +383,18 @@ internal static class SafeFileReader
                 long finalLength = fileStream.Length;
                 if (initialLength != totalRead || finalLength != totalRead)
                 {
+                    bytesRead = totalRead;
                     return SafeFileReadStatus.Changed;
                 }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ObjectDisposedException)
             {
+                bytesRead = totalRead;
                 return SafeFileReadStatus.Changed;
             }
 
             bytes = contents.ToArray();
+            bytesRead = totalRead;
             return SafeFileReadStatus.Success;
         }
     }
@@ -559,6 +581,14 @@ internal static class SafeFileReader
     [DllImport("libc", EntryPoint = "fstat", SetLastError = true)]
     private static extern int UnixFStat(int fileDescriptor, IntPtr buffer);
 
+    [DllImport("libc", EntryPoint = "statx", CharSet = CharSet.Ansi, SetLastError = true)]
+    private static extern int UnixStatX(
+        int directoryFileDescriptor,
+        [MarshalAs(UnmanagedType.LPStr)] string path,
+        int flags,
+        uint mask,
+        IntPtr buffer);
+
     private static bool TryOpenUnixRegularFile(
         string fullRoot,
         string relativePath,
@@ -567,10 +597,29 @@ internal static class SafeFileReader
     {
         stream = null;
         status = SafeFileReadStatus.Unsafe;
-        int closeOnExec = OperatingSystem.IsMacOS() ? MacCloseOnExec : LinuxCloseOnExec;
-        int directory = OperatingSystem.IsMacOS() ? MacDirectory : LinuxDirectory;
-        int noFollow = OperatingSystem.IsMacOS() ? MacNoFollow : LinuxNoFollow;
-        int nonBlocking = OperatingSystem.IsMacOS() ? MacNonBlocking : LinuxNonBlocking;
+        int closeOnExec;
+        int directory;
+        int noFollow;
+        int nonBlocking;
+        if (OperatingSystem.IsMacOS())
+        {
+            closeOnExec = MacCloseOnExec;
+            directory = MacDirectory;
+            noFollow = MacNoFollow;
+            nonBlocking = MacNonBlocking;
+        }
+        else if (OperatingSystem.IsLinux())
+        {
+            closeOnExec = LinuxCloseOnExec;
+            nonBlocking = LinuxNonBlocking;
+            // Linux ARM and ARM64 override O_DIRECTORY/O_NOFOLLOW in their exported
+            // ABI headers; the other supported Linux architectures use the generic values.
+            (directory, noFollow) = GetLinuxOpenBoundaryFlags();
+        }
+        else
+        {
+            return false;
+        }
         int directoryFlags = closeOnExec | directory | noFollow;
         int rootDescriptor = UnixOpen(fullRoot, UnixReadOnly | directoryFlags);
         if (rootDescriptor < 0)
@@ -640,6 +689,11 @@ internal static class SafeFileReader
 
     private static bool IsUnixRegularPath(string path)
     {
+        if (OperatingSystem.IsLinux())
+        {
+            return IsLinuxRegularPath(path);
+        }
+
         IntPtr statBuffer = Marshal.AllocHGlobal(256);
         try
         {
@@ -653,6 +707,11 @@ internal static class SafeFileReader
 
     private static bool IsUnixRegularFile(int fileDescriptor)
     {
+        if (OperatingSystem.IsLinux())
+        {
+            return IsLinuxRegularFile(fileDescriptor);
+        }
+
         IntPtr statBuffer = Marshal.AllocHGlobal(256);
         try
         {
@@ -664,9 +723,63 @@ internal static class SafeFileReader
         }
     }
 
+    private static bool IsLinuxRegularPath(string path)
+    {
+        IntPtr statBuffer = Marshal.AllocHGlobal(256);
+        try
+        {
+            return UnixStatX(
+                       LinuxAtFileDescriptor,
+                       path,
+                       LinuxAtSymlinkNoFollow,
+                       LinuxStatxType,
+                       statBuffer) == 0 &&
+                   IsRegularMode(ReadLinuxStatxMode(statBuffer));
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return false;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(statBuffer);
+        }
+    }
+
+    private static bool IsLinuxRegularFile(int fileDescriptor)
+    {
+        IntPtr statBuffer = Marshal.AllocHGlobal(256);
+        try
+        {
+            return UnixStatX(
+                       fileDescriptor,
+                       string.Empty,
+                       LinuxAtEmptyPath,
+                       LinuxStatxType,
+                       statBuffer) == 0 &&
+                   IsRegularMode(ReadLinuxStatxMode(statBuffer));
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return false;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(statBuffer);
+        }
+    }
+
     private static int ReadUnixMode(IntPtr statBuffer) => OperatingSystem.IsMacOS()
         ? Marshal.ReadInt16(statBuffer, 4)
-        : Marshal.ReadInt32(statBuffer, 24);
+        : ReadLinuxStatxMode(statBuffer);
+
+    // Linux statx is a fixed UAPI layout, unlike the libc struct stat layout.
+    private static int ReadLinuxStatxMode(IntPtr statBuffer) => Marshal.ReadInt16(statBuffer, LinuxStatxModeOffset);
+
+    private static (int Directory, int NoFollow) GetLinuxOpenBoundaryFlags() =>
+        RuntimeInformation.OSArchitecture is Architecture.Arm or Architecture.Arm64
+            ? (LinuxArmDirectory, LinuxArmNoFollow)
+            : (LinuxGenericDirectory, LinuxGenericNoFollow);
 
     private static bool IsRegularMode(int mode) => (mode & UnixFileTypeMask) == UnixRegularFile;
 
@@ -790,10 +903,27 @@ internal static class SafeFileWalker
         while (pending.Count > 0)
         {
             DirectoryInfo directory = pending.Pop();
+            if (!IsSafeDirectoryForEnumeration(directory))
+            {
+                return new WalkResult(files, reparsePaths, new ScanError(
+                    "FV-E002",
+                    "A configured fixture root could not be inspected completely."));
+            }
+
             try
             {
                 foreach (FileSystemInfo entry in directory.EnumerateFileSystemInfos())
                 {
+                    // The directory was validated immediately before enumeration started, and
+                    // again before each yielded entry. This prevents a queued directory that was
+                    // replaced with a link from contributing entries to the report.
+                    if (!IsSafeDirectoryForEnumeration(directory))
+                    {
+                        return new WalkResult(files, reparsePaths, new ScanError(
+                            "FV-E002",
+                            "A configured fixture root could not be inspected completely."));
+                    }
+
                     if (!IsWithinEntryLimit(ref entriesSeen))
                     {
                         return new WalkResult(files, reparsePaths, new ScanError(
@@ -843,6 +973,13 @@ internal static class SafeFileWalker
                     }
                     else
                     {
+                        if (!IsSafeDirectoryForEnumeration(directory))
+                        {
+                            return new WalkResult(files, reparsePaths, new ScanError(
+                                "FV-E002",
+                                "A configured fixture root could not be inspected completely."));
+                        }
+
                         files.Add(new SafeFileEntry(entry.FullName, relativePath));
                     }
                 }
@@ -861,6 +998,22 @@ internal static class SafeFileWalker
         }
 
         return new WalkResult(files, reparsePaths, null);
+    }
+
+    private static bool IsSafeDirectoryForEnumeration(DirectoryInfo directory)
+    {
+        try
+        {
+            FileAttributes attributes = directory.Attributes;
+            return directory.Exists &&
+                   (attributes & FileAttributes.Directory) != 0 &&
+                   (attributes & FileAttributes.ReparsePoint) == 0 &&
+                   directory.LinkTarget is null;
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            return false;
+        }
     }
 
     private static bool IsWithinEntryLimit(ref int entriesSeen) => ++entriesSeen <= MaximumEntries;

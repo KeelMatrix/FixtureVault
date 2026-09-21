@@ -29,6 +29,6 @@ Security fixes are prioritized for the latest maintained package line. Older ver
 
 - Do not post vulnerability details, credentials, personal data, or fixture contents in public repositories or issue trackers.
 - Include enough safe information to reproduce and resolve the issue without disclosing secrets.
-- `scan` treats configured roots as hard boundaries at traversal and file-open time, rejects links/reparse points and non-regular files, and fails closed when bounded reads detect replacement, growth, or shrinkage.
+- `scan` treats configured roots as hard boundaries at traversal and file-open time, rechecks queued directories when enumeration begins, rejects links/reparse points and non-regular files, and fails closed when bounded reads detect replacement, growth, or shrinkage. Linux ARM64 uses its native open-flag and file-status ABI, covered by the package-consumer CI leg.
 - Findings and skipped diagnostics share a bounded 4,096-record / 1 MiB JSON-field budget. Exhaustion returns `FV-E017` with an incomplete scan before another diagnostic is retained or serialized; it never silently truncates a report or activates successful-scan telemetry.
 - Human-readable diagnostics escape control characters in untrusted repository-relative filenames; JSON retains the actual path value for machine use.

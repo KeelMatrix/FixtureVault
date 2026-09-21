@@ -32,8 +32,9 @@ internal static class PolicyLoader
                 64 * 1024,
                 remainingTotalBytes: null,
                 out byte[] policyBytes,
+                out _,
                 afterInitialLengthRead);
-            if (readStatus == SafeFileReadStatus.FileTooLarge ||
+            if (readStatus is SafeFileReadStatus.FileTooLarge or SafeFileReadStatus.GrewBeyondLimit ||
                 readStatus == SafeFileReadStatus.Success && policyBytes.Length == 0)
             {
                 return InvalidPolicy();

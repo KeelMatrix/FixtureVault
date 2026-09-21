@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [string]$PackagePath,
@@ -123,18 +123,56 @@ try {
         $testsRoot = Join-Path $consumerRoot "tests"
         New-Item -ItemType Directory -Force -Path $testsRoot | Out-Null
         [IO.File]::WriteAllText((Join-Path $testsRoot "OrderTests.received.json"), "{`"id`":1}", [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText((Join-Path $testsRoot "sensitive.golden"), "password=fixture-test-secret-1234567890", [Text.UTF8Encoding]::new($false))
         $blockingReportPath = Join-Path $workRoot "blocking-report.json"
         $blockingCode = Invoke-CommandCapture $fixtureVault @("scan", "--format", "json") $blockingReportPath
         Assert-Contract ($blockingCode -eq 1) "Blocking fixturevault scan returned $blockingCode instead of 1."
         $report = [IO.File]::ReadAllText($blockingReportPath) | ConvertFrom-Json
         Assert-Contract ($report.schemaVersion -eq 1) "Blocking scan JSON did not report schema version 1."
         Assert-Contract (@($report.findings | Where-Object { $_.ruleId -eq "FV001" }).Count -gt 0) "Blocking scan JSON did not contain the expected FV001 finding."
+        Assert-Contract (@($report.findings | Where-Object { $_.ruleId -eq "FV007" }).Count -gt 0) "Blocking scan JSON did not contain the expected FV007 sensitive-data finding."
+        Assert-Contract (-not ([IO.File]::ReadAllText($blockingReportPath).Contains("fixture-test-secret-1234567890", [StringComparison]::Ordinal))) "Sensitive data was disclosed by the package consumer report."
+
+        if ([OperatingSystem]::IsLinux()) {
+            $safetyRoot = Join-Path $workRoot "safety-consumer"
+            $safetyTestsRoot = Join-Path $safetyRoot "tests"
+            New-Item -ItemType Directory -Force -Path $safetyTestsRoot | Out-Null
+            Push-Location $safetyRoot
+            try {
+                Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "safety-init.txt")) -eq 0) "Linux safety consumer init failed."
+
+                $outsideRoot = Join-Path $workRoot "outside"
+                New-Item -ItemType Directory -Force -Path $outsideRoot | Out-Null
+                [IO.File]::WriteAllText((Join-Path $outsideRoot "outside.received.json"), "outside", [Text.UTF8Encoding]::new($false))
+                $linkedDirectory = Join-Path $safetyTestsRoot "linked"
+                New-Item -ItemType SymbolicLink -Path $linkedDirectory -Target $outsideRoot | Out-Null
+                $linkReportPath = Join-Path $workRoot "link-report.json"
+                $linkCode = Invoke-CommandCapture $fixtureVault @("scan", "--format", "json") $linkReportPath
+                Assert-Contract ($linkCode -eq 0) "Linux symlink scan returned $linkCode instead of 0."
+                $linkReport = [IO.File]::ReadAllText($linkReportPath) | ConvertFrom-Json
+                Assert-Contract (@($linkReport.skipped | Where-Object { $_.code -eq "FV-SKIP-REPARSE" }).Count -gt 0) "Linux symlink scan did not report FV-SKIP-REPARSE."
+                Assert-Contract (-not ([IO.File]::ReadAllText($linkReportPath).Contains("outside.received.json", [StringComparison]::Ordinal))) "Linux symlink scan disclosed an outside filename."
+                Remove-Item -LiteralPath $linkedDirectory -Force
+
+                $fifoPath = Join-Path $safetyTestsRoot "blocking.golden"
+                & mkfifo $fifoPath
+                Assert-Contract ($LASTEXITCODE -eq 0) "Linux FIFO could not be created for the package consumer test."
+                $fifoReportPath = Join-Path $workRoot "fifo-report.json"
+                $fifoCode = Invoke-CommandCapture $fixtureVault @("scan", "--format", "json") $fifoReportPath
+                Assert-Contract ($fifoCode -eq 2) "Linux FIFO scan returned $fifoCode instead of 2."
+                $fifoReport = [IO.File]::ReadAllText($fifoReportPath) | ConvertFrom-Json
+                Assert-Contract (@($fifoReport.errors | Where-Object { $_.code -eq "FV-E009" }).Count -gt 0) "Linux FIFO scan did not report FV-E009."
+            }
+            finally {
+                Pop-Location
+            }
+        }
     }
     finally {
         Pop-Location
     }
 
-    Write-Host "Consumer smoke passed: help, init, clean scan (0), and blocking JSON scan (1)."
+    Write-Host "Consumer smoke passed: help, init, clean scan (0), sensitive/blocking JSON scan (1), and Linux filesystem safety checks when applicable."
 }
 finally {
     if (Test-Path -LiteralPath $workRoot) {
