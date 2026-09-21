@@ -3159,6 +3159,7 @@ public sealed class FixtureVaultTests
         {
             repository.WritePolicy();
             string outside = Path.Combine(Path.GetTempPath(), "fixturevault-skipped-path", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path.GetDirectoryName(outside)!);
             File.WriteAllText(outside, "outside\n");
             try
             {
@@ -3172,6 +3173,7 @@ public sealed class FixtureVaultTests
             finally
             {
                 File.Delete(outside);
+                Directory.Delete(Path.GetDirectoryName(outside)!, recursive: true);
             }
         }
     }
