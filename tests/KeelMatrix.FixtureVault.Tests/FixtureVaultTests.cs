@@ -3139,8 +3139,12 @@ public sealed class FixtureVaultTests
         string dangerousErrorPath = "tests/error\n\r\u001b[2J.received.json";
         using (var repository = new TemporaryRepository())
         {
-            repository.WritePolicy(policy => policy.Conventions = ["verify", "generic", "fixturevault-manifest"]);
+            repository.WritePolicy();
             repository.WriteText(dangerousErrorPath, "received\n");
+            string fifoPath = Path.Combine(repository.Root, "tests", "error.golden");
+            using Process mkfifo = StartProcessOrSkip("mkfifo", fifoPath);
+            Assert.True(mkfifo.WaitForExit(5_000));
+            Assert.Equal(0, mkfifo.ExitCode);
 
             int exitCode = repository.Run(["scan"], new RecordingTelemetry(), out string output, out string error);
 
