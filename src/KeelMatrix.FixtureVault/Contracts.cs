@@ -31,9 +31,9 @@ internal static class FixtureVaultContract
     internal const string UndeclaredNulContentDiagnosticMessage = "The fixture contains NUL characters but declares no byte-order mark, so it is not proven to be UTF-8 text.";
     internal const string UndecodableContentDiagnosticMessage = "The fixture is not valid UTF-8 text.";
     internal const string NonUtf8EncodingDiagnosticMessage = "The fixture uses a non-UTF-8 encoding.";
-    internal const string NonUtf8EncodingRemediation = "Save the fixture as UTF-8 text. A UTF-8 byte-order mark is supported where the fixture convention permits it.";
+    internal const string NonUtf8EncodingRemediation = "Save the fixture as valid UTF-8 text without NUL characters.";
     internal const string NulContentRemediation = "Save the fixture as UTF-8 text without NUL characters; a byte-order mark does not make NUL content inspectable.";
-    internal const string UndeclaredEncodingRemediation = "Save the fixture as deterministic UTF-8 text and avoid locale-specific encodings.";
+    internal const string UndeclaredEncodingRemediation = "Save the fixture as valid UTF-8 text without NUL characters.";
 
     internal static string DeclaredNulContentSkippedReason(string declaredEncodingName) =>
         $"Content-dependent checks, including sensitive-data detection, did not run for this fixture because its decoded {declaredEncodingName} content contains a NUL (U+0000) character, so the decoded text cannot be trusted.";
@@ -47,8 +47,8 @@ internal static class FixtureVaultContract
     internal static string UndecodableDeclaredContentDiagnosticMessage(string declaredEncodingName) =>
         $"The fixture declares {declaredEncodingName} with a byte-order mark, but its bytes are not valid {declaredEncodingName} text.";
 
-    internal static string DeclaredEncodingRemediation(string declaredEncodingName) =>
-        $"Save the fixture as valid {declaredEncodingName} text without NUL characters, or as UTF-8 text.";
+    internal static string DeclaredEncodingRemediation(string _) =>
+        NonUtf8EncodingRemediation;
 
     internal static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -186,7 +186,7 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
     private static readonly Regex ConnectionStringCredential = new(
         "\\b(?<name>Password|Pwd)\\s*=\\s*(?<value>\\\"[^\\\"]*\\\"|'[^']*'|[^;]*)",
-        RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
 
     public bool IsSensitive(string text)
     {

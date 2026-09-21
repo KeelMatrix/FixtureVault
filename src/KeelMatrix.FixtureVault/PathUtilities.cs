@@ -903,7 +903,7 @@ internal static class SafeFileWalker
         while (pending.Count > 0)
         {
             DirectoryInfo directory = pending.Pop();
-            if (!IsSafeDirectoryForEnumeration(directory))
+            if (!IsSafeDirectoryForEnumeration(repositoryRoot, directory))
             {
                 return new WalkResult(files, reparsePaths, new ScanError(
                     "FV-E002",
@@ -914,10 +914,11 @@ internal static class SafeFileWalker
             {
                 foreach (FileSystemInfo entry in directory.EnumerateFileSystemInfos())
                 {
-                    // The directory was validated immediately before enumeration started, and
-                    // again before each yielded entry. This prevents a queued directory that was
-                    // replaced with a link from contributing entries to the report.
-                    if (!IsSafeDirectoryForEnumeration(directory))
+                    // The directory and every current ancestor were validated immediately before
+                    // enumeration started, and again before each yielded entry. This prevents a
+                    // queued directory whose parent was replaced with a link from contributing
+                    // entries to the report.
+                    if (!IsSafeDirectoryForEnumeration(repositoryRoot, directory))
                     {
                         return new WalkResult(files, reparsePaths, new ScanError(
                             "FV-E002",
@@ -973,7 +974,7 @@ internal static class SafeFileWalker
                     }
                     else
                     {
-                        if (!IsSafeDirectoryForEnumeration(directory))
+                        if (!IsSafeDirectoryForEnumeration(repositoryRoot, directory))
                         {
                             return new WalkResult(files, reparsePaths, new ScanError(
                                 "FV-E002",
@@ -1000,20 +1001,55 @@ internal static class SafeFileWalker
         return new WalkResult(files, reparsePaths, null);
     }
 
-    private static bool IsSafeDirectoryForEnumeration(DirectoryInfo directory)
+    private static bool IsSafeDirectoryForEnumeration(string repositoryRoot, DirectoryInfo directory)
     {
         try
         {
-            FileAttributes attributes = directory.Attributes;
-            return directory.Exists &&
-                   (attributes & FileAttributes.Directory) != 0 &&
-                   (attributes & FileAttributes.ReparsePoint) == 0 &&
-                   directory.LinkTarget is null;
+            string fullRepositoryRoot = Path.GetFullPath(repositoryRoot);
+            string fullDirectoryPath = Path.GetFullPath(directory.FullName);
+            if (!PathUtilities.IsWithin(fullRepositoryRoot, fullDirectoryPath))
+            {
+                return false;
+            }
+
+            DirectoryInfo current = new(fullRepositoryRoot);
+            if (!IsSafeDirectory(current))
+            {
+                return false;
+            }
+
+            string relativePath = Path.GetRelativePath(fullRepositoryRoot, fullDirectoryPath);
+            if (relativePath == ".")
+            {
+                return true;
+            }
+
+            foreach (string component in relativePath.Split(
+                         [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                         StringSplitOptions.RemoveEmptyEntries))
+            {
+                current = new DirectoryInfo(Path.Combine(current.FullName, component));
+                if (!IsSafeDirectory(current))
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
         catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or NotSupportedException)
         {
             return false;
         }
+    }
+
+    private static bool IsSafeDirectory(DirectoryInfo directory)
+    {
+        FileAttributes attributes = directory.Attributes;
+        return directory.Exists &&
+               (attributes & FileAttributes.Directory) != 0 &&
+               (attributes & FileAttributes.ReparsePoint) == 0 &&
+               directory.LinkTarget is null;
     }
 
     private static bool IsWithinEntryLimit(ref int entriesSeen) => ++entriesSeen <= MaximumEntries;

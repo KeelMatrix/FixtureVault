@@ -20,7 +20,8 @@ dotnet format KeelMatrix.FixtureVault.sln --verify-no-changes
 
 Use `KEELMATRIX_NO_TELEMETRY=1` during local validation when a command runs the tool and should not emit telemetry.
 
-The safety regressions cover both directions of a read-boundary change and the aggregate diagnostic bound. The
+The safety regressions cover ancestor-link replacement during repository-wide path-policy discovery, both directions of
+a read-boundary change, and the aggregate diagnostic bound. The
 aggregate bound applies to ordinary findings and skipped diagnostics as well as collision findings; exhaustion is
 `FV-E017`, exit code `2`, `Completed=false`, and no successful-scan telemetry.
 

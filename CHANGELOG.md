@@ -8,10 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
-- Rejects directories replaced by links before enumeration, uses platform-correct Linux filesystem ABI checks including ARM64, and treats fixture growth during bounded reads as an incomplete scan while accounting every byte read toward the aggregate limit.
+- Rejects directories replaced by links before enumeration, including links introduced in any current ancestor of a queued directory, and reports repository-wide traversal failure as `FV-E015` without disclosing outside filenames. It uses platform-correct Linux filesystem ABI checks including ARM64, and treats fixture growth during bounded reads as an incomplete scan while accounting every byte read toward the aggregate limit.
 - Hardened fixture, policy, and manifest reads at the open boundary, including bounded growth/shrinkage detection and rejection of special files.
 - Added an aggregate 4,096-record / 1 MiB JSON-field budget for findings and skipped diagnostics, with explicit `FV-E017` incomplete-scan results instead of unbounded report construction or silent truncation.
-- Corrected connection-string credential detection for empty and already-redacted `Password`/`Pwd` values, while retaining real-secret detection.
+- Detects non-empty connection-string `Password`/`Pwd` credentials case-insensitively, including quoted values, while ignoring empty, whitespace-only, and already-redacted values without disclosing secrets.
+- Guides non-Verify `FV006` remediation to valid UTF-8 without NUL characters so the documented repair clears the UTF-8 policy finding as well as any uninspectable-content error.
 - Escaped control characters in human-readable paths without changing JSON path values.
 
 ## [0.1.0] - 2026-09-15

@@ -871,6 +871,84 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
+    public void Replacing_an_ancestor_of_a_pending_directory_fails_closed_without_disclosing_outside_paths()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        string parentPath = Path.Combine(repository.Root, "misc", "parent");
+        Directory.CreateDirectory(Path.Combine(parentPath, "child"));
+        string outsideRoot = Path.Combine(Path.GetTempPath(), "fixturevault-ancestor-replacement", Guid.NewGuid().ToString("N"));
+        string outsideChild = Path.Combine(outsideRoot, "child");
+        Directory.CreateDirectory(outsideChild);
+        File.WriteAllText(Path.Combine(outsideChild, "private.received.json"), "outside-only canary\n");
+        bool replaced = false;
+
+        try
+        {
+            FixtureFileWalk replacingWalk = (repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory) =>
+                SafeFileWalker.Walk(
+                    repositoryRoot,
+                    root,
+                    failOnAccessErrors,
+                    relativePath =>
+                    {
+                        if (!replaced &&
+                            Path.GetFullPath(root).Equals(repository.Root, StringComparison.Ordinal) &&
+                            relativePath.Equals("misc/parent/child", StringComparison.Ordinal))
+                        {
+                            replaced = true;
+                            Directory.Delete(parentPath, recursive: true);
+                            CreateSymbolicDirectoryOrSkip(parentPath, outsideRoot);
+                        }
+
+                        return shouldPruneDirectory?.Invoke(relativePath) ?? GlobMatchStatus.NoMatch;
+                    });
+
+            ScanResult directResult = repository.Scan(fileWalk: replacingWalk);
+
+            Assert.True(replaced);
+            Assert.Equal(2, directResult.ExitCode);
+            Assert.False(directResult.Completed);
+            Assert.Contains(directResult.Report.Errors, item => item.Code == FixtureVaultContract.PathPolicyTraversalErrorCode);
+            Assert.DoesNotContain(directResult.Report.Findings, item => item.Path.Contains("private.received.json", StringComparison.Ordinal));
+
+            Directory.Delete(parentPath, recursive: true);
+            Directory.CreateDirectory(Path.Combine(parentPath, "child"));
+            replaced = false;
+            var telemetry = new RecordingTelemetry();
+            int exitCode = repository.Run(
+                ["scan", "--format", "json"],
+                telemetry,
+                out string output,
+                out string error,
+                fileWalk: replacingWalk);
+            using JsonDocument report = JsonDocument.Parse(output);
+
+            Assert.True(replaced);
+            Assert.Equal(2, exitCode);
+            Assert.Empty(error);
+            Assert.Equal(0, telemetry.SuccessfulScans);
+            Assert.Contains(
+                report.RootElement.GetProperty("errors").EnumerateArray(),
+                item => item.GetProperty("code").GetString() == FixtureVaultContract.PathPolicyTraversalErrorCode);
+            Assert.DoesNotContain("private.received.json", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("outside-only canary", output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(parentPath))
+            {
+                Directory.Delete(parentPath, recursive: true);
+            }
+
+            if (Directory.Exists(outsideRoot))
+            {
+                Directory.Delete(outsideRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void Fixture_growth_after_the_initial_length_check_is_reported_as_a_changed_read()
     {
         using var repository = new TemporaryRepository();
@@ -2071,8 +2149,14 @@ public sealed class FixtureVaultTests
     [InlineData("Password=\"\";", "json", false)]
     [InlineData("Pwd='';", "console", false)]
     [InlineData("Pwd='';", "json", false)]
+    [InlineData("PWD='';", "console", false)]
+    [InlineData("PWD='';", "json", false)]
+    [InlineData("pWd='  ';", "console", false)]
+    [InlineData("pWd='  ';", "json", false)]
     [InlineData(" Password =  *** ; ", "console", false)]
     [InlineData(" Password =  *** ; ", "json", false)]
+    [InlineData("pAsSwOrD=<redacted>;", "console", false)]
+    [InlineData("pAsSwOrD=<redacted>;", "json", false)]
     [InlineData("Password=[REDACTED];Pwd=[REDACTED];", "console", false)]
     [InlineData("Password=[REDACTED];Pwd=[REDACTED];", "json", false)]
     [InlineData("Password=[REDACTED]; Pwd = 'real-connection-secret-1234567890';", "console", true)]
@@ -2099,6 +2183,110 @@ public sealed class FixtureVaultTests
             using JsonDocument report = JsonDocument.Parse(output);
             Assert.Equal(expectsFinding, report.RootElement.GetProperty("findings").EnumerateArray().Any());
         }
+    }
+
+    [Theory]
+    [InlineData("console")]
+    [InlineData("json")]
+    public void Connection_string_password_keywords_are_case_insensitive_without_disclosing_values(string format)
+    {
+        const string canary = "Canary123";
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText(
+            "tests/connection-string-casing.golden",
+            "Server=example.invalid;User Id=fixture;Password=Canary123;\n" +
+            "Server=example.invalid;User Id=fixture;Pwd=Canary123;\n" +
+            "Server=example.invalid;User Id=fixture;PWD=Canary123;\n" +
+            "Server=example.invalid;User Id=fixture;pwd=Canary123;\n" +
+            "Server=example.invalid;User Id=fixture;pAsSwOrD='Canary123';\n" +
+            "Server=example.invalid;User Id=fixture;pWd=\"Canary123\";\n");
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", format], telemetry, out string output, out string error);
+
+        Assert.Equal(1, exitCode);
+        Assert.Empty(error);
+        Assert.Equal(1, telemetry.SuccessfulScans);
+        Assert.Contains("FV007", output, StringComparison.Ordinal);
+        Assert.DoesNotContain(canary, output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            JsonElement finding = Assert.Single(report.RootElement.GetProperty("findings").EnumerateArray());
+            Assert.Equal("FV007", finding.GetProperty("ruleId").GetString());
+            Assert.Equal("block", finding.GetProperty("disposition").GetString());
+        }
+    }
+
+    [Theory]
+    [InlineData("console")]
+    [InlineData("json")]
+    public void Connection_string_password_keyword_case_detection_respects_non_strict_exit_behavior(string format)
+    {
+        const string canary = "Canary123";
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Ci!.Strict = false);
+        repository.WriteText("tests/connection-string-nonstrict.golden", "Server=example.invalid;User Id=fixture;PWD=Canary123;\n");
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(["scan", "--format", format], telemetry, out string output, out string error);
+
+        Assert.Equal(0, exitCode);
+        Assert.Empty(error);
+        Assert.Equal(1, telemetry.SuccessfulScans);
+        Assert.Contains("FV007", output, StringComparison.Ordinal);
+        Assert.DoesNotContain(canary, output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            JsonElement finding = Assert.Single(report.RootElement.GetProperty("findings").EnumerateArray());
+            Assert.Equal("FV007", finding.GetProperty("ruleId").GetString());
+            Assert.Equal("warn", finding.GetProperty("disposition").GetString());
+        }
+    }
+
+    [Fact]
+    public void Recommended_non_verify_encoding_repair_clears_fv006_and_fve016()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteBytes("tests/malformed.golden", [0xFF, 0xFE, 0x6F]);
+
+        int initialExitCode = repository.Run(
+            ["scan", "--format", "json"],
+            new RecordingTelemetry(),
+            out string initialOutput,
+            out string initialError);
+        using (JsonDocument initialReport = JsonDocument.Parse(initialOutput))
+        {
+            Assert.Equal(2, initialExitCode);
+            Assert.Empty(initialError);
+            JsonElement finding = Assert.Single(initialReport.RootElement.GetProperty("findings").EnumerateArray());
+            Assert.Equal("FV006", finding.GetProperty("ruleId").GetString());
+            Assert.Equal("Save the fixture as valid UTF-8 text without NUL characters.", finding.GetProperty("remediation").GetString());
+            Assert.Contains(
+                initialReport.RootElement.GetProperty("errors").EnumerateArray(),
+                item => item.GetProperty("code").GetString() == FixtureVaultContract.UninspectableContentErrorCode);
+        }
+
+        repository.WriteText("tests/malformed.golden", "repaired as utf-8\n");
+        var telemetry = new RecordingTelemetry();
+        int repairedExitCode = repository.Run(
+            ["scan", "--format", "json"],
+            telemetry,
+            out string repairedOutput,
+            out string repairedError);
+        using JsonDocument repairedReport = JsonDocument.Parse(repairedOutput);
+
+        Assert.Equal(0, repairedExitCode);
+        Assert.Empty(repairedError);
+        Assert.Equal(1, telemetry.SuccessfulScans);
+        Assert.Empty(repairedReport.RootElement.GetProperty("findings").EnumerateArray());
+        Assert.Empty(repairedReport.RootElement.GetProperty("errors").EnumerateArray());
+        Assert.DoesNotContain(
+            repairedReport.RootElement.GetProperty("skipped").EnumerateArray(),
+            item => item.GetProperty("code").GetString() == FixtureVaultContract.UninspectableContentSkippedCode);
     }
 
     [Theory]
