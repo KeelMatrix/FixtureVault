@@ -132,6 +132,7 @@ public sealed class FixtureVaultTests
         Assert.Empty(error);
         Assert.Contains("Usage:", output, StringComparison.Ordinal);
         Assert.Contains("fixturevault", output, StringComparison.Ordinal);
+        Assert.Contains("doubled-quote escapes", output, StringComparison.Ordinal);
         Assert.Contains("4,096-record / 1 MiB report-field budget", output, StringComparison.Ordinal);
     }
 
@@ -2216,6 +2217,61 @@ public sealed class FixtureVaultTests
             JsonElement finding = Assert.Single(report.RootElement.GetProperty("findings").EnumerateArray());
             Assert.Equal("FV007", finding.GetProperty("ruleId").GetString());
             Assert.Equal("block", finding.GetProperty("disposition").GetString());
+        }
+    }
+
+    [Theory]
+    [InlineData("console")]
+    [InlineData("json")]
+    public void Escaped_connection_string_quotes_still_report_non_empty_credentials_without_disclosing_values(string format)
+    {
+        const string canary = "Canary123";
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText(
+            "tests/connection-string-escaped-quotes.golden",
+            "Server=example.invalid;Password=\"\"\"Canary123\"\"\";\n" +
+            "Server=example.invalid;Pwd='''Canary123''';\n");
+
+        int exitCode = repository.Run(["scan", "--format", format], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(1, exitCode);
+        Assert.Empty(error);
+        Assert.Contains("FV007", output, StringComparison.Ordinal);
+        Assert.DoesNotContain(canary, output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            JsonElement finding = Assert.Single(report.RootElement.GetProperty("findings").EnumerateArray());
+            Assert.Equal("FV007", finding.GetProperty("ruleId").GetString());
+            Assert.Equal("block", finding.GetProperty("disposition").GetString());
+        }
+    }
+
+    [Theory]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;Password=\"}", "console")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;Password=\"}", "json")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;Pwd=   \"}", "console")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;Pwd=   \"}", "json")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;Password=[redacted]\"}", "console")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;Password=[redacted]\"}", "json")]
+    public void Json_wrapped_empty_whitespace_and_redacted_connection_string_values_are_not_findings(
+        string fixture,
+        string format)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/connection-string-json.golden", fixture + "\n");
+
+        int exitCode = repository.Run(["scan", "--format", format], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(0, exitCode);
+        Assert.Empty(error);
+        Assert.DoesNotContain("FV007", output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
         }
     }
 

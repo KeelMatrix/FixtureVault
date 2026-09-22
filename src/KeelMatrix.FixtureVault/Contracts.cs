@@ -185,7 +185,7 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         "^\\s*[^=;&\\s]+\\s*=\\s*(?:\\\"\\s*\\\"|'\\s*')?\\s*$",
         RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
     private static readonly Regex ConnectionStringCredential = new(
-        "\\b(?<name>Password|Pwd)\\s*=\\s*(?<value>\\\"[^\\\"]*\\\"|'[^']*'|[^;]*)",
+        "\\b(?<name>Password|Pwd)\\s*=\\s*(?<value>\\\"(?:\\\"\\\"|[^\\\"])*\\\"|'(?:''|[^'])*'|[^;\\\"\\r\\n}]*)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
 
     public bool IsSensitive(string text)

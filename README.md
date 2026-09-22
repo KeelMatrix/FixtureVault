@@ -75,6 +75,8 @@ Candidates are files matching an allowed fixture extension or a supported fixtur
 
 The v1 `sensitiveDataRules` policy supports only `high-confidence` (case-insensitive), which is also the default. An unknown value is invalid configuration and returns exit code `2`; it never disables sensitive-data detection silently.
 
+High-confidence detection recognizes non-empty connection-string `Password` and `Pwd` values case-insensitively. Quoted values honor doubled quote escapes, and unquoted values stop at serialized string boundaries, so JSON-wrapped empty, whitespace-only, and already-redacted values are not findings. Matched values are never printed in console or JSON output.
+
 `ci.strict` is required and must be a JSON boolean. It has no implicit default: omitting it, misspelling it, or changing its casing is a configuration error (`FV-E005`) and exits `2`. When `ci.strict` is `true`, findings block the scan with exit code `1`. When it is explicitly `false`, findings are reported as warnings and the scan exits `0`; configuration and execution errors always exit `2`. Findings reported next to an error, such as `FV-E016`, follow the same policy: they are `warning`/`warn` when `ci.strict` is `false` and `error`/`block` otherwise. `--strict` is a convenience override that turns strict behavior on for the current scan.
 
 ## Supported Conventions

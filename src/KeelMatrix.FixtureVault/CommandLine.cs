@@ -136,6 +136,8 @@ internal static class CommandLineParser
             Safety:
               Findings and skipped diagnostics share a 4,096-record / 1 MiB report-field budget.
               Exhaustion returns FV-E017, an incomplete scan, and exit code 2.
+              Connection-string Password/Pwd values honor doubled-quote escapes and serialized
+              string boundaries; empty, whitespace-only, and already-redacted values are ignored.
             """;
     }
 

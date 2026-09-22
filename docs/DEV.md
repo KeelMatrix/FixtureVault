@@ -26,7 +26,8 @@ aggregate bound applies to ordinary findings and skipped diagnostics as well as 
 `FV-E017`, exit code `2`, `Completed=false`, and no successful-scan telemetry.
 
 The CI matrix also runs the packed-tool consumer smoke on `ubuntu-24.04-arm`; that leg exercises `init`, a clean
-scan, sensitive-data reporting without value disclosure, symbolic-link rejection, and FIFO rejection.
+scan, positive and negative connection-string cases in both console and JSON formats, sensitive-data reporting
+without value disclosure, symbolic-link rejection, and FIFO rejection.
 
 ## Run the Tool from Source
 

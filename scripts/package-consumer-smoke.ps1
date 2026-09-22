@@ -114,7 +114,7 @@ try {
         $helpPath = Join-Path $workRoot "help.txt"
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("--help") $helpPath) -eq 0) "fixturevault --help failed."
         $help = [IO.File]::ReadAllText($helpPath)
-        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault") "fixturevault --help did not print the expected usage text."
+        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault" -and $help -match "doubled-quote escapes") "fixturevault --help did not print the expected usage text."
 
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "init.txt")) -eq 0) "fixturevault init failed."
         Assert-Contract (Test-Path -LiteralPath (Join-Path $consumerRoot ".fixturevault.json")) "fixturevault init did not create .fixturevault.json."
@@ -132,6 +132,74 @@ try {
         Assert-Contract (@($report.findings | Where-Object { $_.ruleId -eq "FV001" }).Count -gt 0) "Blocking scan JSON did not contain the expected FV001 finding."
         Assert-Contract (@($report.findings | Where-Object { $_.ruleId -eq "FV007" }).Count -gt 0) "Blocking scan JSON did not contain the expected FV007 sensitive-data finding."
         Assert-Contract (-not ([IO.File]::ReadAllText($blockingReportPath).Contains("fixture-test-secret-1234567890", [StringComparison]::Ordinal))) "Sensitive data was disclosed by the package consumer report."
+
+        $connectionPositiveRoot = Join-Path $workRoot "connection-positive"
+        $connectionPositiveTestsRoot = Join-Path $connectionPositiveRoot "tests"
+        New-Item -ItemType Directory -Force -Path $connectionPositiveTestsRoot | Out-Null
+        Push-Location $connectionPositiveRoot
+        try {
+            [IO.File]::WriteAllText(
+                (Join-Path $connectionPositiveTestsRoot "connection.golden"),
+                ('Server=example.invalid;Password=' + '"""Canary123""";' + [Environment]::NewLine + "Server=example.invalid;Pwd='''Canary123''';" + [Environment]::NewLine),
+                [Text.UTF8Encoding]::new($false))
+            Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "connection-positive-init.txt")) -eq 0) "Positive connection-string init failed."
+
+            $positiveConsolePath = Join-Path $workRoot "connection-positive-console.txt"
+            $positiveConsoleCode = Invoke-CommandCapture $fixtureVault @("scan") $positiveConsolePath
+            Assert-Contract ($positiveConsoleCode -eq 1) "Positive connection-string console scan returned $positiveConsoleCode instead of 1."
+            $positiveConsole = [IO.File]::ReadAllText($positiveConsolePath)
+            Assert-Contract ($positiveConsole.Contains("FV007", [StringComparison]::Ordinal)) "Positive connection-string console scan did not report FV007."
+            Assert-Contract (-not $positiveConsole.Contains("Canary123", [StringComparison]::Ordinal)) "Positive connection-string console scan disclosed the credential."
+
+            $positiveJsonPath = Join-Path $workRoot "connection-positive.json"
+            $positiveJsonCode = Invoke-CommandCapture $fixtureVault @("scan", "--format", "json") $positiveJsonPath
+            Assert-Contract ($positiveJsonCode -eq 1) "Positive connection-string JSON scan returned $positiveJsonCode instead of 1."
+            $positiveReportText = [IO.File]::ReadAllText($positiveJsonPath)
+            $positiveReport = $positiveReportText | ConvertFrom-Json
+            Assert-Contract (@($positiveReport.findings | Where-Object { $_.ruleId -eq "FV007" }).Count -gt 0) "Positive connection-string JSON scan did not report FV007."
+            Assert-Contract (-not $positiveReportText.Contains("Canary123", [StringComparison]::Ordinal)) "Positive connection-string JSON scan disclosed the credential."
+            Write-Host "Connection-string positive package smoke: console exit 1, JSON exit 1, FV007 present, credential undisclosed."
+        }
+        finally {
+            Pop-Location
+        }
+
+        $connectionNegativeRoot = Join-Path $workRoot "connection-negative"
+        $connectionNegativeTestsRoot = Join-Path $connectionNegativeRoot "tests"
+        New-Item -ItemType Directory -Force -Path $connectionNegativeTestsRoot | Out-Null
+        Push-Location $connectionNegativeRoot
+        try {
+            [IO.File]::WriteAllText(
+                (Join-Path $connectionNegativeTestsRoot "empty.json.golden"),
+                '{"ConnectionString":"Server=localhost;Password="}',
+                [Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText(
+                (Join-Path $connectionNegativeTestsRoot "whitespace.json.golden"),
+                '{"ConnectionString":"Server=localhost;Pwd=   "}',
+                [Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText(
+                (Join-Path $connectionNegativeTestsRoot "redacted.json.golden"),
+                '{"ConnectionString":"Server=localhost;Password=[redacted]"}',
+                [Text.UTF8Encoding]::new($false))
+            Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "connection-negative-init.txt")) -eq 0) "Negative connection-string init failed."
+
+            $negativeConsolePath = Join-Path $workRoot "connection-negative-console.txt"
+            $negativeConsoleCode = Invoke-CommandCapture $fixtureVault @("scan") $negativeConsolePath
+            Assert-Contract ($negativeConsoleCode -eq 0) "Negative connection-string console scan returned $negativeConsoleCode instead of 0."
+            $negativeConsole = [IO.File]::ReadAllText($negativeConsolePath)
+            Assert-Contract (-not $negativeConsole.Contains("FV007", [StringComparison]::Ordinal)) "Negative connection-string console scan reported FV007."
+
+            $negativeJsonPath = Join-Path $workRoot "connection-negative.json"
+            $negativeJsonCode = Invoke-CommandCapture $fixtureVault @("scan", "--format", "json") $negativeJsonPath
+            Assert-Contract ($negativeJsonCode -eq 0) "Negative connection-string JSON scan returned $negativeJsonCode instead of 0."
+            $negativeReport = [IO.File]::ReadAllText($negativeJsonPath) | ConvertFrom-Json
+            Assert-Contract (@($negativeReport.findings).Count -eq 0) "Negative connection-string JSON scan reported findings."
+            Assert-Contract (@($negativeReport.errors).Count -eq 0) "Negative connection-string JSON scan reported errors."
+            Write-Host "Connection-string negative package smoke: console exit 0, JSON exit 0, no findings for empty/whitespace/redacted values."
+        }
+        finally {
+            Pop-Location
+        }
 
         if ([OperatingSystem]::IsLinux()) {
             $safetyRoot = Join-Path $workRoot "safety-consumer"
@@ -172,7 +240,7 @@ try {
         Pop-Location
     }
 
-    Write-Host "Consumer smoke passed: help, init, clean scan (0), sensitive/blocking JSON scan (1), and Linux filesystem safety checks when applicable."
+    Write-Host "Consumer smoke passed: help, init, clean scan (0), sensitive/blocking JSON scan (1), connection-string positive/negative console+JSON cases, and Linux filesystem safety checks when applicable."
 }
 finally {
     if (Test-Path -LiteralPath $workRoot) {
