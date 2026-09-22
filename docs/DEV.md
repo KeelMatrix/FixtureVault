@@ -55,4 +55,4 @@ pwsh -NoProfile -File ./scripts/inspect-package.ps1 -PackagePath ./artifacts/pac
 pwsh -NoProfile -File ./scripts/package-consumer-smoke.ps1 -PackagePath ./artifacts/packages/KeelMatrix.FixtureVault.0.1.0.nupkg -ExpectedVersion 0.1.0
 ```
 
-The smoke script installs only the built `.nupkg` from an isolated local feed and verifies `--help`, `init`, a clean scan, a blocking scan, exit codes, and JSON output. For contract changes, use the [Durable Contract Change Checklist](SCHEMA_CHANGE_CHECKLIST.md).
+The smoke script installs only the built `.nupkg` from an isolated local feed and verifies `--help`, `init`, a clean scan, a blocking scan, exit codes, JSON output, and representative JSON-escaped quoted connection-string `Password`/`Pwd` cases, including non-disclosure. For contract changes, use the [Durable Contract Change Checklist](SCHEMA_CHANGE_CHECKLIST.md).

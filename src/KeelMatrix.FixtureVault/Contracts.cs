@@ -185,7 +185,7 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         "^\\s*[^=;&\\s]+\\s*=\\s*(?:\\\"\\s*\\\"|'\\s*')?\\s*$",
         RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
     private static readonly Regex ConnectionStringCredential = new(
-        "\\b(?<name>Password|Pwd)\\s*=\\s*(?<value>\\\"(?:\\\"\\\"|[^\\\"])*\\\"|'(?:''|[^'])*'|[^;\\\"\\r\\n}]*)",
+        "\\b(?<name>Password|Pwd)\\s*=\\s*(?<value>\\\\\"(?:[^\\\\\"])*\\\\\"|\\\"(?:\\\"\\\"|[^\\\"])*\\\"|'(?:''|[^'])*'|[^;\\\"\\r\\n}]*)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
 
     public bool IsSensitive(string text)
@@ -324,6 +324,12 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
              (trimmed[0] == '\'' && trimmed[^1] == '\'')))
         {
             trimmed = trimmed[1..^1].Trim();
+        }
+        else if (trimmed.Length >= 4 &&
+                 trimmed.StartsWith("\\\"", StringComparison.Ordinal) &&
+                 trimmed.EndsWith("\\\"", StringComparison.Ordinal))
+        {
+            trimmed = trimmed[2..^2].Trim();
         }
 
         if (trimmed.Length == 0 || AlreadyRedactedValue.IsMatch(trimmed))

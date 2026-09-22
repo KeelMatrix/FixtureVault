@@ -2276,6 +2276,43 @@ public sealed class FixtureVaultTests
     }
 
     [Theory]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;Password=\\\"\\\"\"}", "console", false, "")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;Password=\\\"\\\"\"}", "json", false, "")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;Password=\\\"[redacted]\\\"\"}", "console", false, "")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;Password=\\\"[redacted]\\\"\"}", "json", false, "")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;PWD=\\\"\\\"\"}", "console", false, "")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;PWD=\\\"\\\"\"}", "json", false, "")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;Password=\\\"fixture-json-secret\\\"\"}", "console", true, "fixture-json-secret")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;Password=\\\"fixture-json-secret\\\"\"}", "json", true, "fixture-json-secret")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;pWd=\\\"fixture-json-pwd-secret\\\"\"}", "console", true, "fixture-json-pwd-secret")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;pWd=\\\"fixture-json-pwd-secret\\\"\"}", "json", true, "fixture-json-pwd-secret")]
+    public void Json_escaped_quoted_connection_string_values_follow_sensitive_data_contract(
+        string fixture,
+        string format,
+        bool expectsFinding,
+        string sensitiveValue)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/connection-string-json-escaped.golden", fixture + "\n");
+
+        int exitCode = repository.Run(["scan", "--format", format], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(expectsFinding ? 1 : 0, exitCode);
+        Assert.Empty(error);
+        Assert.Equal(expectsFinding, output.Contains("FV007", StringComparison.Ordinal));
+        if (sensitiveValue.Length > 0)
+        {
+            Assert.DoesNotContain(sensitiveValue, output, StringComparison.Ordinal);
+        }
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            Assert.Equal(expectsFinding, report.RootElement.GetProperty("findings").EnumerateArray().Any());
+        }
+    }
+
+    [Theory]
     [InlineData("console")]
     [InlineData("json")]
     public void Connection_string_password_keyword_case_detection_respects_non_strict_exit_behavior(string format)
