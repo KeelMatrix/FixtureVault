@@ -151,7 +151,8 @@ try {
     $dependencyIds = @($dependencyNodes | ForEach-Object { $_.id } | Sort-Object)
     Assert-Contract (($dependencyIds -join ",") -eq "KeelMatrix.Redaction,KeelMatrix.Telemetry") "Unexpected nuspec dependency set: $($dependencyIds -join ', ')."
     foreach ($dependency in $dependencyNodes) {
-        Assert-Contract ($dependency.version -eq "[0.1.0]") "Dependency $($dependency.id) must be pinned to [0.1.0]."
+        $expectedDependencyVersion = if ($dependency.id -eq "KeelMatrix.Telemetry") { "[0.1.1]" } else { "[0.1.0]" }
+        Assert-Contract ($dependency.version -eq $expectedDependencyVersion) "Dependency $($dependency.id) must be pinned to $expectedDependencyVersion."
         Assert-Contract ($dependency.exclude -eq "Build,Analyzers") "Dependency $($dependency.id) must exclude Build and Analyzers assets."
     }
 

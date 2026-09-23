@@ -5,7 +5,7 @@
 
   <ItemGroup>
     <PackageVersion Include="KeelMatrix.Redaction" Version="[0.1.0]" />
-    <PackageVersion Include="KeelMatrix.Telemetry" Version="[0.1.0]" />
+    <PackageVersion Include="KeelMatrix.Telemetry" Version="[0.1.1]" />
     <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.400" />
 
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />

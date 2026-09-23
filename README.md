@@ -227,7 +227,7 @@ FixtureVault bounds policy size, filesystem entries, total bytes read, and retai
 
 Sensitive-data detection is separate from redaction: FixtureVault does not rewrite a fixture to clear a finding. Detection uses hardened primitives from `KeelMatrix.Redaction` 0.1.0, with boundary-aware connection-string handling for raw fixture text, but the matched value is never retained in a report or diagnostic.
 
-FixtureVault does not upload fixture contents. After a successfully completed scan, it requests the minimal activation and weekly heartbeat signals from `KeelMatrix.Telemetry` 0.1.0. Telemetry is best-effort and cannot affect scan results. Installation and `init` do not activate telemetry. Disable it for a process with:
+FixtureVault does not upload fixture contents. After a successfully completed scan, it requests the minimal activation and weekly heartbeat signals from `KeelMatrix.Telemetry` 0.1.1. Telemetry is best-effort and cannot affect scan results. Installation and `init` do not activate telemetry. Disable it for a process with:
 
 ```powershell
 $env:KEELMATRIX_NO_TELEMETRY = "1"
