@@ -132,6 +132,7 @@ public sealed class FixtureVaultTests
         Assert.Empty(error);
         Assert.Contains("Usage:", output, StringComparison.Ordinal);
         Assert.Contains("fixturevault", output, StringComparison.Ordinal);
+        Assert.Contains("Raw connection-string Password/Pwd values preserve backslash spellings literally.", output, StringComparison.Ordinal);
         Assert.Contains("doubled-quote runs", output, StringComparison.Ordinal);
         Assert.Contains("\\u0022", output, StringComparison.Ordinal);
         Assert.Contains("4,096-record / 1 MiB report-field budget", output, StringComparison.Ordinal);
@@ -2330,16 +2331,16 @@ public sealed class FixtureVaultTests
 
     [Theory]
     [InlineData("Password=\"\";", false)]
-    [InlineData("Password=\\\"\\\";", false)]
-    [InlineData("Password=\\u0022\\u0022;", false)]
-    [InlineData("Password=\\u0022\\t\\u0022;", false)]
-    [InlineData("Password=\\u0022\\u0009\\u0022;", false)]
-    [InlineData("Password=\\u0022[redacted]\\u0022;", false)]
+    [InlineData("Password=\\\"\\\";", true)]
+    [InlineData("Password=\\u0022\\u0022;", true)]
+    [InlineData("Password=\\u0022\\t\\u0022;", true)]
+    [InlineData("Password=\\u0022\\u0009\\u0022;", true)]
+    [InlineData("Password=\\u0022[redacted]\\u0022;", true)]
     [InlineData("Password=\"Canary\\Path\";", true)]
     [InlineData("Password=\\\"Canary\\\\Path\\\";", true)]
     [InlineData("Password=\\u0022Canary\\\\Path\\u0022;", true)]
     [InlineData("Password=\"\"\"Canary\\Path\"\"\";", true)]
-    public void Connection_string_classifier_uses_semantic_json_escape_values(string connectionString, bool expectsFinding)
+    public void Connection_string_classifier_preserves_raw_escape_spellings(string connectionString, bool expectsFinding)
     {
         using var repository = new TemporaryRepository();
         repository.WritePolicy();
@@ -2350,6 +2351,95 @@ public sealed class FixtureVaultTests
         Assert.Equal(expectsFinding ? 1 : 0, exitCode);
         Assert.Empty(error);
         Assert.Equal(expectsFinding, output.Contains("FV007", StringComparison.Ordinal));
+    }
+
+    public static IEnumerable<object[]> ConnectionStringEscapeContextCases()
+    {
+        yield return ["raw-unicode-quote-empty", @"Server=example.invalid;Password=\u0022\u0022;", "console", true, ""];
+        yield return ["raw-unicode-quote-empty", @"Server=example.invalid;Password=\u0022\u0022;", "json", true, ""];
+        yield return ["json-unicode-quote-empty", @"{""ConnectionString"":""Server=localhost;Password=\u0022\u0022""}", "console", false, ""];
+        yield return ["json-unicode-quote-empty", @"{""ConnectionString"":""Server=localhost;Password=\u0022\u0022""}", "json", false, ""];
+        yield return ["raw-tab-escape", @"Server=example.invalid;Password=\t;", "console", true, ""];
+        yield return ["raw-tab-escape", @"Server=example.invalid;Password=\t;", "json", true, ""];
+        yield return ["raw-direct-tab", string.Concat("Server=example.invalid;Password=\"", '\t', "\";"), "console", false, ""];
+        yield return ["raw-direct-tab", string.Concat("Server=example.invalid;Password=\"", '\t', "\";"), "json", false, ""];
+        yield return ["raw-unicode-tab-escape", @"Server=example.invalid;Password=\u0009;", "console", true, ""];
+        yield return ["raw-unicode-tab-escape", @"Server=example.invalid;Password=\u0009;", "json", true, ""];
+        yield return ["json-quoted-tab", @"{""ConnectionString"":""Server=localhost;Password=\u0022\t\u0022""}", "console", false, ""];
+        yield return ["json-quoted-tab", @"{""ConnectionString"":""Server=localhost;Password=\u0022\t\u0022""}", "json", false, ""];
+        yield return ["json-unicode-tab", @"{""ConnectionString"":""Server=localhost;Password=\u0022\u0009\u0022""}", "console", false, ""];
+        yield return ["json-unicode-tab", @"{""ConnectionString"":""Server=localhost;Password=\u0022\u0009\u0022""}", "json", false, ""];
+        yield return ["raw-direct-nbsp", string.Concat("Server=example.invalid;Password=\"", '\u00A0', "\";"), "console", false, ""];
+        yield return ["raw-direct-nbsp", string.Concat("Server=example.invalid;Password=\"", '\u00A0', "\";"), "json", false, ""];
+        yield return ["raw-unicode-nbsp-escape", @"Server=example.invalid;Password=\u00A0;", "console", true, ""];
+        yield return ["raw-unicode-nbsp-escape", @"Server=example.invalid;Password=\u00A0;", "json", true, ""];
+        yield return ["json-unicode-nbsp", @"{""ConnectionString"":""Server=localhost;Password=\u0022\u00A0\u0022""}", "console", false, ""];
+        yield return ["json-unicode-nbsp", @"{""ConnectionString"":""Server=localhost;Password=\u0022\u00A0\u0022""}", "json", false, ""];
+        yield return ["raw-unicode-redacted-looking", @"Server=example.invalid;Password=\u0022[redacted]\u0022;", "console", true, ""];
+        yield return ["raw-unicode-redacted-looking", @"Server=example.invalid;Password=\u0022[redacted]\u0022;", "json", true, ""];
+        yield return ["json-unicode-redacted", @"{""ConnectionString"":""Server=localhost;Password=\u0022[redacted]\u0022""}", "console", false, ""];
+        yield return ["json-unicode-redacted", @"{""ConnectionString"":""Server=localhost;Password=\u0022[redacted]\u0022""}", "json", false, ""];
+        yield return ["raw-semicolon-in-quote", @"Server=example.invalid;Password=""part;secret"";", "console", true, ""];
+        yield return ["raw-semicolon-in-quote", @"Server=example.invalid;Password=""part;secret"";", "json", true, ""];
+        yield return ["json-semicolon-in-quote", @"{""ConnectionString"":""Server=localhost;Password=\u0022part;secret\u0022""}", "console", true, ""];
+        yield return ["json-semicolon-in-quote", @"{""ConnectionString"":""Server=localhost;Password=\u0022part;secret\u0022""}", "json", true, ""];
+        yield return ["json-genuine-credential", @"{""ConnectionString"":""Server=localhost;Password=\u0022fixture-json-context-secret\u0022""}", "console", true, "fixture-json-context-secret"];
+        yield return ["json-genuine-credential", @"{""ConnectionString"":""Server=localhost;Password=\u0022fixture-json-context-secret\u0022""}", "json", true, "fixture-json-context-secret"];
+        yield return ["json-double-encoded-raw-escape", @"{""ConnectionString"":""Server=localhost;Password=\\u0022\\u0022""}", "console", true, ""];
+        yield return ["json-double-encoded-raw-escape", @"{""ConnectionString"":""Server=localhost;Password=\\u0022\\u0022""}", "json", true, ""];
+    }
+
+    [Theory]
+    [MemberData(nameof(ConnectionStringEscapeContextCases))]
+    public void Connection_string_escape_decoding_is_context_sensitive(
+        string caseName,
+        string fixture,
+        string format,
+        bool expectsFinding,
+        string sensitiveValue)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText($"tests/connection-string-{caseName}.golden", fixture + "\n");
+
+        int exitCode = repository.Run(["scan", "--format", format], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(expectsFinding ? 1 : 0, exitCode);
+        Assert.Empty(error);
+        Assert.Equal(expectsFinding, output.Contains("FV007", StringComparison.Ordinal));
+        if (sensitiveValue.Length > 0)
+        {
+            Assert.DoesNotContain(sensitiveValue, output, StringComparison.Ordinal);
+        }
+
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            Assert.Equal(expectsFinding, report.RootElement.GetProperty("findings").EnumerateArray().Any());
+        }
+    }
+
+    [Theory]
+    [InlineData("console")]
+    [InlineData("json")]
+    public void Raw_golden_connection_string_does_not_decode_json_escapes(string format)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        const string fixture = "Server=example.invalid;Password=\\u0022\\u0022;";
+        repository.WriteText("tests/raw.golden", fixture + "\n");
+
+        int exitCode = repository.Run(["scan", "--format", format], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(1, exitCode);
+        Assert.Empty(error);
+        Assert.Contains("FV007", output, StringComparison.Ordinal);
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            Assert.Contains(report.RootElement.GetProperty("findings").EnumerateArray(), item =>
+                item.GetProperty("ruleId").GetString() == "FV007");
+        }
     }
 
     [Theory]

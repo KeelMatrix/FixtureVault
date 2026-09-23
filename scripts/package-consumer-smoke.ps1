@@ -114,7 +114,7 @@ try {
         $helpPath = Join-Path $workRoot "help.txt"
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("--help") $helpPath) -eq 0) "fixturevault --help failed."
         $help = [IO.File]::ReadAllText($helpPath)
-        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault" -and $help -match "doubled-quote runs" -and $help -match "u0022") "fixturevault --help did not print the expected usage text."
+        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault" -and $help -match "Raw connection-string Password/Pwd values preserve backslash spellings literally" -and $help -match "doubled-quote runs" -and $help -match "u0022") "fixturevault --help did not print the expected usage text."
 
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "init.txt")) -eq 0) "fixturevault init failed."
         Assert-Contract (Test-Path -LiteralPath (Join-Path $consumerRoot ".fixturevault.json")) "fixturevault init did not create .fixturevault.json."
@@ -231,6 +231,55 @@ try {
         }
         finally {
             Pop-Location
+        }
+
+        $connectionContextRoot = Join-Path $workRoot "connection-context"
+        New-Item -ItemType Directory -Force -Path $connectionContextRoot | Out-Null
+        $connectionContextCases = @(
+            [pscustomobject]@{ Name = "raw-unicode-quote-empty"; Fixture = 'Server=example.invalid;Password=\u0022\u0022;'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "" },
+            [pscustomobject]@{ Name = "json-unicode-quote-empty"; Fixture = '{"ConnectionString":"Server=localhost;Password=\u0022\u0022"}'; ExpectedExit = 0; ExpectedFinding = $false; Secret = "" },
+            [pscustomobject]@{ Name = "raw-tab-escape"; Fixture = 'Server=example.invalid;Password=\t;'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "" },
+            [pscustomobject]@{ Name = "json-quoted-tab"; Fixture = '{"ConnectionString":"Server=localhost;Password=\u0022\t\u0022"}'; ExpectedExit = 0; ExpectedFinding = $false; Secret = "" },
+            [pscustomobject]@{ Name = "raw-unicode-redacted-looking"; Fixture = 'Server=example.invalid;Password=\u0022[redacted]\u0022;'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "" },
+            [pscustomobject]@{ Name = "json-unicode-redacted"; Fixture = '{"ConnectionString":"Server=localhost;Password=\u0022[redacted]\u0022"}'; ExpectedExit = 0; ExpectedFinding = $false; Secret = "" },
+            [pscustomobject]@{ Name = "json-genuine-credential"; Fixture = '{"ConnectionString":"Server=localhost;Password=\u0022package-context-secret\u0022"}'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "package-context-secret" },
+            [pscustomobject]@{ Name = "json-double-encoded-raw-escape"; Fixture = '{"ConnectionString":"Server=localhost;Password=\\u0022\\u0022"}'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "" }
+        )
+
+        foreach ($case in $connectionContextCases) {
+            $caseRoot = Join-Path $connectionContextRoot $case.Name
+            $caseTestsRoot = Join-Path $caseRoot "tests"
+            New-Item -ItemType Directory -Force -Path $caseTestsRoot | Out-Null
+            [IO.File]::WriteAllText(
+                (Join-Path $caseTestsRoot "$($case.Name).golden"),
+                $case.Fixture + [Environment]::NewLine,
+                [Text.UTF8Encoding]::new($false))
+
+            Push-Location $caseRoot
+            try {
+                Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "$($case.Name)-init.txt")) -eq 0) "$($case.Name) init failed."
+
+                $contextConsolePath = Join-Path $workRoot "$($case.Name)-console.txt"
+                $contextConsoleCode = Invoke-CommandCapture $fixtureVault @("scan") $contextConsolePath
+                Assert-Contract ($contextConsoleCode -eq $case.ExpectedExit) "$($case.Name) console scan returned $contextConsoleCode instead of $($case.ExpectedExit)."
+                $contextConsole = [IO.File]::ReadAllText($contextConsolePath)
+                Assert-Contract ($contextConsole.Contains("FV007", [StringComparison]::Ordinal) -eq $case.ExpectedFinding) "$($case.Name) console finding classification was incorrect."
+
+                $contextJsonPath = Join-Path $workRoot "$($case.Name)-json.txt"
+                $contextJsonCode = Invoke-CommandCapture $fixtureVault @("scan", "--format", "json") $contextJsonPath
+                Assert-Contract ($contextJsonCode -eq $case.ExpectedExit) "$($case.Name) JSON scan returned $contextJsonCode instead of $($case.ExpectedExit)."
+                $contextJsonText = [IO.File]::ReadAllText($contextJsonPath)
+                $contextReport = $contextJsonText | ConvertFrom-Json
+                Assert-Contract ((@($contextReport.findings | Where-Object { $_.ruleId -eq "FV007" }).Count -gt 0) -eq $case.ExpectedFinding) "$($case.Name) JSON finding classification was incorrect."
+                if ($case.Secret.Length -gt 0) {
+                    Assert-Contract (-not $contextConsole.Contains($case.Secret, [StringComparison]::Ordinal) -and -not $contextJsonText.Contains($case.Secret, [StringComparison]::Ordinal)) "$($case.Name) disclosed its credential."
+                }
+
+                Write-Host "$($case.Name) package smoke: console exit $contextConsoleCode, JSON exit $contextJsonCode, expected FV007=$($case.ExpectedFinding)."
+            }
+            finally {
+                Pop-Location
+            }
         }
 
         if ([OperatingSystem]::IsLinux()) {

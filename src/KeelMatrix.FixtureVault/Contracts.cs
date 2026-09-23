@@ -191,6 +191,19 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
 
     public bool IsSensitive(string text)
     {
+        if (redactor is ConnectionStringPasswordRedactor)
+        {
+            // JSON escapes belong to the JSON serialization layer, not to raw connection-string
+            // grammar. Decode them only by asking System.Text.Json for string values from a
+            // structurally valid JSON document, then parse each decoded string literally.
+            if (TryHasNonEmptyJsonConnectionStringCredential(text, out bool hasJsonCredential))
+            {
+                return hasJsonCredential;
+            }
+
+            return text.Split('\n').Any(HasNonEmptyConnectionStringCredential);
+        }
+
         // Supported credential/header values are line-scoped. Evaluate each line separately so a
         // redactor cannot join an empty value to the next line and turn that neighboring text into
         // apparent evidence of a secret.
@@ -282,6 +295,61 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         return false;
     }
 
+    private static bool TryHasNonEmptyJsonConnectionStringCredential(string text, out bool hasCredential)
+    {
+        ReadOnlySpan<char> candidate = text.AsSpan().TrimStart();
+        if (candidate.IsEmpty || candidate[0] is not ('{' or '[' or '"'))
+        {
+            hasCredential = false;
+            return false;
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(text);
+            hasCredential = HasNonEmptyJsonConnectionStringCredential(document.RootElement);
+            return true;
+        }
+        catch (JsonException)
+        {
+            hasCredential = false;
+            return false;
+        }
+    }
+
+    private static bool HasNonEmptyJsonConnectionStringCredential(JsonElement element)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.String:
+                return HasNonEmptyConnectionStringCredential(element.GetString() ?? string.Empty);
+
+            case JsonValueKind.Array:
+                foreach (JsonElement item in element.EnumerateArray())
+                {
+                    if (HasNonEmptyJsonConnectionStringCredential(item))
+                    {
+                        return true;
+                    }
+                }
+
+                break;
+
+            case JsonValueKind.Object:
+                foreach (JsonProperty property in element.EnumerateObject())
+                {
+                    if (HasNonEmptyJsonConnectionStringCredential(property.Value))
+                    {
+                        return true;
+                    }
+                }
+
+                break;
+        }
+
+        return false;
+    }
+
     private static bool HasOnlyEmptyOrAlreadyRedactedCookieValues(string text)
     {
         Match headerMatch = CookieHeader.Match(text);
@@ -337,7 +405,7 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         {
             trimmed = trimmed[1..^1].Trim();
         }
-        else if (trimmed.Length >= 4 &&
+        else if (decodeJsonEscapes && trimmed.Length >= 4 &&
                  trimmed.StartsWith("\\\"", StringComparison.Ordinal) &&
                  trimmed.EndsWith("\\\"", StringComparison.Ordinal))
         {
@@ -365,17 +433,6 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
             return string.Empty;
         }
 
-        if (TryReadJsonEscape(text, index, out char firstCharacter, out int firstLength) &&
-            firstCharacter == '"')
-        {
-            return ReadQuotedConnectionStringCredentialValue(text, index, firstLength, '"');
-        }
-
-        if (text[index] == '"' && !HasRawQuoteBeforeBoundary(text, index + 1, '"'))
-        {
-            return string.Empty;
-        }
-
         if (text[index] is '"' or '\'')
         {
             return ReadQuotedConnectionStringCredentialValue(text, index, 1, text[index]);
@@ -385,42 +442,16 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         while (index < text.Length)
         {
             char rawCharacter = text[index];
-            if (rawCharacter is ';' or '"' or '\r' or '\n' or '}')
+            if (rawCharacter is ';' or '\r' or '\n')
             {
                 break;
             }
 
-            if (TryReadJsonEscape(text, index, out char decodedCharacter, out int consumed))
-            {
-                value.Append(decodedCharacter);
-                index += consumed;
-            }
-            else
-            {
-                value.Append(rawCharacter);
-                index++;
-            }
+            value.Append(rawCharacter);
+            index++;
         }
 
         return value.ToString();
-    }
-
-    private static bool HasRawQuoteBeforeBoundary(string text, int start, char quote)
-    {
-        for (int index = start; index < text.Length; index++)
-        {
-            if (text[index] == quote)
-            {
-                return true;
-            }
-
-            if (text[index] is '\r' or '\n' or '}')
-            {
-                return false;
-            }
-        }
-
-        return false;
     }
 
     private static string ReadQuotedConnectionStringCredentialValue(
@@ -445,47 +476,23 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
                 return value.ToString();
             }
 
-            if (TryReadJsonEscape(text, index, out char decodedCharacter, out int consumed))
+            if (text[index] == quote)
             {
-                if (decodedCharacter == quote)
+                if (index + 1 < text.Length && text[index + 1] == quote)
                 {
-                    // A doubled quote inside a JSON string is represented by two adjacent
-                    // JSON-escaped quote tokens. Consume that pair as one semantic quote and
-                    // leave a final escaped quote token to close the connection-string value.
-                    if (consumed > 1 && HasEscapedQuoteAfter(text, index + consumed, quote, out int pairLength))
-                    {
-                        value.Append(quote);
-                        index += consumed + pairLength;
-                        continue;
-                    }
-
-                    return value.ToString();
+                    value.Append(quote);
+                    index += 2;
+                    continue;
                 }
 
-                value.Append(decodedCharacter);
-                index += consumed;
+                return value.ToString();
             }
-            else
-            {
-                value.Append(text[index]);
-                index++;
-            }
+
+            value.Append(text[index]);
+            index++;
         }
 
         return quote + value.ToString();
-    }
-
-    private static bool HasEscapedQuoteAfter(string text, int index, char quote, out int pairLength)
-    {
-        pairLength = 0;
-        if (!TryReadJsonEscape(text, index, out char first, out int firstLength) ||
-            first != quote || firstLength == 1)
-        {
-            return false;
-        }
-
-        pairLength = firstLength;
-        return true;
     }
 
     private static string DecodeJsonEscapes(string value)
