@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using System.Text;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using KeelMatrix.Redaction;
@@ -184,8 +185,8 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
     private static readonly Regex EmptyCredentialAssignment = new(
         "^\\s*[^=;&\\s]+\\s*=\\s*(?:\\\"\\s*\\\"|'\\s*')?\\s*$",
         RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
-    private static readonly Regex ConnectionStringCredential = new(
-        "\\b(?<name>Password|Pwd)\\s*=\\s*(?<value>\\\\\"(?:[^\\\\\"])*\\\\\"|\\\"(?:\\\"\\\"|[^\\\"])*\\\"|'(?:''|[^'])*'|[^;\\\"\\r\\n}]*)",
+    private static readonly Regex ConnectionStringCredentialAssignment = new(
+        "\\b(?:Password|Pwd)\\s*=\\s*",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
 
     public bool IsSensitive(string text)
@@ -269,9 +270,10 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
 
     private static bool HasNonEmptyConnectionStringCredential(string text)
     {
-        foreach (Match match in ConnectionStringCredential.Matches(text))
+        foreach (Match match in ConnectionStringCredentialAssignment.Matches(text))
         {
-            if (!IsEmptyOrAlreadyRedactedValue(match.Groups["value"].Value))
+            string value = ReadConnectionStringCredentialValue(text, match.Index + match.Length);
+            if (!IsEmptyOrAlreadyRedactedSemanticValue(value))
             {
                 return true;
             }
@@ -318,7 +320,17 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
 
     private static bool IsEmptyOrAlreadyRedactedValue(string value)
     {
-        string trimmed = value.Trim();
+        return IsEmptyOrAlreadyRedactedValue(value, decodeJsonEscapes: true);
+    }
+
+    private static bool IsEmptyOrAlreadyRedactedSemanticValue(string value)
+    {
+        return IsEmptyOrAlreadyRedactedValue(value, decodeJsonEscapes: false);
+    }
+
+    private static bool IsEmptyOrAlreadyRedactedValue(string value, bool decodeJsonEscapes)
+    {
+        string trimmed = decodeJsonEscapes ? DecodeJsonEscapes(value).Trim() : value.Trim();
         if (trimmed.Length >= 2 &&
             ((trimmed[0] == '"' && trimmed[^1] == '"') ||
              (trimmed[0] == '\'' && trimmed[^1] == '\'')))
@@ -338,6 +350,244 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         }
 
         return false;
+    }
+
+    private static string ReadConnectionStringCredentialValue(string text, int start)
+    {
+        int index = start;
+        while (index < text.Length && char.IsWhiteSpace(text[index]))
+        {
+            index++;
+        }
+
+        if (index >= text.Length)
+        {
+            return string.Empty;
+        }
+
+        if (TryReadJsonEscape(text, index, out char firstCharacter, out int firstLength) &&
+            firstCharacter == '"')
+        {
+            return ReadQuotedConnectionStringCredentialValue(text, index, firstLength, '"');
+        }
+
+        if (text[index] == '"' && !HasRawQuoteBeforeBoundary(text, index + 1, '"'))
+        {
+            return string.Empty;
+        }
+
+        if (text[index] is '"' or '\'')
+        {
+            return ReadQuotedConnectionStringCredentialValue(text, index, 1, text[index]);
+        }
+
+        var value = new StringBuilder();
+        while (index < text.Length)
+        {
+            char rawCharacter = text[index];
+            if (rawCharacter is ';' or '"' or '\r' or '\n' or '}')
+            {
+                break;
+            }
+
+            if (TryReadJsonEscape(text, index, out char decodedCharacter, out int consumed))
+            {
+                value.Append(decodedCharacter);
+                index += consumed;
+            }
+            else
+            {
+                value.Append(rawCharacter);
+                index++;
+            }
+        }
+
+        return value.ToString();
+    }
+
+    private static bool HasRawQuoteBeforeBoundary(string text, int start, char quote)
+    {
+        for (int index = start; index < text.Length; index++)
+        {
+            if (text[index] == quote)
+            {
+                return true;
+            }
+
+            if (text[index] is '\r' or '\n' or '}')
+            {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    private static string ReadQuotedConnectionStringCredentialValue(
+        string text,
+        int openingIndex,
+        int openingLength,
+        char quote)
+    {
+        int index = openingIndex + openingLength;
+        var value = new StringBuilder();
+        while (index < text.Length)
+        {
+            if (text[index] == quote)
+            {
+                if (index + 1 < text.Length && text[index + 1] == quote)
+                {
+                    value.Append(quote);
+                    index += 2;
+                    continue;
+                }
+
+                return value.ToString();
+            }
+
+            if (TryReadJsonEscape(text, index, out char decodedCharacter, out int consumed))
+            {
+                if (decodedCharacter == quote)
+                {
+                    if (consumed > 1 && HasEscapedQuotePairAfter(text, index + consumed, quote, out int pairLength))
+                    {
+                        value.Append(quote);
+                        index += consumed + pairLength;
+                        continue;
+                    }
+
+                    return value.ToString();
+                }
+
+                value.Append(decodedCharacter);
+                index += consumed;
+            }
+            else
+            {
+                value.Append(text[index]);
+                index++;
+            }
+        }
+
+        return quote + value.ToString();
+    }
+
+    private static bool HasEscapedQuotePairAfter(string text, int index, char quote, out int pairLength)
+    {
+        pairLength = 0;
+        if (!TryReadJsonEscape(text, index, out char first, out int firstLength) ||
+            first != quote || firstLength == 1 ||
+            !TryReadJsonEscape(text, index + firstLength, out char second, out int secondLength) ||
+            second != quote || secondLength == 1)
+        {
+            return false;
+        }
+
+        pairLength = firstLength + secondLength;
+        return true;
+    }
+
+    private static string DecodeJsonEscapes(string value)
+    {
+        var decoded = new StringBuilder(value.Length);
+        int index = 0;
+        while (index < value.Length)
+        {
+            if (TryReadJsonEscape(value, index, out char decodedCharacter, out int consumed))
+            {
+                decoded.Append(decodedCharacter);
+                index += consumed;
+            }
+            else
+            {
+                decoded.Append(value[index]);
+                index++;
+            }
+        }
+
+        return decoded.ToString();
+    }
+
+    private static bool TryReadJsonEscape(string text, int index, out char decodedCharacter, out int consumed)
+    {
+        decodedCharacter = default;
+        consumed = 0;
+        if (index >= text.Length || text[index] != '\\' || index + 1 >= text.Length)
+        {
+            return false;
+        }
+
+        switch (text[index + 1])
+        {
+            case '"':
+                decodedCharacter = '"';
+                consumed = 2;
+                return true;
+            case '\\':
+                decodedCharacter = '\\';
+                consumed = 2;
+                return true;
+            case '/':
+                decodedCharacter = '/';
+                consumed = 2;
+                return true;
+            case 'b':
+                decodedCharacter = '\b';
+                consumed = 2;
+                return true;
+            case 'f':
+                decodedCharacter = '\f';
+                consumed = 2;
+                return true;
+            case 'n':
+                decodedCharacter = '\n';
+                consumed = 2;
+                return true;
+            case 'r':
+                decodedCharacter = '\r';
+                consumed = 2;
+                return true;
+            case 't':
+                decodedCharacter = '\t';
+                consumed = 2;
+                return true;
+            case 'u' when index + 6 <= text.Length &&
+                TryParseHexQuad(text.AsSpan(index + 2, 4), out decodedCharacter):
+                consumed = 6;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private static bool TryParseHexQuad(ReadOnlySpan<char> value, out char result)
+    {
+        result = default;
+        if (value.Length != 4)
+        {
+            return false;
+        }
+
+        int parsed = 0;
+        for (int index = 0; index < value.Length; index++)
+        {
+            int digit = value[index] switch
+            {
+                >= '0' and <= '9' => value[index] - '0',
+                >= 'a' and <= 'f' => value[index] - 'a' + 10,
+                >= 'A' and <= 'F' => value[index] - 'A' + 10,
+                _ => -1
+            };
+            if (digit < 0)
+            {
+                return false;
+            }
+
+            parsed = (parsed << 4) | digit;
+        }
+
+        result = (char)parsed;
+        return true;
     }
 
     private static bool IsEmptyOrAlreadyRedactedQueryValue(string value)

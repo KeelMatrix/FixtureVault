@@ -136,9 +136,10 @@ internal static class CommandLineParser
             Safety:
               Findings and skipped diagnostics share a 4,096-record / 1 MiB report-field budget.
               Exhaustion returns FV-E017, an incomplete scan, and exit code 2.
-              Connection-string Password/Pwd values honor doubled-quote escapes, JSON-escaped
-              quoted delimiters, and serialized string boundaries; empty, whitespace-only, and
-              already-redacted values are ignored.
+              Connection-string Password/Pwd values decode supported JSON escapes, including
+              escaped quotes (\") and Unicode quote delimiters (\u0022); doubled-quote escapes
+              remain supported, and empty, whitespace-only, and already-redacted semantic values
+              are ignored at serialized string boundaries.
             """;
     }
 

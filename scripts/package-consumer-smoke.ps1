@@ -114,7 +114,7 @@ try {
         $helpPath = Join-Path $workRoot "help.txt"
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("--help") $helpPath) -eq 0) "fixturevault --help failed."
         $help = [IO.File]::ReadAllText($helpPath)
-        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault" -and $help -match "doubled-quote escapes") "fixturevault --help did not print the expected usage text."
+        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault" -and $help -match "doubled-quote escapes" -and $help -match "u0022") "fixturevault --help did not print the expected usage text."
 
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "init.txt")) -eq 0) "fixturevault init failed."
         Assert-Contract (Test-Path -LiteralPath (Join-Path $consumerRoot ".fixturevault.json")) "fixturevault init did not create .fixturevault.json."
@@ -140,7 +140,7 @@ try {
         try {
             [IO.File]::WriteAllText(
                 (Join-Path $connectionPositiveTestsRoot "connection.golden"),
-                ('Server=example.invalid;Password=' + '"""Canary123""";' + [Environment]::NewLine + "Server=example.invalid;Pwd='''Canary123''';" + [Environment]::NewLine + 'Server=example.invalid;Password=\"Canary123\";' + [Environment]::NewLine),
+                ('Server=example.invalid;Password=' + '"""Canary123""";' + [Environment]::NewLine + "Server=example.invalid;Pwd='''Canary123''';" + [Environment]::NewLine + 'Server=example.invalid;Password=\"Canary123\";' + [Environment]::NewLine + 'Server=example.invalid;Pwd=\u0022UnicodeCanary123\u0022;' + [Environment]::NewLine),
                 [Text.UTF8Encoding]::new($false))
             Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "connection-positive-init.txt")) -eq 0) "Positive connection-string init failed."
 
@@ -149,7 +149,7 @@ try {
             Assert-Contract ($positiveConsoleCode -eq 1) "Positive connection-string console scan returned $positiveConsoleCode instead of 1."
             $positiveConsole = [IO.File]::ReadAllText($positiveConsolePath)
             Assert-Contract ($positiveConsole.Contains("FV007", [StringComparison]::Ordinal)) "Positive connection-string console scan did not report FV007."
-            Assert-Contract (-not $positiveConsole.Contains("Canary123", [StringComparison]::Ordinal)) "Positive connection-string console scan disclosed the credential."
+            Assert-Contract (-not $positiveConsole.Contains("Canary123", [StringComparison]::Ordinal) -and -not $positiveConsole.Contains("UnicodeCanary123", [StringComparison]::Ordinal)) "Positive connection-string console scan disclosed the credential."
 
             $positiveJsonPath = Join-Path $workRoot "connection-positive.json"
             $positiveJsonCode = Invoke-CommandCapture $fixtureVault @("scan", "--format", "json") $positiveJsonPath
@@ -157,8 +157,8 @@ try {
             $positiveReportText = [IO.File]::ReadAllText($positiveJsonPath)
             $positiveReport = $positiveReportText | ConvertFrom-Json
             Assert-Contract (@($positiveReport.findings | Where-Object { $_.ruleId -eq "FV007" }).Count -gt 0) "Positive connection-string JSON scan did not report FV007."
-            Assert-Contract (-not $positiveReportText.Contains("Canary123", [StringComparison]::Ordinal)) "Positive connection-string JSON scan disclosed the credential."
-            Write-Host "Connection-string positive package smoke: console exit 1, JSON exit 1, including JSON-escaped quotes, FV007 present, credential undisclosed."
+            Assert-Contract (-not $positiveReportText.Contains("Canary123", [StringComparison]::Ordinal) -and -not $positiveReportText.Contains("UnicodeCanary123", [StringComparison]::Ordinal)) "Positive connection-string JSON scan disclosed the credential."
+            Write-Host 'Connection-string positive package smoke: console exit 1, JSON exit 1, including \u0022-delimited values, FV007 present, credentials undisclosed.'
         }
         finally {
             Pop-Location
@@ -193,6 +193,18 @@ try {
                 (Join-Path $connectionNegativeTestsRoot "escaped-pwd-empty.json.golden"),
                 '{"ConnectionString":"Server=localhost;PWD=\"\""}',
                 [Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText(
+                (Join-Path $connectionNegativeTestsRoot "unicode-empty.json.golden"),
+                '{"ConnectionString":"Server=localhost;Password=\u0022\u0022"}',
+                [Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText(
+                (Join-Path $connectionNegativeTestsRoot "unicode-redacted.json.golden"),
+                '{"ConnectionString":"Server=localhost;Password=\u0022[redacted]\u0022"}',
+                [Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText(
+                (Join-Path $connectionNegativeTestsRoot "unicode-whitespace.json.golden"),
+                '{"ConnectionString":"Server=localhost;Pwd=\u0022\u0009\u0022"}',
+                [Text.UTF8Encoding]::new($false))
             Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "connection-negative-init.txt")) -eq 0) "Negative connection-string init failed."
 
             $negativeConsolePath = Join-Path $workRoot "connection-negative-console.txt"
@@ -207,7 +219,7 @@ try {
             $negativeReport = [IO.File]::ReadAllText($negativeJsonPath) | ConvertFrom-Json
             Assert-Contract (@($negativeReport.findings).Count -eq 0) "Negative connection-string JSON scan reported findings."
             Assert-Contract (@($negativeReport.errors).Count -eq 0) "Negative connection-string JSON scan reported errors."
-            Write-Host "Connection-string negative package smoke: console exit 0, JSON exit 0, no findings for empty/whitespace/redacted and JSON-escaped quoted values."
+            Write-Host 'Connection-string negative package smoke: console exit 0, JSON exit 0, no findings for empty/whitespace/redacted and \u0022-delimited JSON-escaped values.'
         }
         finally {
             Pop-Location

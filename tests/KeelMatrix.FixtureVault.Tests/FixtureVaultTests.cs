@@ -133,6 +133,7 @@ public sealed class FixtureVaultTests
         Assert.Contains("Usage:", output, StringComparison.Ordinal);
         Assert.Contains("fixturevault", output, StringComparison.Ordinal);
         Assert.Contains("doubled-quote escapes", output, StringComparison.Ordinal);
+        Assert.Contains("\\u0022", output, StringComparison.Ordinal);
         Assert.Contains("4,096-record / 1 MiB report-field budget", output, StringComparison.Ordinal);
     }
 
@@ -2278,14 +2279,24 @@ public sealed class FixtureVaultTests
     [Theory]
     [InlineData("{\"ConnectionString\":\"Server=localhost;Password=\\\"\\\"\"}", "console", false, "")]
     [InlineData("{\"ConnectionString\":\"Server=localhost;Password=\\\"\\\"\"}", "json", false, "")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;Password=\\u0022\\u0022\"}", "console", false, "")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;Password=\\u0022\\u0022\"}", "json", false, "")]
     [InlineData("{\"ConnectionString\":\"Server=localhost;Password=\\\"[redacted]\\\"\"}", "console", false, "")]
     [InlineData("{\"ConnectionString\":\"Server=localhost;Password=\\\"[redacted]\\\"\"}", "json", false, "")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;Password=\\u0022[redacted]\\u0022\"}", "console", false, "")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;Password=\\u0022[redacted]\\u0022\"}", "json", false, "")]
     [InlineData("{\"ConnectionString\":\"Server=localhost;PWD=\\\"\\\"\"}", "console", false, "")]
     [InlineData("{\"ConnectionString\":\"Server=localhost;PWD=\\\"\\\"\"}", "json", false, "")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;PWD=\\u0022\\t\\u0022\"}", "console", false, "")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;PWD=\\u0022\\u0009\\u0022\"}", "json", false, "")]
     [InlineData("{\"ConnectionString\":\"Server=localhost;Password=\\\"fixture-json-secret\\\"\"}", "console", true, "fixture-json-secret")]
     [InlineData("{\"ConnectionString\":\"Server=localhost;Password=\\\"fixture-json-secret\\\"\"}", "json", true, "fixture-json-secret")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;Password=\\u0022fixture-json-secret\\u0022\"}", "console", true, "fixture-json-secret")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;Password=\\u0022fixture-json-secret\\u0022\"}", "json", true, "fixture-json-secret")]
     [InlineData("{\"ConnectionString\":\"Server=localhost;pWd=\\\"fixture-json-pwd-secret\\\"\"}", "console", true, "fixture-json-pwd-secret")]
     [InlineData("{\"ConnectionString\":\"Server=localhost;pWd=\\\"fixture-json-pwd-secret\\\"\"}", "json", true, "fixture-json-pwd-secret")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;pWd=\\u0022fixture-json-pwd-secret\\u0022\"}", "console", true, "fixture-json-pwd-secret")]
+    [InlineData("{\"ConnectionString\":\"Server=localhost;pWd=\\u0022fixture-json-pwd-secret\\u0022\"}", "json", true, "fixture-json-pwd-secret")]
     public void Json_escaped_quoted_connection_string_values_follow_sensitive_data_contract(
         string fixture,
         string format,
@@ -2310,6 +2321,30 @@ public sealed class FixtureVaultTests
             using JsonDocument report = JsonDocument.Parse(output);
             Assert.Equal(expectsFinding, report.RootElement.GetProperty("findings").EnumerateArray().Any());
         }
+    }
+
+    [Theory]
+    [InlineData("Password=\"\";", false)]
+    [InlineData("Password=\\\"\\\";", false)]
+    [InlineData("Password=\\u0022\\u0022;", false)]
+    [InlineData("Password=\\u0022\\t\\u0022;", false)]
+    [InlineData("Password=\\u0022\\u0009\\u0022;", false)]
+    [InlineData("Password=\\u0022[redacted]\\u0022;", false)]
+    [InlineData("Password=\"Canary\\Path\";", true)]
+    [InlineData("Password=\\\"Canary\\\\Path\\\";", true)]
+    [InlineData("Password=\\u0022Canary\\\\Path\\u0022;", true)]
+    [InlineData("Password=\"\"\"Canary\\Path\"\"\";", true)]
+    public void Connection_string_classifier_uses_semantic_json_escape_values(string connectionString, bool expectsFinding)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/connection-string-classifier.golden", connectionString + "\n");
+
+        int exitCode = repository.Run(["scan", "--format", "json"], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(expectsFinding ? 1 : 0, exitCode);
+        Assert.Empty(error);
+        Assert.Equal(expectsFinding, output.Contains("FV007", StringComparison.Ordinal));
     }
 
     [Theory]
