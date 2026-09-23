@@ -449,7 +449,10 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
             {
                 if (decodedCharacter == quote)
                 {
-                    if (consumed > 1 && HasEscapedQuotePairAfter(text, index + consumed, quote, out int pairLength))
+                    // A doubled quote inside a JSON string is represented by two adjacent
+                    // JSON-escaped quote tokens. Consume that pair as one semantic quote and
+                    // leave a final escaped quote token to close the connection-string value.
+                    if (consumed > 1 && HasEscapedQuoteAfter(text, index + consumed, quote, out int pairLength))
                     {
                         value.Append(quote);
                         index += consumed + pairLength;
@@ -472,18 +475,16 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         return quote + value.ToString();
     }
 
-    private static bool HasEscapedQuotePairAfter(string text, int index, char quote, out int pairLength)
+    private static bool HasEscapedQuoteAfter(string text, int index, char quote, out int pairLength)
     {
         pairLength = 0;
         if (!TryReadJsonEscape(text, index, out char first, out int firstLength) ||
-            first != quote || firstLength == 1 ||
-            !TryReadJsonEscape(text, index + firstLength, out char second, out int secondLength) ||
-            second != quote || secondLength == 1)
+            first != quote || firstLength == 1)
         {
             return false;
         }
 
-        pairLength = firstLength + secondLength;
+        pairLength = firstLength;
         return true;
     }
 
