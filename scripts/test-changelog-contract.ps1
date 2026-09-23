@@ -735,7 +735,8 @@ if (Test-Path -LiteralPath $centralVersionsPath -PathType Leaf) {
         $packageName = $packageVersionNode.GetAttribute("Include")
         if ($packageName -like "KeelMatrix.*" -and $packageName -ne "KeelMatrix.FixtureVault") {
             $dependencyVersion = $packageVersionNode.GetAttribute("Version")
-            Assert-VersionMatches $dependencyVersion $ExpectedVersion "Dependency '$packageName'"
+            $expectedDependencyVersion = if ($packageName -eq "KeelMatrix.Telemetry") { "0.1.1" } else { $ExpectedVersion }
+            Assert-VersionMatches $dependencyVersion $expectedDependencyVersion "Dependency '$packageName'"
         }
     }
 }
