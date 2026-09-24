@@ -135,9 +135,14 @@ public sealed class FixtureVaultTests
         Assert.Contains("fixturevault", output, StringComparison.Ordinal);
         Assert.Contains("ApiKey/api_key/api-key", output, StringComparison.Ordinal);
         Assert.Contains("ClientSecret/client_secret/client-secret", output, StringComparison.Ordinal);
-        Assert.Contains("both '=' and ':' are supported", output, StringComparison.Ordinal);
+        Assert.Contains("must be unquoted or use matching single/double quotes", output, StringComparison.Ordinal);
+        Assert.Contains("unmatched or", output, StringComparison.Ordinal);
+        Assert.Contains("mismatched quotes are not assignment syntax", output, StringComparison.Ordinal);
+        Assert.Contains("Both '=' and ':' are supported", output, StringComparison.Ordinal);
         Assert.Contains("Parsed generic fields own only their exact key/operator/value spans", output, StringComparison.Ordinal);
         Assert.Contains("Clean fields never suppress later fields or JSON siblings", output, StringComparison.Ordinal);
+        Assert.Contains("any valid name=value starts a sibling field", output, StringComparison.Ordinal);
+        Assert.Contains("Only Azure credential keys are classified", output, StringComparison.Ordinal);
         Assert.Contains("Raw connection-string Password/Pwd values preserve backslash spellings literally.", output, StringComparison.Ordinal);
         Assert.Contains("doubled-quote runs", output, StringComparison.Ordinal);
         Assert.Contains("\\u0022", output, StringComparison.Ordinal);
@@ -2608,6 +2613,16 @@ public sealed class FixtureVaultTests
         yield return ["generic-backslash-data", "Token=fixture\\generic-secret-1234567890", true, "fixture\\generic-secret-1234567890"];
     }
 
+    public static IEnumerable<object[]> GenericCredentialQuoteSyntaxCases()
+    {
+        const string canary = "fixture-generic-secret-1234567890";
+
+        yield return ["generic-leading-double-quote-only", $"\"api_key={canary}", false, canary];
+        yield return ["generic-trailing-double-quote-only", $"api_key\"={canary}", false, canary];
+        yield return ["generic-mismatched-double-single-quotes", $"\"api_key'={canary}", false, canary];
+        yield return ["generic-mismatched-single-double-quotes", $"'api_key\"={canary}", false, canary];
+    }
+
     public static IEnumerable<object[]> GenericCredentialRepresentationAndOwnershipCases()
     {
         const string canary = "fixture-generic-secret-1234567890";
@@ -2661,6 +2676,10 @@ public sealed class FixtureVaultTests
         yield return ["azure-markers-tab", "AccountKey=***\tSharedAccessKey=[redacted]", false, ""];
         yield return ["azure-empty-marker-comma", "AccountKey=,SharedAccessKey=[redacted]", false, ""];
         yield return ["azure-empty-marker-space", "AccountKey= SharedAccessKey=[redacted]", false, ""];
+        yield return ["azure-empty-harmless-sibling-space", "AccountKey= EndpointSuffix=core.windows.net", false, ""];
+        yield return ["azure-harmless-sibling-empty-space", "EndpointSuffix=core.windows.net AccountKey=", false, ""];
+        yield return ["azure-empty-real-sibling-space", $"AccountKey= SharedAccessKey={canary}", true, canary];
+        yield return ["azure-harmless-sibling-real-space", $"EndpointSuffix=core.windows.net AccountKey={canary}", true, canary];
         yield return ["azure-marker-real-semicolon", $"AccountKey=***;SharedAccessKey={canary}", true, canary];
         yield return ["azure-real-marker-semicolon", $"SharedAccessKey={canary};AccountKey=***", true, canary];
         yield return ["azure-marker-real-comma", $"AccountKey=***,SharedAccessKey={canary}", true, canary];
@@ -2672,6 +2691,7 @@ public sealed class FixtureVaultTests
     [Theory]
     [MemberData(nameof(GenericCredentialKeySeparatorCases))]
     [MemberData(nameof(GenericCredentialValueCases))]
+    [MemberData(nameof(GenericCredentialQuoteSyntaxCases))]
     [MemberData(nameof(GenericCredentialRepresentationAndOwnershipCases))]
     [MemberData(nameof(AzureCredentialBoundaryCases))]
     public void Fv007_credential_key_grammar_and_parser_ownership_are_representation_invariant(

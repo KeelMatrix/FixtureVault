@@ -141,14 +141,16 @@ internal static class CommandLineParser
               and queries, Basic/Bearer authorization, Cookie/Set-Cookie, and generic assignments.
               Generic assignment keys are case-insensitive: ApiKey/api_key/api-key,
               ClientSecret/client_secret/client-secret, Password, Pwd, Secret, and Token. Raw
-              assignment keys may use matching quotes, and both '=' and ':' are supported.
+              assignment keys must be unquoted or use matching single/double quotes; unmatched or
+              mismatched quotes are not assignment syntax. Both '=' and ':' are supported.
               Raw connection-string Password/Pwd values preserve backslash spellings literally.
               Raw text preserves literal backslashes. Structurally valid JSON string values decode
               exactly once, and query values URL-decode exactly once, before their field grammar
               is parsed. Parsed generic fields own only their exact key/operator/value spans;
               unconsumed prefix and unknown-key text remains independently inspected. Clean fields never suppress later fields or JSON siblings.
-              Azure-style assignments also separate siblings at semicolons, commas, and whitespace. Empty,
-              whitespace-only, and finite accepted redaction markers are clean;
+              Azure-style assignments also separate siblings at semicolons, commas, and whitespace.
+              After an empty Azure value, any valid name=value starts a sibling field.
+              Only Azure credential keys are classified. Empty, whitespace-only, and finite accepted redaction markers are clean;
               JSON escape spellings such as \u0022 and doubled-quote runs are parsed only in their
               container context; quote and backslash characters remaining after parsing are data.
             """;

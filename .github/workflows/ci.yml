@@ -132,7 +132,7 @@ jobs:
           $expectedCommit = (git rev-parse HEAD).Trim()
           pwsh -NoProfile -File ./scripts/inspect-package.ps1 -PackagePath $package.FullName -SymbolsPackagePath $symbols.FullName -ExpectedVersion 0.1.0 -ExpectedCommit $expectedCommit
 
-      - name: Install and smoke-test packed tool with isolated FV007 alias, ownership, and Azure corpus
+      - name: Install and smoke-test packed tool with isolated FV007 alias, quote, ownership, and Azure-boundary corpus
         shell: pwsh
         run: |
           $package = Get-ChildItem -LiteralPath ./artifacts/packages -Filter "KeelMatrix.FixtureVault.0.1.0.nupkg" |

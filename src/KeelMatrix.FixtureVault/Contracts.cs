@@ -191,7 +191,7 @@ internal static class GenericCredentialKeyGrammar
             .Select(Regex.Escape));
 
     private static string AssignmentKeyPattern { get; } =
-        $@"[""']?\b(?<key>{KeyPattern})\b[""']?";
+        $@"(?<openingQuote>[""'])?\b(?<key>{KeyPattern})\b(?<closingQuote>[""'])?";
 
     internal static string FallbackAssignmentPattern { get; } =
         $@"(?i){AssignmentKeyPattern}\s*{AssignmentOperatorPattern}\s*[""']?[A-Za-z0-9_./+=-]{{16,}}";
@@ -217,6 +217,7 @@ internal static class GenericCredentialKeyGrammar
              match = match.NextMatch())
         {
             if (IsAssignmentStart(text, match.Index) &&
+                HasValidKeyQuoteSyntax(match) &&
                 TryNormalizeDecodedKey(match.Groups["key"].Value, out _))
             {
                 assignment = new AssignmentPrefixMatch(match.Index, match.Index + match.Length);
@@ -234,7 +235,7 @@ internal static class GenericCredentialKeyGrammar
              match.Success;
              match = match.NextMatch())
         {
-            if (IsAssignmentStart(text, match.Index))
+            if (IsAssignmentStart(text, match.Index) && HasValidKeyQuoteSyntax(match))
             {
                 return true;
             }
@@ -244,7 +245,15 @@ internal static class GenericCredentialKeyGrammar
     }
 
     private static bool IsAssignmentStart(string text, int index) =>
-        index == 0 || text[index - 1] is not ('=' or ':');
+        index == 0 || text[index - 1] is not ('=' or ':' or '"' or '\'');
+
+    private static bool HasValidKeyQuoteSyntax(Match match)
+    {
+        Group openingQuote = match.Groups["openingQuote"];
+        Group closingQuote = match.Groups["closingQuote"];
+        return openingQuote.Success == closingQuote.Success &&
+            (!openingQuote.Success || openingQuote.Value == closingQuote.Value);
+    }
 
     private static bool TryNormalize(string key, bool allowQuotedSyntax, out string normalizedKey)
     {
@@ -551,9 +560,18 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         return false;
     }
 
-    private static bool LooksLikeSiblingAssignment(string text, int index)
+    private static bool LooksLikeSiblingAssignment(
+        string text,
+        int index,
+        bool allowColonOperator = true)
     {
-        if (GenericCredentialKeyGrammar.TryFindAssignment(
+        if ((uint)index >= (uint)text.Length)
+        {
+            return false;
+        }
+
+        if (allowColonOperator &&
+            GenericCredentialKeyGrammar.TryFindAssignment(
                 text,
                 index,
                 out GenericCredentialKeyGrammar.AssignmentPrefixMatch supportedPrefix) &&
@@ -605,8 +623,8 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         }
 
         return text[cursor] == '=' ||
-            cursor + 1 >= text.Length ||
-            char.IsWhiteSpace(text[cursor + 1]);
+            (allowColonOperator &&
+             (cursor + 1 >= text.Length || char.IsWhiteSpace(text[cursor + 1])));
     }
 
     private static bool IsGenericAssignmentBoundary(char value) =>
@@ -888,7 +906,8 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
             }
 
             string value;
-            if (index > whitespaceStart && LooksLikeAzureAssignment(text, index))
+            if (index > whitespaceStart &&
+                LooksLikeSiblingAssignment(text, index, allowColonOperator: false))
             {
                 value = string.Empty;
             }
@@ -912,25 +931,6 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
                 yield return new ParsedAssignment(name, value);
             }
         }
-    }
-
-    private static bool LooksLikeAzureAssignment(string text, int index)
-    {
-        int nameStart = index;
-        while (index < text.Length && text[index] != '=' && !IsAzureAssignmentBoundary(text[index]))
-        {
-            index++;
-        }
-
-        string name = text[nameStart..index];
-        while (index < text.Length && char.IsWhiteSpace(text[index]))
-        {
-            index++;
-        }
-
-        return index < text.Length &&
-            text[index] == '=' &&
-            AzureCredentialKeys.Any(key => name.Equals(key, StringComparison.OrdinalIgnoreCase));
     }
 
     private static bool IsAssignmentOperator(char value, bool allowColonOperator) =>
