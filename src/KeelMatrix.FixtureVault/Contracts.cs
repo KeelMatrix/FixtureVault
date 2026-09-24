@@ -166,6 +166,8 @@ internal interface ISensitiveDataDetector
 
 internal static class GenericCredentialKeyGrammar
 {
+    private const string AssignmentOperatorPattern = "[:=]";
+
     private static readonly Dictionary<string, string> Aliases =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -188,14 +190,61 @@ internal static class GenericCredentialKeyGrammar
             .ThenBy(alias => alias, StringComparer.Ordinal)
             .Select(Regex.Escape));
 
+    private static string AssignmentKeyPattern { get; } =
+        $@"[""']?\b(?<key>{KeyPattern})\b[""']?";
+
     internal static string FallbackAssignmentPattern { get; } =
-        $@"(?i)[""']?\b({KeyPattern})\b[""']?\s*[:=]\s*[""']?[A-Za-z0-9_./+=-]{{16,}}";
+        $@"(?i){AssignmentKeyPattern}\s*{AssignmentOperatorPattern}\s*[""']?[A-Za-z0-9_./+=-]{{16,}}";
+
+    private static readonly Regex AssignmentPrefix = new(
+        $@"{AssignmentKeyPattern}\s*{AssignmentOperatorPattern}",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
+
+    private static readonly Regex FallbackAssignment = new(
+        FallbackAssignmentPattern,
+        RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
 
     internal static bool TryNormalizeDecodedKey(string key, out string normalizedKey) =>
         TryNormalize(key, allowQuotedSyntax: false, out normalizedKey);
 
-    internal static bool TryNormalizeAssignmentKey(string key, out string normalizedKey) =>
-        TryNormalize(key, allowQuotedSyntax: true, out normalizedKey);
+    internal static bool TryFindAssignment(
+        string text,
+        int startAt,
+        out AssignmentPrefixMatch assignment)
+    {
+        for (Match match = AssignmentPrefix.Match(text, startAt);
+             match.Success;
+             match = match.NextMatch())
+        {
+            if (IsAssignmentStart(text, match.Index) &&
+                TryNormalizeDecodedKey(match.Groups["key"].Value, out _))
+            {
+                assignment = new AssignmentPrefixMatch(match.Index, match.Index + match.Length);
+                return true;
+            }
+        }
+
+        assignment = default;
+        return false;
+    }
+
+    internal static bool HasFallbackAssignment(string text)
+    {
+        for (Match match = FallbackAssignment.Match(text);
+             match.Success;
+             match = match.NextMatch())
+        {
+            if (IsAssignmentStart(text, match.Index))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsAssignmentStart(string text, int index) =>
+        index == 0 || text[index - 1] is not ('=' or ':');
 
     private static bool TryNormalize(string key, bool allowQuotedSyntax, out string normalizedKey)
     {
@@ -217,6 +266,8 @@ internal static class GenericCredentialKeyGrammar
         normalizedKey = string.Empty;
         return false;
     }
+
+    internal readonly record struct AssignmentPrefixMatch(int Start, int ValueStart);
 }
 
 internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : ISensitiveDataDetector
@@ -409,7 +460,7 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
     private static bool HasNonEmptyHeaderValue(string value) =>
         !IsEmptyOrAlreadyRedactedSemanticValue(ReadOptionalDelimitedValue(value));
 
-    private bool HasSensitiveGenericCredentialText(string text)
+    private static bool HasSensitiveGenericCredentialText(string text)
     {
         if (TryClassifyJsonCredentialDocument(text, out bool hasJsonCredential))
         {
@@ -419,44 +470,160 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         return HasSensitiveGenericCredentialRepresentation(text);
     }
 
-    private bool HasSensitiveGenericCredentialRepresentation(string text)
+    private static bool HasSensitiveGenericCredentialRepresentation(string text)
     {
-        if (TryClassifyGenericCredentialRepresentation(text, out bool hasCredential))
+        if (TryClassifyGenericCredentialRepresentation(text, out List<ClassifiedSpan> classifiedSpans))
         {
-            return hasCredential;
+            return true;
         }
 
-        return HasSensitiveRedactionDifference(text);
-    }
-
-    private static bool TryClassifyGenericCredentialRepresentation(string text, out bool hasCredential)
-    {
-        bool sawParsedAssignment = false;
-        foreach (ParsedAssignment assignment in ReadAssignments(
-                     text,
-                     splitOnLineBreaks: true,
-                     allowColonOperator: true))
+        int unclassifiedStart = 0;
+        foreach (ClassifiedSpan span in classifiedSpans)
         {
-            sawParsedAssignment = true;
-            if (!GenericCredentialKeyGrammar.TryNormalizeAssignmentKey(assignment.Name, out _))
+            if (span.Start > unclassifiedStart &&
+                GenericCredentialKeyGrammar.HasFallbackAssignment(text[unclassifiedStart..span.Start]))
             {
-                continue;
-            }
-
-            if (!IsEmptyOrAlreadyRedactedSemanticValue(assignment.Value))
-            {
-                hasCredential = true;
                 return true;
             }
+
+            unclassifiedStart = Math.Max(unclassifiedStart, span.End);
         }
 
-        hasCredential = false;
-        // Parsed fields own only the field grammar they consumed. Because this parser understands
-        // both supported operators, a clean field cannot hide a later ':' or '=' credential.
-        return sawParsedAssignment;
+        return unclassifiedStart < text.Length &&
+            GenericCredentialKeyGrammar.HasFallbackAssignment(text[unclassifiedStart..]);
     }
 
-    private bool TryClassifyJsonCredentialDocument(string text, out bool hasCredential)
+    private static bool TryClassifyGenericCredentialRepresentation(
+        string text,
+        out List<ClassifiedSpan> classifiedSpans)
+    {
+        classifiedSpans = [];
+        int searchIndex = 0;
+        while (GenericCredentialKeyGrammar.TryFindAssignment(
+                   text,
+                   searchIndex,
+                   out GenericCredentialKeyGrammar.AssignmentPrefixMatch prefix))
+        {
+            int valueStart = prefix.ValueStart;
+            while (valueStart < text.Length && char.IsWhiteSpace(text[valueStart]))
+            {
+                valueStart++;
+            }
+
+            string value;
+            int assignmentEnd;
+            if (valueStart > prefix.ValueStart &&
+                valueStart < text.Length &&
+                LooksLikeSiblingAssignment(text, valueStart))
+            {
+                value = string.Empty;
+                assignmentEnd = prefix.ValueStart;
+            }
+            else if (valueStart < text.Length && text[valueStart] is '"' or '\'')
+            {
+                assignmentEnd = valueStart;
+                value = ReadQuotedValue(text, ref assignmentEnd, text[valueStart]);
+            }
+            else
+            {
+                assignmentEnd = valueStart;
+                while (assignmentEnd < text.Length &&
+                       !IsGenericAssignmentBoundary(text[assignmentEnd]))
+                {
+                    assignmentEnd++;
+                }
+
+                value = text[valueStart..assignmentEnd];
+            }
+
+            classifiedSpans.Add(new ClassifiedSpan(prefix.Start, assignmentEnd - prefix.Start));
+            bool isEmptyOrRedacted = IsQueryAssignment(text, prefix.Start)
+                ? IsEmptyOrAlreadyRedactedQueryValue(value)
+                : IsEmptyOrAlreadyRedactedSemanticValue(value);
+            if (!isEmptyOrRedacted)
+            {
+                return true;
+            }
+
+            searchIndex = Math.Max(prefix.ValueStart, assignmentEnd);
+        }
+
+        return false;
+    }
+
+    private static bool LooksLikeSiblingAssignment(string text, int index)
+    {
+        if (GenericCredentialKeyGrammar.TryFindAssignment(
+                text,
+                index,
+                out GenericCredentialKeyGrammar.AssignmentPrefixMatch supportedPrefix) &&
+            supportedPrefix.Start == index)
+        {
+            return true;
+        }
+
+        int cursor = index;
+        if (text[cursor] is '"' or '\'')
+        {
+            char quote = text[cursor++];
+            int nameStart = cursor;
+            while (cursor < text.Length && text[cursor] != quote)
+            {
+                cursor++;
+            }
+
+            if (cursor == nameStart || cursor >= text.Length)
+            {
+                return false;
+            }
+
+            cursor++;
+        }
+        else
+        {
+            int nameStart = cursor;
+            while (cursor < text.Length &&
+                   (char.IsLetterOrDigit(text[cursor]) || text[cursor] is '_' or '-' or '.'))
+            {
+                cursor++;
+            }
+
+            if (cursor == nameStart)
+            {
+                return false;
+            }
+        }
+
+        while (cursor < text.Length && char.IsWhiteSpace(text[cursor]))
+        {
+            cursor++;
+        }
+
+        if (cursor >= text.Length || text[cursor] is not ('=' or ':'))
+        {
+            return false;
+        }
+
+        return text[cursor] == '=' ||
+            cursor + 1 >= text.Length ||
+            char.IsWhiteSpace(text[cursor + 1]);
+    }
+
+    private static bool IsGenericAssignmentBoundary(char value) =>
+        value is ';' or ',' or '&' or '#' or '\r' or '\n' || char.IsWhiteSpace(value);
+
+    private static bool IsQueryAssignment(string text, int assignmentStart)
+    {
+        int cursor = assignmentStart - 1;
+        while (cursor >= 0 && char.IsWhiteSpace(text[cursor]))
+        {
+            cursor--;
+        }
+
+        return cursor >= 0 && text[cursor] is '?' or '&';
+    }
+
+    private static bool TryClassifyJsonCredentialDocument(string text, out bool hasCredential)
     {
         hasCredential = false;
         ReadOnlySpan<char> candidate = text.AsSpan().TrimStart();
@@ -477,7 +644,7 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         }
     }
 
-    private bool ClassifyJsonCredentialDocument(JsonElement element)
+    private static bool ClassifyJsonCredentialDocument(JsonElement element)
     {
         switch (element.ValueKind)
         {
@@ -854,4 +1021,9 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
     }
 
     private sealed record ParsedAssignment(string Name, string Value);
+
+    private readonly record struct ClassifiedSpan(int Start, int Length)
+    {
+        internal int End => Start + Length;
+    }
 }
