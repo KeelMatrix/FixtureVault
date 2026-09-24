@@ -100,7 +100,7 @@ try {
     Push-Location $consumerRoot
     try {
         [IO.File]::WriteAllBytes(
-            (Join-Path $consumerRoot "icon.png"),
+            (Join-Path $consumerRoot "asset.png"),
             [byte[]](0x89, 0x50, 0x4E, 0x47, 0x00, 0x01))
         $docsRoot = Join-Path $consumerRoot "docs"
         New-Item -ItemType Directory -Force -Path $docsRoot | Out-Null
@@ -114,7 +114,7 @@ try {
         $helpPath = Join-Path $workRoot "help.txt"
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("--help") $helpPath) -eq 0) "fixturevault --help failed."
         $help = [IO.File]::ReadAllText($helpPath)
-        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault" -and $help -match "Raw connection-string Password/Pwd values preserve backslash spellings literally" -and $help -match "doubled-quote runs" -and $help -match "u0022") "fixturevault --help did not print the expected usage text."
+        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault" -and $help -match "api_key/api-key" -and $help -match "client_secret/client-secret" -and $help -match "both '=' and ':' are supported" -and $help -match "Clean fields never suppress later fields or JSON siblings" -and $help -match "Raw connection-string Password/Pwd values preserve backslash spellings literally" -and $help -match "doubled-quote runs" -and $help -match "u0022") "fixturevault --help did not print the expected usage text."
 
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "init.txt")) -eq 0) "fixturevault init failed."
         Assert-Contract (Test-Path -LiteralPath (Join-Path $consumerRoot ".fixturevault.json")) "fixturevault init did not create .fixturevault.json."
@@ -189,6 +189,13 @@ try {
 
         $structuredCases = @(
             [pscustomobject]@{ Name = "azure-positive"; Fixture = 'AccountKey=fixture-azure-package-secret-1234567890;'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "fixture-azure-package-secret-1234567890" },
+            [pscustomobject]@{ Name = "raw-api-key-alias"; Fixture = 'api_key=fixture-api-key-package-secret-1234567890'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "fixture-api-key-package-secret-1234567890" },
+            [pscustomobject]@{ Name = "raw-client-secret-alias"; Fixture = 'client_secret=fixture-client-package-secret-1234567890'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "fixture-client-package-secret-1234567890" },
+            [pscustomobject]@{ Name = "json-api-key-property"; Fixture = '{"api_key":"fixture-json-property-package-secret-1234567890"}'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "fixture-json-property-package-secret-1234567890" },
+            [pscustomobject]@{ Name = "json-later-secret"; Fixture = '{"metadata":"kind=fixture","payload":"token=fixture-json-sibling-package-secret-1234567890"}'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "fixture-json-sibling-package-secret-1234567890" },
+            [pscustomobject]@{ Name = "raw-benign-before-colon"; Fixture = 'kind=fixture; token: fixture-colon-package-secret-1234567890'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "fixture-colon-package-secret-1234567890" },
+            [pscustomobject]@{ Name = "azure-all-marker-siblings"; Fixture = 'AccountKey=***,SharedAccessKey=[redacted]'; ExpectedExit = 0; ExpectedFinding = $false; Secret = "" },
+            [pscustomobject]@{ Name = "azure-marker-real-sibling"; Fixture = 'AccountKey=***,SharedAccessKey=fixture-azure-sibling-package-secret-1234567890'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "fixture-azure-sibling-package-secret-1234567890" },
             [pscustomobject]@{ Name = "api-header-literal-escape"; Fixture = 'X-Api-Key: \u0022\u0022'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "" },
             [pscustomobject]@{ Name = "api-query-literal-escape"; Fixture = 'https://example.invalid/?api_key=%5Cu0022%5Cu0022'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "" },
             [pscustomobject]@{ Name = "basic-marker"; Fixture = 'Authorization: Basic redacted'; ExpectedExit = 0; ExpectedFinding = $false; Secret = "" },
@@ -213,6 +220,13 @@ try {
                 Assert-Contract ($consoleCode -eq $case.ExpectedExit) "structured $($case.Name) console scan returned $consoleCode instead of $($case.ExpectedExit)."
                 $consoleText = [IO.File]::ReadAllText($consolePath)
                 Assert-Contract (($consoleText.Contains("FV007", [StringComparison]::Ordinal)) -eq $case.ExpectedFinding) "structured $($case.Name) console finding classification was incorrect."
+                $expectedFixturePath = "tests/$($case.Name).golden"
+                $consoleFindingCount = [regex]::Matches($consoleText, '(?m)^FV007 ').Count
+                Assert-Contract ($consoleFindingCount -eq [int]$case.ExpectedFinding) "structured $($case.Name) console scan did not report the exact FV007 finding count."
+                if ($case.ExpectedFinding) {
+                    Assert-Contract ($consoleText.Contains("FV007 block $expectedFixturePath", [StringComparison]::Ordinal)) "structured $($case.Name) console scan did not identify the intended fixture path."
+                    Assert-Contract ($consoleText.Contains("1 policy-blocking finding(s).", [StringComparison]::Ordinal)) "structured $($case.Name) console summary did not report exactly one blocking finding."
+                }
 
                 $jsonPath = Join-Path $workRoot "structured-$($case.Name)-json.txt"
                 $jsonCode = Invoke-CommandCapture $fixtureVault @("scan", "--format", "json") $jsonPath
@@ -221,7 +235,8 @@ try {
                 $jsonReport = $jsonText | ConvertFrom-Json
                 Assert-Contract ($jsonReport.filesInspected -eq 1 -and @($jsonReport.errors).Count -eq 0) "structured $($case.Name) JSON scan did not inspect one valid fixture without errors."
                 $jsonFindings = @($jsonReport.findings | Where-Object { $_.ruleId -eq "FV007" })
-                Assert-Contract (($jsonFindings.Count -eq 1 -and $jsonFindings[0].path -eq "tests/$($case.Name).golden") -eq $case.ExpectedFinding) "structured $($case.Name) JSON finding classification or path was incorrect."
+                Assert-Contract (@($jsonReport.findings).Count -eq [int]$case.ExpectedFinding) "structured $($case.Name) JSON scan did not report the exact total finding count."
+                Assert-Contract (($jsonFindings.Count -eq 1 -and $jsonFindings[0].path -eq $expectedFixturePath) -eq $case.ExpectedFinding) "structured $($case.Name) JSON finding classification or path was incorrect."
                 if ($case.Secret.Length -gt 0) {
                     Assert-Contract (-not $consoleText.Contains($case.Secret, [StringComparison]::Ordinal) -and -not $jsonText.Contains($case.Secret, [StringComparison]::Ordinal)) "structured $($case.Name) disclosed its credential."
                 }

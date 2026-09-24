@@ -139,10 +139,15 @@ internal static class CommandLineParser
               FV007 classifies structured credential values independently for connection-string
               Password/Pwd, AccountKey/SharedAccessKey/SharedAccessSignature, API-key headers
               and queries, Basic/Bearer authorization, Cookie/Set-Cookie, and generic assignments.
+              Generic assignment keys are case-insensitive: ApiKey/api_key/api-key,
+              ClientSecret/client_secret/client-secret, Password, Pwd, Secret, and Token. Raw
+              assignment keys may use matching quotes, and both '=' and ':' are supported.
               Raw connection-string Password/Pwd values preserve backslash spellings literally.
               Raw text preserves literal backslashes. Structurally valid JSON string values decode
               exactly once, and query values URL-decode exactly once, before their field grammar
-              is parsed. Empty, whitespace-only, and finite accepted redaction markers are clean;
+              is parsed. Clean fields never suppress later fields or JSON siblings. Azure-style
+              assignments also separate siblings at semicolons, commas, and whitespace. Empty,
+              whitespace-only, and finite accepted redaction markers are clean;
               JSON escape spellings such as \u0022 and doubled-quote runs are parsed only in their
               container context; quote and backslash characters remaining after parsing are data.
             """;

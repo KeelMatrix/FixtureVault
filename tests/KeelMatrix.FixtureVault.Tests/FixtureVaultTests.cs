@@ -70,7 +70,7 @@ public sealed class FixtureVaultTests
     public void Init_without_tests_directory_ignores_ordinary_binary_assets_at_repository_root()
     {
         using var repository = new TemporaryRepository(createTestsDirectory: false);
-        repository.WriteBytes("icon.png", [0x89, 0x50, 0x4E, 0x47, 0x00, 0x01]);
+        repository.WriteBytes("asset.png", [0x89, 0x50, 0x4E, 0x47, 0x00, 0x01]);
         repository.WriteBytes("docs/manual.pdf", [0x25, 0x50, 0x44, 0x46, 0x00, 0x01]);
         repository.WriteBytes("unrelated.zip", [0x50, 0x4B, 0x03, 0x04, 0x00, 0x01]);
 
@@ -133,6 +133,10 @@ public sealed class FixtureVaultTests
         Assert.Empty(error);
         Assert.Contains("Usage:", output, StringComparison.Ordinal);
         Assert.Contains("fixturevault", output, StringComparison.Ordinal);
+        Assert.Contains("ApiKey/api_key/api-key", output, StringComparison.Ordinal);
+        Assert.Contains("ClientSecret/client_secret/client-secret", output, StringComparison.Ordinal);
+        Assert.Contains("both '=' and ':' are supported", output, StringComparison.Ordinal);
+        Assert.Contains("Clean fields never suppress later fields or JSON siblings", output, StringComparison.Ordinal);
         Assert.Contains("Raw connection-string Password/Pwd values preserve backslash spellings literally.", output, StringComparison.Ordinal);
         Assert.Contains("doubled-quote runs", output, StringComparison.Ordinal);
         Assert.Contains("\\u0022", output, StringComparison.Ordinal);
@@ -2542,6 +2546,192 @@ public sealed class FixtureVaultTests
         yield return ["cookie-real", "Cookie: first=; second=fixture-cookie-secret-1234567890", true, "fixture-cookie-secret-1234567890", "", ""];
         yield return ["generic-marker", "password=<redacted>", false, "", "", ""];
         yield return ["generic-real", "password=fixture-generic-secret-1234567890", true, "fixture-generic-secret-1234567890", "", ""];
+    }
+
+    public static IEnumerable<object[]> GenericCredentialKeySeparatorCases()
+    {
+        string[] keys =
+        [
+            "ApiKey",
+            "apiKey",
+            "APIKEY",
+            "api_key",
+            "api-key",
+            "ClientSecret",
+            "client_secret",
+            "client-secret",
+            "Password",
+            "Pwd",
+            "Secret",
+            "Token",
+            "\"api_key\"",
+            "'client_secret'"
+        ];
+
+        int index = 0;
+        foreach (string key in keys)
+        {
+            foreach (string separator in new[] { "=", ":" })
+            {
+                yield return
+                [
+                    $"generic-key-{index++:D2}",
+                    $"{key}{separator}fixture-generic-secret-1234567890",
+                    true,
+                    "fixture-generic-secret-1234567890"
+                ];
+            }
+        }
+    }
+
+    public static IEnumerable<object[]> GenericCredentialValueCases()
+    {
+        string[] markers = ["***", "<redacted>", "[redacted]", "redacted", "masked", "removed"];
+        int index = 0;
+        foreach (string separator in new[] { "=", ":" })
+        {
+            yield return [$"generic-empty-{index++:D2}", $"api_key{separator}", false, ""];
+            yield return [$"generic-whitespace-{index++:D2}", $"api_key{separator}   ", false, ""];
+            yield return [$"generic-quoted-empty-double-{index++:D2}", $"api_key{separator}\"\"", false, ""];
+            yield return [$"generic-quoted-empty-single-{index++:D2}", $"api_key{separator}''", false, ""];
+
+            foreach (string marker in markers)
+            {
+                yield return [$"generic-marker-{index++:D2}", $"api_key{separator}{marker}", false, ""];
+                yield return [$"generic-quoted-marker-double-{index++:D2}", $"api_key{separator}\" {marker} \"", false, ""];
+                yield return [$"generic-quoted-marker-single-{index++:D2}", $"api_key{separator}' {marker} '", false, ""];
+            }
+        }
+
+        yield return ["generic-quote-data", "Token=fixture\"generic-secret-1234567890", true, "fixture\"generic-secret-1234567890"];
+        yield return ["generic-backslash-data", "Token=fixture\\generic-secret-1234567890", true, "fixture\\generic-secret-1234567890"];
+    }
+
+    public static IEnumerable<object[]> GenericCredentialRepresentationAndOwnershipCases()
+    {
+        const string canary = "fixture-generic-secret-1234567890";
+
+        yield return ["generic-raw-alias", $"api_key={canary}", true, canary];
+        yield return ["generic-json-serialized-raw", JsonSerializer.Serialize($"client_secret={canary}"), true, canary];
+        yield return ["generic-json-property-underscore", $"{{\"api_key\":\"{canary}\"}}", true, canary];
+        yield return ["generic-json-property-hyphen", $"{{\"client-secret\":\"{canary}\"}}", true, canary];
+        yield return ["generic-json-nested-property", $"{{\"outer\":{{\"client_secret\":\"{canary}\"}}}}", true, canary];
+        yield return ["generic-json-array-siblings", $"[\"kind=fixture\",\"token={canary}\"]", true, canary];
+        yield return ["generic-json-array-reversed", $"[\"token={canary}\",\"kind=fixture\"]", true, canary];
+        yield return ["generic-json-nested-array", $"{{\"outer\":[\"kind=fixture\",{{\"payload\":\"token={canary}\"}}]}}", true, canary];
+        yield return ["generic-json-alias-nested-object", $"{{\"Token\":{{\"metadata\":\"kind=fixture\",\"payload\":\"client_secret={canary}\"}}}}", true, canary];
+        yield return ["generic-json-secret-first", $"{{\"payload\":\"token={canary}\",\"metadata\":\"kind=fixture\"}}", true, canary];
+        yield return ["generic-json-secret-middle", $"{{\"first\":\"kind=fixture\",\"payload\":\"token={canary}\",\"last\":\"kind=fixture\"}}", true, canary];
+        yield return ["generic-json-secret-last", $"{{\"metadata\":\"kind=fixture\",\"payload\":\"token={canary}\"}}", true, canary];
+        yield return ["generic-colon-line-harmless-first", $"kind=fixture\ntoken: {canary}", true, canary];
+        yield return ["generic-colon-line-secret-first", $"token: {canary}\nkind=fixture", true, canary];
+        yield return ["generic-colon-same-line-harmless-first", $"kind=fixture; token: {canary}", true, canary];
+        yield return ["generic-colon-same-line-secret-first", $"token: {canary}; kind=fixture", true, canary];
+        yield return ["generic-alias-then-canonical", $"api_key=[redacted]; Token={canary}", true, canary];
+        yield return ["generic-canonical-then-alias", $"Token={canary}; client_secret=***", true, canary];
+        yield return ["generic-marker-then-secret", $"api-key=removed; client-secret={canary}", true, canary];
+        yield return ["generic-secret-then-marker", $"client-secret={canary}; api-key=removed", true, canary];
+        yield return ["generic-json-clean-siblings", "{\"metadata\":\"kind=fixture\",\"payload\":\"token=[redacted]\"}", false, ""];
+    }
+
+    public static IEnumerable<object[]> AzureCredentialBoundaryCases()
+    {
+        const string canary = "fixture-azure-secret-1234567890";
+
+        yield return ["azure-markers-semicolon", "AccountKey=***;SharedAccessKey=[redacted]", false, ""];
+        yield return ["azure-markers-comma", "AccountKey=***,SharedAccessKey=[redacted]", false, ""];
+        yield return ["azure-markers-space", "AccountKey=*** SharedAccessKey=[redacted]", false, ""];
+        yield return ["azure-markers-tab", "AccountKey=***\tSharedAccessKey=[redacted]", false, ""];
+        yield return ["azure-empty-marker-comma", "AccountKey=,SharedAccessKey=[redacted]", false, ""];
+        yield return ["azure-empty-marker-space", "AccountKey= SharedAccessKey=[redacted]", false, ""];
+        yield return ["azure-marker-real-semicolon", $"AccountKey=***;SharedAccessKey={canary}", true, canary];
+        yield return ["azure-real-marker-semicolon", $"SharedAccessKey={canary};AccountKey=***", true, canary];
+        yield return ["azure-marker-real-comma", $"AccountKey=***,SharedAccessKey={canary}", true, canary];
+        yield return ["azure-real-marker-comma", $"SharedAccessKey={canary},AccountKey=***", true, canary];
+        yield return ["azure-marker-real-space", $"AccountKey=*** SharedAccessKey={canary}", true, canary];
+        yield return ["azure-real-marker-space", $"SharedAccessKey={canary} AccountKey=***", true, canary];
+    }
+
+    [Theory]
+    [MemberData(nameof(GenericCredentialKeySeparatorCases))]
+    [MemberData(nameof(GenericCredentialValueCases))]
+    [MemberData(nameof(GenericCredentialRepresentationAndOwnershipCases))]
+    [MemberData(nameof(AzureCredentialBoundaryCases))]
+    public void Fv007_credential_key_grammar_and_parser_ownership_are_representation_invariant(
+        string caseName,
+        string fixture,
+        bool expectsFinding,
+        string canary)
+    {
+        AssertFv007FixtureContract(caseName, fixture, expectsFinding, canary);
+    }
+
+    private static void AssertFv007FixtureContract(
+        string caseName,
+        string fixture,
+        bool expectsFinding,
+        string canary)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        string relativePath = $"tests/{caseName}.golden";
+        repository.WriteText(relativePath, fixture + "\n");
+        IReadOnlyDictionary<string, string> before = repository.HashTree();
+
+        int consoleExitCode = repository.Run(
+            ["scan"],
+            new RecordingTelemetry(),
+            out string consoleOutput,
+            out string consoleError);
+
+        Assert.Equal(expectsFinding ? 1 : 0, consoleExitCode);
+        Assert.Empty(consoleError);
+        Assert.Equal(expectsFinding, consoleOutput.Contains("FV007", StringComparison.Ordinal));
+        if (expectsFinding)
+        {
+            Assert.Contains($"FV007 block {relativePath}", consoleOutput, StringComparison.Ordinal);
+            Assert.Single(
+                consoleOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries),
+                line => line.StartsWith("FV007 ", StringComparison.Ordinal));
+        }
+
+        if (canary.Length > 0)
+        {
+            Assert.DoesNotContain(canary, consoleOutput, StringComparison.Ordinal);
+        }
+
+        int jsonExitCode = repository.Run(
+            ["scan", "--format", "json"],
+            new RecordingTelemetry(),
+            out string jsonOutput,
+            out string jsonError);
+
+        Assert.Equal(expectsFinding ? 1 : 0, jsonExitCode);
+        Assert.Empty(jsonError);
+        using JsonDocument report = JsonDocument.Parse(jsonOutput);
+        Assert.Equal(1, report.RootElement.GetProperty("filesInspected").GetInt32());
+        Assert.Empty(report.RootElement.GetProperty("errors").EnumerateArray());
+        JsonElement[] findings =
+        [
+            .. report.RootElement.GetProperty("findings").EnumerateArray()
+                .Where(item => item.GetProperty("ruleId").GetString() == "FV007")
+        ];
+        if (expectsFinding)
+        {
+            JsonElement finding = Assert.Single(findings);
+            Assert.Equal(relativePath, finding.GetProperty("path").GetString());
+        }
+        else
+        {
+            Assert.Empty(findings);
+        }
+
+        if (canary.Length > 0)
+        {
+            Assert.DoesNotContain(canary, jsonOutput, StringComparison.Ordinal);
+        }
+
+        Assert.Equal(before, repository.HashTree());
     }
 
     [Theory]

@@ -164,6 +164,61 @@ internal interface ISensitiveDataDetector
     bool IsSensitive(string text);
 }
 
+internal static class GenericCredentialKeyGrammar
+{
+    private static readonly Dictionary<string, string> Aliases =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["ApiKey"] = "ApiKey",
+            ["api_key"] = "ApiKey",
+            ["api-key"] = "ApiKey",
+            ["ClientSecret"] = "ClientSecret",
+            ["client_secret"] = "ClientSecret",
+            ["client-secret"] = "ClientSecret",
+            ["Password"] = "Password",
+            ["Pwd"] = "Pwd",
+            ["Secret"] = "Secret",
+            ["Token"] = "Token"
+        };
+
+    internal static string KeyPattern { get; } = string.Join(
+        "|",
+        Aliases.Keys
+            .OrderByDescending(alias => alias.Length)
+            .ThenBy(alias => alias, StringComparer.Ordinal)
+            .Select(Regex.Escape));
+
+    internal static string FallbackAssignmentPattern { get; } =
+        $@"(?i)[""']?\b({KeyPattern})\b[""']?\s*[:=]\s*[""']?[A-Za-z0-9_./+=-]{{16,}}";
+
+    internal static bool TryNormalizeDecodedKey(string key, out string normalizedKey) =>
+        TryNormalize(key, allowQuotedSyntax: false, out normalizedKey);
+
+    internal static bool TryNormalizeAssignmentKey(string key, out string normalizedKey) =>
+        TryNormalize(key, allowQuotedSyntax: true, out normalizedKey);
+
+    private static bool TryNormalize(string key, bool allowQuotedSyntax, out string normalizedKey)
+    {
+        string candidate = key.Trim();
+        if (allowQuotedSyntax &&
+            candidate.Length >= 2 &&
+            candidate[0] is '"' or '\'' &&
+            candidate[^1] == candidate[0])
+        {
+            candidate = candidate[1..^1];
+        }
+
+        if (Aliases.TryGetValue(candidate, out string? canonicalKey))
+        {
+            normalizedKey = canonicalKey;
+            return true;
+        }
+
+        normalizedKey = string.Empty;
+        return false;
+    }
+}
+
 internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : ISensitiveDataDetector
 {
     private static readonly Regex AuthorizationHeader = new(
@@ -193,16 +248,6 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         "SharedAccessKey",
         "SharedAccessSignature"
     ];
-    private static readonly string[] GenericCredentialKeys =
-    [
-        "ApiKey",
-        "ClientSecret",
-        "Password",
-        "Pwd",
-        "Secret",
-        "Token"
-    ];
-
     public bool IsSensitive(string text)
     {
         if (redactor is ConnectionStringPasswordRedactor)
@@ -219,24 +264,13 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
             return HasNonEmptyConnectionStringCredential(text);
         }
 
-        if (redactor is RegexReplaceRedactor &&
-            TryClassifyJsonCredentialProperties(text, out bool hasJsonCredential) &&
-            hasJsonCredential)
+        if (redactor is RegexReplaceRedactor)
         {
-            return true;
+            return HasSensitiveGenericCredentialText(text);
         }
 
         foreach (string representation in ReadRepresentations(text))
         {
-            // Generic assignments may themselves be connection-string fields. Classify that
-            // representation before line-scoped header processing so a quoted value containing a
-            // line break is not split into an unterminated assignment.
-            if (redactor is RegexReplaceRedactor &&
-                TryClassifyGenericCredentialRepresentation(representation, out bool hasGenericCredential))
-            {
-                return hasGenericCredential;
-            }
-
             // Header and cookie grammar remains line-scoped. JSON string values are evaluated
             // after the container has been decoded once.
             foreach (string line in representation.Split('\n'))
@@ -254,7 +288,7 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
     private bool IsSensitiveLine(string text)
     {
         if (redactor is AzureKeyLikeRedactor &&
-            TryClassifyConnectionAssignments(text, AzureCredentialKeys, out bool hasAzureAssignment))
+            TryClassifyAzureAssignments(text, out bool hasAzureAssignment))
         {
             return hasAzureAssignment;
         }
@@ -293,14 +327,13 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
             }
         }
 
-        if (redactor is RegexReplaceRedactor &&
-            TryClassifyGenericCredentialRepresentation(text, out bool hasGenericCredential))
-        {
-            return hasGenericCredential;
-        }
-
         // Whole-token redactors retain the original redaction-difference contract. Structured
         // formats above are classified field-by-field before this fallback is reached.
+        return HasSensitiveRedactionDifference(text);
+    }
+
+    private bool HasSensitiveRedactionDifference(string text)
+    {
         string normalized = text;
         string redacted = redactor.Redact(normalized);
         if (string.Equals(redacted, normalized, StringComparison.Ordinal))
@@ -345,16 +378,13 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         return false;
     }
 
-    private static bool TryClassifyConnectionAssignments(
-        string text,
-        IReadOnlyList<string> keys,
-        out bool hasCredential)
+    private static bool TryClassifyAzureAssignments(string text, out bool hasCredential)
     {
         bool sawParsedAssignment = false;
-        foreach (ParsedAssignment assignment in ReadAssignments(text, splitOnLineBreaks: true))
+        foreach (ParsedAssignment assignment in ReadAzureAssignments(text))
         {
             sawParsedAssignment = true;
-            if (!keys.Any(key => assignment.Name.Equals(key, StringComparison.OrdinalIgnoreCase)))
+            if (!AzureCredentialKeys.Any(key => assignment.Name.Equals(key, StringComparison.OrdinalIgnoreCase)))
             {
                 continue;
             }
@@ -379,18 +409,36 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
     private static bool HasNonEmptyHeaderValue(string value) =>
         !IsEmptyOrAlreadyRedactedSemanticValue(ReadOptionalDelimitedValue(value));
 
-    private static bool TryClassifyGenericCredentialRepresentation(string text, out bool hasCredential)
+    private bool HasSensitiveGenericCredentialText(string text)
     {
-        if (TryClassifyJsonCredentialProperties(text, out hasCredential))
+        if (TryClassifyJsonCredentialDocument(text, out bool hasJsonCredential))
+        {
+            return hasJsonCredential;
+        }
+
+        return HasSensitiveGenericCredentialRepresentation(text);
+    }
+
+    private bool HasSensitiveGenericCredentialRepresentation(string text)
+    {
+        if (TryClassifyGenericCredentialRepresentation(text, out bool hasCredential))
         {
             return hasCredential;
         }
 
+        return HasSensitiveRedactionDifference(text);
+    }
+
+    private static bool TryClassifyGenericCredentialRepresentation(string text, out bool hasCredential)
+    {
         bool sawParsedAssignment = false;
-        foreach (ParsedAssignment assignment in ReadAssignments(text, splitOnLineBreaks: true))
+        foreach (ParsedAssignment assignment in ReadAssignments(
+                     text,
+                     splitOnLineBreaks: true,
+                     allowColonOperator: true))
         {
             sawParsedAssignment = true;
-            if (!GenericCredentialKeys.Any(key => assignment.Name.Equals(key, StringComparison.OrdinalIgnoreCase)))
+            if (!GenericCredentialKeyGrammar.TryNormalizeAssignmentKey(assignment.Name, out _))
             {
                 continue;
             }
@@ -403,12 +451,12 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         }
 
         hasCredential = false;
-        // The field parser owns boundaries. A legacy whole-token fallback must not search inside
-        // a value that the parser already consumed as unrelated text.
+        // Parsed fields own only the field grammar they consumed. Because this parser understands
+        // both supported operators, a clean field cannot hide a later ':' or '=' credential.
         return sawParsedAssignment;
     }
 
-    private static bool TryClassifyJsonCredentialProperties(string text, out bool hasCredential)
+    private bool TryClassifyJsonCredentialDocument(string text, out bool hasCredential)
     {
         hasCredential = false;
         ReadOnlySpan<char> candidate = text.AsSpan().TrimStart();
@@ -420,8 +468,8 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         try
         {
             using JsonDocument document = JsonDocument.Parse(text);
-            bool isJson = ClassifyJsonCredentialProperties(document.RootElement, ref hasCredential);
-            return isJson;
+            hasCredential = ClassifyJsonCredentialDocument(document.RootElement);
+            return true;
         }
         catch (JsonException)
         {
@@ -429,41 +477,45 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         }
     }
 
-    private static bool ClassifyJsonCredentialProperties(JsonElement element, ref bool hasCredential)
+    private bool ClassifyJsonCredentialDocument(JsonElement element)
     {
         switch (element.ValueKind)
         {
             case JsonValueKind.Object:
                 foreach (JsonProperty property in element.EnumerateObject())
                 {
-                    if (GenericCredentialKeys.Any(key => property.Name.Equals(key, StringComparison.OrdinalIgnoreCase)))
+                    if (GenericCredentialKeyGrammar.TryNormalizeDecodedKey(property.Name, out _) &&
+                        property.Value.ValueKind == JsonValueKind.String)
                     {
-                        if (property.Value.ValueKind == JsonValueKind.String &&
-                            !IsEmptyOrAlreadyRedactedSemanticValue(property.Value.GetString() ?? string.Empty))
+                        if (!IsEmptyOrAlreadyRedactedSemanticValue(property.Value.GetString() ?? string.Empty))
                         {
-                            hasCredential = true;
+                            return true;
                         }
 
                         continue;
                     }
 
-                    ClassifyJsonCredentialProperties(property.Value, ref hasCredential);
+                    if (ClassifyJsonCredentialDocument(property.Value))
+                    {
+                        return true;
+                    }
                 }
 
-                return true;
+                return false;
             case JsonValueKind.Array:
                 foreach (JsonElement item in element.EnumerateArray())
                 {
-                    ClassifyJsonCredentialProperties(item, ref hasCredential);
+                    if (ClassifyJsonCredentialDocument(item))
+                    {
+                        return true;
+                    }
                 }
 
-                return true;
+                return false;
             case JsonValueKind.String:
-                // This is a valid JSON representation. Its decoded value is evaluated by the
-                // representation loop, so do not run a second redaction pass on the container.
-                return true;
+                return HasSensitiveGenericCredentialRepresentation(element.GetString() ?? string.Empty);
             default:
-                return true;
+                return false;
         }
     }
 
@@ -559,7 +611,10 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         return trimmed[1..^1];
     }
 
-    private static IEnumerable<ParsedAssignment> ReadAssignments(string text, bool splitOnLineBreaks)
+    private static IEnumerable<ParsedAssignment> ReadAssignments(
+        string text,
+        bool splitOnLineBreaks,
+        bool allowColonOperator = false)
     {
         int index = 0;
         while (index < text.Length)
@@ -581,13 +636,13 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
             }
 
             int nameStart = index;
-            while (index < text.Length && text[index] != '=' &&
+            while (index < text.Length && !IsAssignmentOperator(text[index], allowColonOperator) &&
                    !IsAssignmentSeparator(text[index], splitOnLineBreaks))
             {
                 index++;
             }
 
-            if (index >= text.Length || text[index] != '=')
+            if (index >= text.Length || !IsAssignmentOperator(text[index], allowColonOperator))
             {
                 SkipToAssignmentSeparator(text, ref index, splitOnLineBreaks);
                 continue;
@@ -624,6 +679,98 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
             }
         }
     }
+
+    private static IEnumerable<ParsedAssignment> ReadAzureAssignments(string text)
+    {
+        int index = 0;
+        while (index < text.Length)
+        {
+            while (index < text.Length && IsAzureAssignmentBoundary(text[index]))
+            {
+                index++;
+            }
+
+            if (index >= text.Length)
+            {
+                yield break;
+            }
+
+            int nameStart = index;
+            while (index < text.Length && text[index] != '=' && !IsAzureAssignmentBoundary(text[index]))
+            {
+                index++;
+            }
+
+            int nameEnd = index;
+            while (index < text.Length && char.IsWhiteSpace(text[index]))
+            {
+                index++;
+            }
+
+            if (index >= text.Length || text[index] != '=')
+            {
+                continue;
+            }
+
+            string name = text[nameStart..nameEnd].Trim();
+            index++;
+            int whitespaceStart = index;
+            while (index < text.Length && char.IsWhiteSpace(text[index]))
+            {
+                index++;
+            }
+
+            string value;
+            if (index > whitespaceStart && LooksLikeAzureAssignment(text, index))
+            {
+                value = string.Empty;
+            }
+            else if (index < text.Length && text[index] is '"' or '\'')
+            {
+                value = ReadQuotedValue(text, ref index, text[index]);
+            }
+            else
+            {
+                int valueStart = index;
+                while (index < text.Length && !IsAzureAssignmentBoundary(text[index]))
+                {
+                    index++;
+                }
+
+                value = text[valueStart..index];
+            }
+
+            if (name.Length > 0)
+            {
+                yield return new ParsedAssignment(name, value);
+            }
+        }
+    }
+
+    private static bool LooksLikeAzureAssignment(string text, int index)
+    {
+        int nameStart = index;
+        while (index < text.Length && text[index] != '=' && !IsAzureAssignmentBoundary(text[index]))
+        {
+            index++;
+        }
+
+        string name = text[nameStart..index];
+        while (index < text.Length && char.IsWhiteSpace(text[index]))
+        {
+            index++;
+        }
+
+        return index < text.Length &&
+            text[index] == '=' &&
+            AzureCredentialKeys.Any(key => name.Equals(key, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsAssignmentOperator(char value, bool allowColonOperator) =>
+        value == '=' || (allowColonOperator && value == ':');
+
+    private static bool IsAzureAssignmentBoundary(char value) =>
+        value is ';' or ',' or '\r' or '\n' || char.IsWhiteSpace(value);
 
     private static bool IsAssignmentSeparator(char value, bool splitOnLineBreaks) =>
         value == ';' || (splitOnLineBreaks && value is '\r' or '\n');

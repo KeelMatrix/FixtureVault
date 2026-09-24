@@ -694,7 +694,7 @@ internal sealed class FixtureScanner
             new GoogleApiKeyRedactor(),
             new JwtTokenRedactor(),
             new RegexReplaceRedactor(
-                @"(?i)[""']?\b(api[_-]?key|client[_-]?secret|password|secret|token)\b[""']?\s*[:=]\s*[""']?[A-Za-z0-9_./+=-]{16,}",
+                GenericCredentialKeyGrammar.FallbackAssignmentPattern,
                 "$1=<redacted>")
         ];
         return redactors.Select(redactor => new RedactionSensitiveDataDetector(redactor)).ToArray();
