@@ -114,7 +114,7 @@ try {
         $helpPath = Join-Path $workRoot "help.txt"
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("--help") $helpPath) -eq 0) "fixturevault --help failed."
         $help = [IO.File]::ReadAllText($helpPath)
-        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault" -and $help -match "api_key/api-key" -and $help -match "client_secret/client-secret" -and $help -match "must be unquoted or use matching single/double quotes" -and $help -match "mismatched quotes are not assignment syntax" -and $help -match "Both '=' and ':' are supported" -and $help -match "Parsed generic fields own only their exact key/operator/value spans" -and $help -match "Clean fields never suppress later fields or JSON siblings" -and $help -match "any valid name=value starts a sibling field" -and $help -match "only Azure credential keys are classified" -and $help -match "Raw connection-string Password/Pwd values preserve backslash spellings literally" -and $help -match "doubled-quote runs" -and $help -match "u0022") "fixturevault --help did not print the expected usage text."
+        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault" -and $help -match "api_key/api-key" -and $help -match "client_secret/client-secret" -and $help -match "must be unquoted or use matching single/double quotes" -and $help -match "mismatched quotes are not assignment syntax" -and $help -match "Both '=' and ':' are supported" -and $help -match "Parsed generic fields own only their exact key/operator/value spans" -and $help -match "Clean fields never suppress later fields or JSON siblings" -and $help -match "the shared sibling grammar recognizes '=' and ':' forms" -and $help -match "URI-like values stay intact" -and $help -match "only Azure credential keys are classified" -and $help -match "Raw connection-string Password/Pwd values preserve backslash spellings literally" -and $help -match "doubled-quote runs" -and $help -match "u0022") "fixturevault --help did not print the expected usage text."
 
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "init.txt")) -eq 0) "fixturevault init failed."
         Assert-Contract (Test-Path -LiteralPath (Join-Path $consumerRoot ".fixturevault.json")) "fixturevault init did not create .fixturevault.json."
@@ -217,12 +217,58 @@ try {
             [pscustomobject]@{ Name = "azure-harmless-sibling-empty"; Fixture = 'EndpointSuffix=core.windows.net AccountKey='; ExpectedExit = 0; ExpectedFinding = $false; Secret = "" },
             [pscustomobject]@{ Name = "azure-empty-real-sibling"; Fixture = 'AccountKey= SharedAccessKey=fixture-azure-empty-real-package-secret-1234567890'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "fixture-azure-empty-real-package-secret-1234567890" },
             [pscustomobject]@{ Name = "azure-harmless-sibling-real"; Fixture = 'EndpointSuffix=core.windows.net AccountKey=fixture-azure-harmless-real-package-secret-1234567890'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "fixture-azure-harmless-real-package-secret-1234567890" },
+            [pscustomobject]@{ Name = "azure-empty-unknown-colon"; Fixture = 'AccountKey= note: [redacted]'; ExpectedExit = 0; ExpectedFinding = $false; Secret = "" },
+            [pscustomobject]@{ Name = "azure-uri-like-value"; Fixture = 'AccountKey= https://example.invalid/fixture'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "https://example.invalid/fixture" },
             [pscustomobject]@{ Name = "api-header-literal-escape"; Fixture = 'X-Api-Key: \u0022\u0022'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "" },
             [pscustomobject]@{ Name = "api-query-literal-escape"; Fixture = 'https://example.invalid/?api_key=%5Cu0022%5Cu0022'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "" },
             [pscustomobject]@{ Name = "basic-marker"; Fixture = 'Authorization: Basic redacted'; ExpectedExit = 0; ExpectedFinding = $false; Secret = "" },
             [pscustomobject]@{ Name = "cookie-sibling-positive"; Fixture = 'Cookie: empty=; second=fixture-cookie-package-secret-1234567890'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "fixture-cookie-package-secret-1234567890" },
             [pscustomobject]@{ Name = "generic-marker"; Fixture = 'password=<redacted>'; ExpectedExit = 0; ExpectedFinding = $false; Secret = "" }
         )
+
+        $azureColonKeys = @("AccountKey", "SharedAccessKey", "SharedAccessSignature")
+        $azureColonSiblings = @(
+            [pscustomobject]@{ Name = "marker"; Assignment = 'token: [redacted]'; ExpectedExit = 0; ExpectedFinding = $false; Secret = "" },
+            [pscustomobject]@{ Name = "real"; Assignment = 'token: fixture-generic-colon-package-secret-1234567890'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "fixture-generic-colon-package-secret-1234567890" }
+        )
+
+        foreach ($azureKey in $azureColonKeys) {
+            foreach ($sibling in $azureColonSiblings) {
+                foreach ($azureFirst in @($true, $false)) {
+                    $sequence = if ($azureFirst) {
+                        "$azureKey= $($sibling.Assignment)"
+                    }
+                    else {
+                        "$($sibling.Assignment) $azureKey="
+                    }
+                    $order = if ($azureFirst) { "azure-first" } else { "generic-first" }
+                    $keyName = $azureKey.ToLowerInvariant()
+                    $representations = @(
+                        [pscustomobject]@{ Name = "raw"; Fixture = $sequence },
+                        [pscustomobject]@{
+                            Name = "nested-json"
+                            Fixture = ConvertTo-Json -InputObject ([pscustomobject]@{
+                                outer = [pscustomobject]@{ payload = $sequence }
+                            }) -Compress -Depth 5
+                        },
+                        [pscustomobject]@{
+                            Name = "json-array"
+                            Fixture = ConvertTo-Json -InputObject @("kind=fixture", $sequence) -Compress
+                        }
+                    )
+
+                    foreach ($representation in $representations) {
+                        $structuredCases += [pscustomobject]@{
+                            Name = "azure-colon-$keyName-$($sibling.Name)-$order-$($representation.Name)"
+                            Fixture = $representation.Fixture
+                            ExpectedExit = $sibling.ExpectedExit
+                            ExpectedFinding = $sibling.ExpectedFinding
+                            Secret = $sibling.Secret
+                        }
+                    }
+                }
+            }
+        }
 
         foreach ($case in $structuredCases) {
             $caseRoot = Join-Path $connectionPositiveRoot "structured-$($case.Name)"

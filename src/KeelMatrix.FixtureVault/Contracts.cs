@@ -907,7 +907,7 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
 
             string value;
             if (index > whitespaceStart &&
-                LooksLikeSiblingAssignment(text, index, allowColonOperator: false))
+                LooksLikeSiblingAssignment(text, index))
             {
                 value = string.Empty;
             }

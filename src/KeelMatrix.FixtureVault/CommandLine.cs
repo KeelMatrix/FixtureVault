@@ -149,7 +149,8 @@ internal static class CommandLineParser
               is parsed. Parsed generic fields own only their exact key/operator/value spans;
               unconsumed prefix and unknown-key text remains independently inspected. Clean fields never suppress later fields or JSON siblings.
               Azure-style assignments also separate siblings at semicolons, commas, and whitespace.
-              After an empty Azure value, any valid name=value starts a sibling field.
+              After an empty Azure value, the shared sibling grammar recognizes '=' and ':' forms.
+              Arbitrary-name ':' requires following whitespace or end-of-input, so URI-like values stay intact.
               Only Azure credential keys are classified. Empty, whitespace-only, and finite accepted redaction markers are clean;
               JSON escape spellings such as \u0022 and doubled-quote runs are parsed only in their
               container context; quote and backslash characters remaining after parsing are data.

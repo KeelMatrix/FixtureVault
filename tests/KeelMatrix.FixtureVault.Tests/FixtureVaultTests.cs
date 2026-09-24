@@ -141,7 +141,8 @@ public sealed class FixtureVaultTests
         Assert.Contains("Both '=' and ':' are supported", output, StringComparison.Ordinal);
         Assert.Contains("Parsed generic fields own only their exact key/operator/value spans", output, StringComparison.Ordinal);
         Assert.Contains("Clean fields never suppress later fields or JSON siblings", output, StringComparison.Ordinal);
-        Assert.Contains("any valid name=value starts a sibling field", output, StringComparison.Ordinal);
+        Assert.Contains("the shared sibling grammar recognizes '=' and ':' forms", output, StringComparison.Ordinal);
+        Assert.Contains("URI-like values stay intact", output, StringComparison.Ordinal);
         Assert.Contains("Only Azure credential keys are classified", output, StringComparison.Ordinal);
         Assert.Contains("Raw connection-string Password/Pwd values preserve backslash spellings literally.", output, StringComparison.Ordinal);
         Assert.Contains("doubled-quote runs", output, StringComparison.Ordinal);
@@ -2686,6 +2687,60 @@ public sealed class FixtureVaultTests
         yield return ["azure-real-marker-comma", $"SharedAccessKey={canary},AccountKey=***", true, canary];
         yield return ["azure-marker-real-space", $"AccountKey=*** SharedAccessKey={canary}", true, canary];
         yield return ["azure-real-marker-space", $"SharedAccessKey={canary} AccountKey=***", true, canary];
+
+        const string genericCanary = "fixture-generic-colon-secret-1234567890";
+        string[] azureKeys = ["AccountKey", "SharedAccessKey", "SharedAccessSignature"];
+        (string Name, string Assignment, bool ExpectsFinding, string Canary)[] genericSiblings =
+        [
+            ("marker", "token: [redacted]", false, ""),
+            ("real", $"token: {genericCanary}", true, genericCanary)
+        ];
+
+        foreach (string azureKey in azureKeys)
+        {
+            foreach (var sibling in genericSiblings)
+            {
+                foreach (bool azureFirst in new[] { true, false })
+                {
+                    string sequence = azureFirst
+                        ? $"{azureKey}= {sibling.Assignment}"
+                        : $"{sibling.Assignment} {azureKey}=";
+                    string order = azureFirst ? "azure-first" : "generic-first";
+                    string keyName = azureKey.ToLowerInvariant();
+
+                    yield return
+                    [
+                        $"azure-colon-{keyName}-{sibling.Name}-{order}-raw",
+                        sequence,
+                        sibling.ExpectsFinding,
+                        sibling.Canary
+                    ];
+                    yield return
+                    [
+                        $"azure-colon-{keyName}-{sibling.Name}-{order}-nested-json",
+                        JsonSerializer.Serialize(new { outer = new { payload = sequence } }),
+                        sibling.ExpectsFinding,
+                        sibling.Canary
+                    ];
+                    yield return
+                    [
+                        $"azure-colon-{keyName}-{sibling.Name}-{order}-json-array",
+                        JsonSerializer.Serialize(new[] { "kind=fixture", sequence }),
+                        sibling.ExpectsFinding,
+                        sibling.Canary
+                    ];
+                }
+            }
+        }
+
+        yield return ["azure-empty-unknown-colon", "AccountKey= note: [redacted]", false, ""];
+        yield return
+        [
+            "azure-uri-like-value",
+            "AccountKey= https://example.invalid/fixture",
+            true,
+            "https://example.invalid/fixture"
+        ];
     }
 
     [Theory]
