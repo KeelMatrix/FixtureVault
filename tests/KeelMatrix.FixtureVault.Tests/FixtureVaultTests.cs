@@ -139,6 +139,8 @@ public sealed class FixtureVaultTests
         Assert.Contains("unmatched or", output, StringComparison.Ordinal);
         Assert.Contains("mismatched quotes are not assignment syntax", output, StringComparison.Ordinal);
         Assert.Contains("Both '=' and ':' are supported", output, StringComparison.Ordinal);
+        Assert.Contains("JSON credential properties classify string, number, true, and false scalars", output, StringComparison.Ordinal);
+        Assert.Contains("Null and empty/whitespace strings are clean; object/array values are containers only", output, StringComparison.Ordinal);
         Assert.Contains("Parsed generic fields own only their exact key/operator/value spans", output, StringComparison.Ordinal);
         Assert.Contains("Clean fields never suppress later fields or JSON siblings", output, StringComparison.Ordinal);
         Assert.Contains("the shared sibling grammar recognizes '=' and ':' forms", output, StringComparison.Ordinal);
@@ -2667,6 +2669,123 @@ public sealed class FixtureVaultTests
         yield return ["generic-json-clean-siblings", "{\"metadata\":\"kind=fixture\",\"payload\":\"token=[redacted]\"}", false, ""];
     }
 
+    public static IEnumerable<object[]> GenericCredentialJsonScalarCases()
+    {
+        string[] keys =
+        [
+            "ApiKey",
+            "apiKey",
+            "APIKEY",
+            "api_key",
+            "api-key",
+            "ClientSecret",
+            "client_secret",
+            "client-secret",
+            "Password",
+            "Pwd",
+            "Secret",
+            "Token"
+        ];
+        string[] markers = ["***", "<redacted>", "[redacted]", "redacted", "masked", "removed"];
+        const string stringCanary = "fixture-json-scalar-secret-1234567890";
+        const string numberCanary = "1234567890123456789";
+
+        int index = 0;
+        foreach (string key in keys)
+        {
+            string keyJson = JsonSerializer.Serialize(key);
+            yield return
+            [
+                $"generic-json-scalar-string-{index:D2}",
+                $"{{{keyJson}:{JsonSerializer.Serialize(stringCanary)}}}",
+                true,
+                stringCanary
+            ];
+            yield return
+            [
+                $"generic-json-scalar-number-{index:D2}",
+                $"{{{keyJson}:{numberCanary}}}",
+                true,
+                numberCanary
+            ];
+            yield return [$"generic-json-scalar-true-{index:D2}", $"{{{keyJson}:true}}", true, "true"];
+            yield return [$"generic-json-scalar-false-{index:D2}", $"{{{keyJson}:false}}", true, "false"];
+
+            foreach (string marker in markers)
+            {
+                yield return
+                [
+                    $"generic-json-marker-{index:D2}-{Array.IndexOf(markers, marker):D2}",
+                    $"{{{keyJson}:{JsonSerializer.Serialize(marker)}}}",
+                    false,
+                    marker
+                ];
+            }
+
+            yield return [$"generic-json-empty-{index:D2}", $"{{{keyJson}:\"\"}}", false, ""];
+            yield return [$"generic-json-whitespace-{index:D2}", $"{{{keyJson}:\" \\t \"}}", false, ""];
+            yield return [$"generic-json-null-{index:D2}", $"{{{keyJson}:null}}", false, ""];
+            yield return
+            [
+                $"generic-json-object-value-{index:D2}",
+                $"{{{keyJson}:{{\"metadata\":\"kind=fixture\"}}}}",
+                false,
+                ""
+            ];
+            yield return
+            [
+                $"generic-json-array-value-{index:D2}",
+                $"{{{keyJson}:[\"kind=fixture\"]}}",
+                false,
+                ""
+            ];
+            index++;
+        }
+
+        yield return
+        [
+            "generic-json-number-nested-object",
+            $"{{\"outer\":{{\"api_key\":{numberCanary}}}}}",
+            true,
+            numberCanary
+        ];
+        yield return
+        [
+            "generic-json-false-array-sibling",
+            "[{\"metadata\":\"kind=fixture\"},{\"Token\":false}]",
+            true,
+            "false"
+        ];
+        yield return
+        [
+            "generic-json-true-harmless-first",
+            "{\"metadata\":\"kind=fixture\",\"Token\":true}",
+            true,
+            "true"
+        ];
+        yield return
+        [
+            "generic-json-true-harmless-last",
+            "{\"Token\":true,\"metadata\":\"kind=fixture\"}",
+            true,
+            "true"
+        ];
+        yield return
+        [
+            "generic-json-object-value-nested-credential",
+            $"{{\"Token\":{{\"client_secret\":{numberCanary}}}}}",
+            true,
+            numberCanary
+        ];
+        yield return
+        [
+            "generic-json-array-value-nested-credential",
+            "{\"Token\":[{\"api-key\":false}]}",
+            true,
+            "false"
+        ];
+    }
+
     public static IEnumerable<object[]> AzureCredentialBoundaryCases()
     {
         const string canary = "fixture-azure-secret-1234567890";
@@ -2748,6 +2867,7 @@ public sealed class FixtureVaultTests
     [MemberData(nameof(GenericCredentialValueCases))]
     [MemberData(nameof(GenericCredentialQuoteSyntaxCases))]
     [MemberData(nameof(GenericCredentialRepresentationAndOwnershipCases))]
+    [MemberData(nameof(GenericCredentialJsonScalarCases))]
     [MemberData(nameof(AzureCredentialBoundaryCases))]
     public void Fv007_credential_key_grammar_and_parser_ownership_are_representation_invariant(
         string caseName,
@@ -2779,6 +2899,7 @@ public sealed class FixtureVaultTests
         Assert.Equal(expectsFinding ? 1 : 0, consoleExitCode);
         Assert.Empty(consoleError);
         Assert.Equal(expectsFinding, consoleOutput.Contains("FV007", StringComparison.Ordinal));
+        Assert.DoesNotContain(fixture, consoleOutput, StringComparison.Ordinal);
         if (expectsFinding)
         {
             Assert.Contains($"FV007 block {relativePath}", consoleOutput, StringComparison.Ordinal);
@@ -2789,7 +2910,10 @@ public sealed class FixtureVaultTests
 
         if (canary.Length > 0)
         {
-            Assert.DoesNotContain(canary, consoleOutput, StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                canary,
+                consoleOutput.Replace(relativePath, string.Empty, StringComparison.Ordinal),
+                StringComparison.Ordinal);
         }
 
         int jsonExitCode = repository.Run(
@@ -2801,6 +2925,7 @@ public sealed class FixtureVaultTests
         Assert.Equal(expectsFinding ? 1 : 0, jsonExitCode);
         Assert.Empty(jsonError);
         using JsonDocument report = JsonDocument.Parse(jsonOutput);
+        Assert.DoesNotContain(fixture, jsonOutput, StringComparison.Ordinal);
         Assert.Equal(1, report.RootElement.GetProperty("filesInspected").GetInt32());
         Assert.Empty(report.RootElement.GetProperty("errors").EnumerateArray());
         JsonElement[] findings =
@@ -2820,7 +2945,10 @@ public sealed class FixtureVaultTests
 
         if (canary.Length > 0)
         {
-            Assert.DoesNotContain(canary, jsonOutput, StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                canary,
+                jsonOutput.Replace(relativePath, string.Empty, StringComparison.Ordinal),
+                StringComparison.Ordinal);
         }
 
         Assert.Equal(before, repository.HashTree());

@@ -114,7 +114,7 @@ try {
         $helpPath = Join-Path $workRoot "help.txt"
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("--help") $helpPath) -eq 0) "fixturevault --help failed."
         $help = [IO.File]::ReadAllText($helpPath)
-        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault" -and $help -match "api_key/api-key" -and $help -match "client_secret/client-secret" -and $help -match "must be unquoted or use matching single/double quotes" -and $help -match "mismatched quotes are not assignment syntax" -and $help -match "Both '=' and ':' are supported" -and $help -match "Parsed generic fields own only their exact key/operator/value spans" -and $help -match "Clean fields never suppress later fields or JSON siblings" -and $help -match "the shared sibling grammar recognizes '=' and ':' forms" -and $help -match "URI-like values stay intact" -and $help -match "only Azure credential keys are classified" -and $help -match "Raw connection-string Password/Pwd values preserve backslash spellings literally" -and $help -match "doubled-quote runs" -and $help -match "u0022") "fixturevault --help did not print the expected usage text."
+        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault" -and $help -match "api_key/api-key" -and $help -match "client_secret/client-secret" -and $help -match "must be unquoted or use matching single/double quotes" -and $help -match "mismatched quotes are not assignment syntax" -and $help -match "Both '=' and ':' are supported" -and $help -match "JSON credential properties classify string, number, true, and false scalars" -and $help -match "Null and empty/whitespace strings are clean" -and $help -match "Parsed generic fields own only their exact key/operator/value spans" -and $help -match "Clean fields never suppress later fields or JSON siblings" -and $help -match "the shared sibling grammar recognizes '=' and ':' forms" -and $help -match "URI-like values stay intact" -and $help -match "only Azure credential keys are classified" -and $help -match "Raw connection-string Password/Pwd values preserve backslash spellings literally" -and $help -match "doubled-quote runs" -and $help -match "u0022") "fixturevault --help did not print the expected usage text."
 
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "init.txt")) -eq 0) "fixturevault init failed."
         Assert-Contract (Test-Path -LiteralPath (Join-Path $consumerRoot ".fixturevault.json")) "fixturevault init did not create .fixturevault.json."
@@ -226,6 +226,112 @@ try {
             [pscustomobject]@{ Name = "generic-marker"; Fixture = 'password=<redacted>'; ExpectedExit = 0; ExpectedFinding = $false; Secret = "" }
         )
 
+        $jsonCredentialKeys = @(
+            "ApiKey",
+            "apiKey",
+            "APIKEY",
+            "api_key",
+            "api-key",
+            "ClientSecret",
+            "client_secret",
+            "client-secret",
+            "Password",
+            "Pwd",
+            "Secret",
+            "Token"
+        )
+        $jsonCredentialMarkers = @("***", "<redacted>", "[redacted]", "redacted", "masked", "removed")
+        $jsonStringSecret = "fixture-json-scalar-package-secret-1234567890"
+        $jsonNumberSecret = "1234567890123456789"
+
+        for ($keyIndex = 0; $keyIndex -lt $jsonCredentialKeys.Count; $keyIndex++) {
+            $keyJson = ConvertTo-Json -InputObject $jsonCredentialKeys[$keyIndex] -Compress
+            $structuredCases += [pscustomobject]@{
+                Name = "json-scalar-$($keyIndex.ToString('D2'))-00"
+                Fixture = '{{{0}:{1}}}' -f $keyJson, (ConvertTo-Json -InputObject $jsonStringSecret -Compress)
+                ExpectedExit = 1
+                ExpectedFinding = $true
+                Secret = $jsonStringSecret
+            }
+            $structuredCases += [pscustomobject]@{
+                Name = "json-scalar-$($keyIndex.ToString('D2'))-01"
+                Fixture = '{{{0}:{1}}}' -f $keyJson, $jsonNumberSecret
+                ExpectedExit = 1
+                ExpectedFinding = $true
+                Secret = $jsonNumberSecret
+            }
+            $structuredCases += [pscustomobject]@{
+                Name = "json-scalar-$($keyIndex.ToString('D2'))-02"
+                Fixture = '{{{0}:true}}' -f $keyJson
+                ExpectedExit = 1
+                ExpectedFinding = $true
+                Secret = "true"
+            }
+            $structuredCases += [pscustomobject]@{
+                Name = "json-scalar-$($keyIndex.ToString('D2'))-03"
+                Fixture = '{{{0}:false}}' -f $keyJson
+                ExpectedExit = 1
+                ExpectedFinding = $true
+                Secret = "false"
+            }
+
+            for ($markerIndex = 0; $markerIndex -lt $jsonCredentialMarkers.Count; $markerIndex++) {
+                $marker = $jsonCredentialMarkers[$markerIndex]
+                $structuredCases += [pscustomobject]@{
+                    Name = "json-marker-$($keyIndex.ToString('D2'))-$($markerIndex.ToString('D2'))"
+                    Fixture = '{{{0}:{1}}}' -f $keyJson, (ConvertTo-Json -InputObject $marker -Compress)
+                    ExpectedExit = 0
+                    ExpectedFinding = $false
+                    Secret = $marker
+                }
+            }
+
+            $structuredCases += [pscustomobject]@{
+                Name = "json-clean-$($keyIndex.ToString('D2'))-00"
+                Fixture = '{' + $keyJson + ':""}'
+                ExpectedExit = 0
+                ExpectedFinding = $false
+                Secret = ""
+            }
+            $structuredCases += [pscustomobject]@{
+                Name = "json-clean-$($keyIndex.ToString('D2'))-01"
+                Fixture = '{' + $keyJson + ':" \t "}'
+                ExpectedExit = 0
+                ExpectedFinding = $false
+                Secret = ""
+            }
+            $structuredCases += [pscustomobject]@{
+                Name = "json-clean-$($keyIndex.ToString('D2'))-02"
+                Fixture = '{' + $keyJson + ':null}'
+                ExpectedExit = 0
+                ExpectedFinding = $false
+                Secret = ""
+            }
+            $structuredCases += [pscustomobject]@{
+                Name = "json-container-$($keyIndex.ToString('D2'))-00"
+                Fixture = '{' + $keyJson + ':{"metadata":"kind=fixture"}}'
+                ExpectedExit = 0
+                ExpectedFinding = $false
+                Secret = ""
+            }
+            $structuredCases += [pscustomobject]@{
+                Name = "json-container-$($keyIndex.ToString('D2'))-01"
+                Fixture = '{' + $keyJson + ':["kind=fixture"]}'
+                ExpectedExit = 0
+                ExpectedFinding = $false
+                Secret = ""
+            }
+        }
+
+        $structuredCases += @(
+            [pscustomobject]@{ Name = "json-nested-scalar-00"; Fixture = '{"outer":{"api_key":1234567890123456789}}'; ExpectedExit = 1; ExpectedFinding = $true; Secret = $jsonNumberSecret },
+            [pscustomobject]@{ Name = "json-nested-scalar-01"; Fixture = '[{"metadata":"kind=fixture"},{"Token":false}]'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "false" },
+            [pscustomobject]@{ Name = "json-order-scalar-00"; Fixture = '{"metadata":"kind=fixture","Token":true}'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "true" },
+            [pscustomobject]@{ Name = "json-order-scalar-01"; Fixture = '{"Token":true,"metadata":"kind=fixture"}'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "true" },
+            [pscustomobject]@{ Name = "json-container-nested-00"; Fixture = '{"Token":{"client_secret":1234567890123456789}}'; ExpectedExit = 1; ExpectedFinding = $true; Secret = $jsonNumberSecret },
+            [pscustomobject]@{ Name = "json-container-nested-01"; Fixture = '{"Token":[{"api-key":false}]}'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "false" }
+        )
+
         $azureColonKeys = @("AccountKey", "SharedAccessKey", "SharedAccessSignature")
         $azureColonSiblings = @(
             [pscustomobject]@{ Name = "marker"; Assignment = 'token: [redacted]'; ExpectedExit = 0; ExpectedFinding = $false; Secret = "" },
@@ -287,6 +393,7 @@ try {
                 Assert-Contract ($consoleCode -eq $case.ExpectedExit) "structured $($case.Name) console scan returned $consoleCode instead of $($case.ExpectedExit)."
                 $consoleText = [IO.File]::ReadAllText($consolePath)
                 Assert-Contract (($consoleText.Contains("FV007", [StringComparison]::Ordinal)) -eq $case.ExpectedFinding) "structured $($case.Name) console finding classification was incorrect."
+                Assert-Contract (-not $consoleText.Contains($case.Fixture, [StringComparison]::Ordinal)) "structured $($case.Name) console output disclosed the fixture representation."
                 $expectedFixturePath = "tests/$($case.Name).golden"
                 $consoleFindingCount = [regex]::Matches($consoleText, '(?m)^FV007 ').Count
                 Assert-Contract ($consoleFindingCount -eq [int]$case.ExpectedFinding) "structured $($case.Name) console scan did not report the exact FV007 finding count."
@@ -299,6 +406,7 @@ try {
                 $jsonCode = Invoke-CommandCapture $fixtureVault @("scan", "--format", "json") $jsonPath
                 Assert-Contract ($jsonCode -eq $case.ExpectedExit) "structured $($case.Name) JSON scan returned $jsonCode instead of $($case.ExpectedExit)."
                 $jsonText = [IO.File]::ReadAllText($jsonPath)
+                Assert-Contract (-not $jsonText.Contains($case.Fixture, [StringComparison]::Ordinal)) "structured $($case.Name) JSON output disclosed the fixture representation."
                 $jsonReport = $jsonText | ConvertFrom-Json
                 Assert-Contract ($jsonReport.filesInspected -eq 1 -and @($jsonReport.errors).Count -eq 0) "structured $($case.Name) JSON scan did not inspect one valid fixture without errors."
                 $jsonFindings = @($jsonReport.findings | Where-Object { $_.ruleId -eq "FV007" })

@@ -670,9 +670,9 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
                 foreach (JsonProperty property in element.EnumerateObject())
                 {
                     if (GenericCredentialKeyGrammar.TryNormalizeDecodedKey(property.Name, out _) &&
-                        property.Value.ValueKind == JsonValueKind.String)
+                        TryClassifyJsonCredentialScalarValue(property.Value, out bool hasCredential))
                     {
-                        if (!IsEmptyOrAlreadyRedactedSemanticValue(property.Value.GetString() ?? string.Empty))
+                        if (hasCredential)
                         {
                             return true;
                         }
@@ -700,6 +700,29 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
             case JsonValueKind.String:
                 return HasSensitiveGenericCredentialRepresentation(element.GetString() ?? string.Empty);
             default:
+                return false;
+        }
+    }
+
+    private static bool TryClassifyJsonCredentialScalarValue(
+        JsonElement value,
+        out bool hasCredential)
+    {
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.String:
+                hasCredential = !IsEmptyOrAlreadyRedactedSemanticValue(value.GetString() ?? string.Empty);
+                return true;
+            case JsonValueKind.Number:
+            case JsonValueKind.True:
+            case JsonValueKind.False:
+                hasCredential = true;
+                return true;
+            case JsonValueKind.Null:
+                hasCredential = false;
+                return true;
+            default:
+                hasCredential = false;
                 return false;
         }
     }

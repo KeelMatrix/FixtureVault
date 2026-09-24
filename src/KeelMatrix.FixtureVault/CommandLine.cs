@@ -144,9 +144,11 @@ internal static class CommandLineParser
               assignment keys must be unquoted or use matching single/double quotes; unmatched or
               mismatched quotes are not assignment syntax. Both '=' and ':' are supported.
               Raw connection-string Password/Pwd values preserve backslash spellings literally.
-              Raw text preserves literal backslashes. Structurally valid JSON string values decode
-              exactly once, and query values URL-decode exactly once, before their field grammar
-              is parsed. Parsed generic fields own only their exact key/operator/value spans;
+              Raw text preserves literal backslashes. Structurally valid JSON strings decode once.
+              JSON credential properties classify string, number, true, and false scalars.
+              Null and empty/whitespace strings are clean; object/array values are containers only.
+              Query values URL-decode exactly once before their field grammar is parsed.
+              Parsed generic fields own only their exact key/operator/value spans;
               unconsumed prefix and unknown-key text remains independently inspected. Clean fields never suppress later fields or JSON siblings.
               Azure-style assignments also separate siblings at semicolons, commas, and whitespace.
               After an empty Azure value, the shared sibling grammar recognizes '=' and ':' forms.
