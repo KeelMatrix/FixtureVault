@@ -1,5 +1,4 @@
 ﻿using System.Text.Json;
-using System.Text;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using KeelMatrix.Redaction;
@@ -167,8 +166,8 @@ internal interface ISensitiveDataDetector
 
 internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : ISensitiveDataDetector
 {
-    private static readonly Regex AuthorizationBearerHeader = new(
-        "^\\s*(?<prefix>authorization\\s*:\\s*bearer(?:\\s+|$))(?<value>[^\\r\\n]*)\\s*$",
+    private static readonly Regex AuthorizationHeader = new(
+        "^\\s*authorization\\s*:\\s*(?:bearer|basic)(?:\\s+(?<value>[^\\r\\n]*))?\\s*$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
     private static readonly Regex ApiKeyHeader = new(
         "^\\s*(?<prefix>(?:x-?api-?key|apikey)\\s*:\\s*)(?<value>[^\\r\\n]*)\\s*$",
@@ -179,39 +178,73 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
     private static readonly Regex CookieHeader = new(
         "^\\s*(?<name>set-cookie|cookie)\\s*:\\s*(?<value>[^\\r\\n]*)\\s*$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
-    private static readonly Regex AlreadyRedactedValue = new(
-        "^['\\\"]?(?:\\*{3,}|<\\s*redacted\\s*>|\\[\\s*redacted\\s*\\]|redacted|masked|removed)['\\\"]?$",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
-    private static readonly Regex EmptyCredentialAssignment = new(
-        "^\\s*[^=;&\\s]+\\s*=\\s*(?:\\\"\\s*\\\"|'\\s*')?\\s*$",
-        RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
-    private static readonly Regex ConnectionStringCredentialAssignment = new(
-        "\\b(?:Password|Pwd)\\s*=\\s*",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
+    private static readonly HashSet<string> RedactionMarkers = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "***",
+        "<redacted>",
+        "[redacted]",
+        "redacted",
+        "masked",
+        "removed"
+    };
+    private static readonly string[] AzureCredentialKeys =
+    [
+        "AccountKey",
+        "SharedAccessKey",
+        "SharedAccessSignature"
+    ];
+    private static readonly string[] GenericCredentialKeys =
+    [
+        "ApiKey",
+        "ClientSecret",
+        "Password",
+        "Pwd",
+        "Secret",
+        "Token"
+    ];
 
     public bool IsSensitive(string text)
     {
         if (redactor is ConnectionStringPasswordRedactor)
         {
-            // JSON escapes belong to the JSON serialization layer, not to raw connection-string
-            // grammar. Decode them only by asking System.Text.Json for string values from a
-            // structurally valid JSON document, then parse each decoded string literally.
-            if (TryHasNonEmptyJsonConnectionStringCredential(text, out bool hasJsonCredential))
+            // A valid JSON container is the representation boundary. Its string values are
+            // decoded exactly once by System.Text.Json before connection-string parsing.
+            if (TryReadJsonStringValues(text, out List<string> jsonValues))
             {
-                return hasJsonCredential;
+                return jsonValues.Any(HasNonEmptyConnectionStringCredential);
             }
 
-            return text.Split('\n').Any(HasNonEmptyConnectionStringCredential);
+            // Line breaks are separators only outside quoted values. This preserves quoted
+            // connection-string values that contain actual line breaks.
+            return HasNonEmptyConnectionStringCredential(text);
         }
 
-        // Supported credential/header values are line-scoped. Evaluate each line separately so a
-        // redactor cannot join an empty value to the next line and turn that neighboring text into
-        // apparent evidence of a secret.
-        foreach (string line in text.Split('\n'))
+        if (redactor is RegexReplaceRedactor &&
+            TryClassifyJsonCredentialProperties(text, out bool hasJsonCredential) &&
+            hasJsonCredential)
         {
-            if (IsSensitiveLine(line))
+            return true;
+        }
+
+        foreach (string representation in ReadRepresentations(text))
+        {
+            // Generic assignments may themselves be connection-string fields. Classify that
+            // representation before line-scoped header processing so a quoted value containing a
+            // line break is not split into an unterminated assignment.
+            if (redactor is RegexReplaceRedactor &&
+                TryClassifyGenericCredentialRepresentation(representation, out bool hasGenericCredential))
             {
-                return true;
+                return hasGenericCredential;
+            }
+
+            // Header and cookie grammar remains line-scoped. JSON string values are evaluated
+            // after the container has been decoded once.
+            foreach (string line in representation.Split('\n'))
+            {
+                if (IsSensitiveLine(line))
+                {
+                    return true;
+                }
             }
         }
 
@@ -220,37 +253,55 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
 
     private bool IsSensitiveLine(string text)
     {
-        if (redactor is ConnectionStringPasswordRedactor)
+        if (redactor is AzureKeyLikeRedactor &&
+            TryClassifyConnectionAssignments(text, AzureCredentialKeys, out bool hasAzureAssignment))
         {
-            return HasNonEmptyConnectionStringCredential(text);
+            return hasAzureAssignment;
         }
 
-        if (redactor is CookieRedactor && HasOnlyEmptyOrAlreadyRedactedCookieValues(text))
+        if (redactor is AuthorizationRedactor)
         {
-            return false;
+            Match authorization = AuthorizationHeader.Match(text);
+            if (authorization.Success)
+            {
+                return HasNonEmptyHeaderValue(authorization.Groups["value"].Value);
+            }
         }
 
-        string normalized = AuthorizationBearerHeader.Replace(text, static match =>
+        if (redactor is ApiKeyRedactor)
         {
-            string value = match.Groups["value"].Value.Trim();
-            return IsEmptyOrAlreadyRedactedValue(value)
-                ? match.Groups["prefix"].Value + "***"
-                : match.Value;
-        });
-        normalized = ApiKeyHeader.Replace(normalized, static match =>
+            Match header = ApiKeyHeader.Match(text);
+            if (header.Success)
+            {
+                return HasNonEmptyHeaderValue(header.Groups["value"].Value);
+            }
+
+            MatchCollection queryMatches = ApiKeyQueryValue.Matches(text);
+            if (queryMatches.Count > 0)
+            {
+                return queryMatches.Cast<Match>().Any(match =>
+                    !IsEmptyOrAlreadyRedactedQueryValue(match.Groups["value"].Value));
+            }
+        }
+
+        if (redactor is CookieRedactor)
         {
-            string value = match.Groups["value"].Value.Trim();
-            return IsEmptyOrAlreadyRedactedValue(value)
-                ? match.Groups["prefix"].Value + "***"
-                : match.Value;
-        });
-        normalized = ApiKeyQueryValue.Replace(normalized, static match =>
+            Match cookie = CookieHeader.Match(text);
+            if (cookie.Success)
+            {
+                return HasNonEmptyCookieValue(cookie);
+            }
+        }
+
+        if (redactor is RegexReplaceRedactor &&
+            TryClassifyGenericCredentialRepresentation(text, out bool hasGenericCredential))
         {
-            string value = match.Groups["value"].Value;
-            return IsEmptyOrAlreadyRedactedQueryValue(value)
-                ? match.Groups["prefix"].Value + "***"
-                : match.Value;
-        });
+            return hasGenericCredential;
+        }
+
+        // Whole-token redactors retain the original redaction-difference contract. Structured
+        // formats above are classified field-by-field before this fallback is reached.
+        string normalized = text;
         string redacted = redactor.Redact(normalized);
         if (string.Equals(redacted, normalized, StringComparison.Ordinal))
         {
@@ -277,16 +328,15 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
 
         string changedInput = normalized[prefixLength..(originalEnd + 1)].Trim();
         return changedInput.Length > 0 &&
-            !AlreadyRedactedValue.IsMatch(changedInput) &&
-            !EmptyCredentialAssignment.IsMatch(changedInput);
+            !IsEmptyOrAlreadyRedactedValue(changedInput);
     }
 
     private static bool HasNonEmptyConnectionStringCredential(string text)
     {
-        foreach (Match match in ConnectionStringCredentialAssignment.Matches(text))
+        foreach (ParsedAssignment assignment in ReadAssignments(text, splitOnLineBreaks: true))
         {
-            string value = ReadConnectionStringCredentialValue(text, match.Index + match.Length);
-            if (!IsEmptyOrAlreadyRedactedSemanticValue(value))
+            if (IsConnectionStringCredentialKey(assignment.Name) &&
+                !IsEmptyOrAlreadyRedactedSemanticValue(assignment.Value))
             {
                 return true;
             }
@@ -295,173 +345,306 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         return false;
     }
 
-    private static bool TryHasNonEmptyJsonConnectionStringCredential(string text, out bool hasCredential)
+    private static bool TryClassifyConnectionAssignments(
+        string text,
+        IReadOnlyList<string> keys,
+        out bool hasCredential)
     {
+        bool sawParsedAssignment = false;
+        foreach (ParsedAssignment assignment in ReadAssignments(text, splitOnLineBreaks: true))
+        {
+            sawParsedAssignment = true;
+            if (!keys.Any(key => assignment.Name.Equals(key, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            if (!IsEmptyOrAlreadyRedactedSemanticValue(assignment.Value))
+            {
+                hasCredential = true;
+                return true;
+            }
+        }
+
+        hasCredential = false;
+        // Once the assignment grammar has consumed a field, do not fall back to a whole-token
+        // redactor that could rediscover a credential-shaped substring inside that field's value.
+        return sawParsedAssignment;
+    }
+
+    private static bool IsConnectionStringCredentialKey(string name) =>
+        name.Equals("Password", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals("Pwd", StringComparison.OrdinalIgnoreCase);
+
+    private static bool HasNonEmptyHeaderValue(string value) =>
+        !IsEmptyOrAlreadyRedactedSemanticValue(ReadOptionalDelimitedValue(value));
+
+    private static bool TryClassifyGenericCredentialRepresentation(string text, out bool hasCredential)
+    {
+        if (TryClassifyJsonCredentialProperties(text, out hasCredential))
+        {
+            return hasCredential;
+        }
+
+        bool sawParsedAssignment = false;
+        foreach (ParsedAssignment assignment in ReadAssignments(text, splitOnLineBreaks: true))
+        {
+            sawParsedAssignment = true;
+            if (!GenericCredentialKeys.Any(key => assignment.Name.Equals(key, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            if (!IsEmptyOrAlreadyRedactedSemanticValue(assignment.Value))
+            {
+                hasCredential = true;
+                return true;
+            }
+        }
+
+        hasCredential = false;
+        // The field parser owns boundaries. A legacy whole-token fallback must not search inside
+        // a value that the parser already consumed as unrelated text.
+        return sawParsedAssignment;
+    }
+
+    private static bool TryClassifyJsonCredentialProperties(string text, out bool hasCredential)
+    {
+        hasCredential = false;
         ReadOnlySpan<char> candidate = text.AsSpan().TrimStart();
         if (candidate.IsEmpty || candidate[0] is not ('{' or '[' or '"'))
         {
-            hasCredential = false;
             return false;
         }
 
         try
         {
             using JsonDocument document = JsonDocument.Parse(text);
-            hasCredential = HasNonEmptyJsonConnectionStringCredential(document.RootElement);
+            bool isJson = ClassifyJsonCredentialProperties(document.RootElement, ref hasCredential);
+            return isJson;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool ClassifyJsonCredentialProperties(JsonElement element, ref bool hasCredential)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (JsonProperty property in element.EnumerateObject())
+                {
+                    if (GenericCredentialKeys.Any(key => property.Name.Equals(key, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        if (property.Value.ValueKind == JsonValueKind.String &&
+                            !IsEmptyOrAlreadyRedactedSemanticValue(property.Value.GetString() ?? string.Empty))
+                        {
+                            hasCredential = true;
+                        }
+
+                        continue;
+                    }
+
+                    ClassifyJsonCredentialProperties(property.Value, ref hasCredential);
+                }
+
+                return true;
+            case JsonValueKind.Array:
+                foreach (JsonElement item in element.EnumerateArray())
+                {
+                    ClassifyJsonCredentialProperties(item, ref hasCredential);
+                }
+
+                return true;
+            case JsonValueKind.String:
+                // This is a valid JSON representation. Its decoded value is evaluated by the
+                // representation loop, so do not run a second redaction pass on the container.
+                return true;
+            default:
+                return true;
+        }
+    }
+
+    private static bool HasNonEmptyCookieValue(Match header)
+    {
+        bool isSetCookie = header.Groups["name"].Value.Equals("set-cookie", StringComparison.OrdinalIgnoreCase);
+        foreach (ParsedAssignment assignment in ReadAssignments(header.Groups["value"].Value, splitOnLineBreaks: false))
+        {
+            if (!IsEmptyOrAlreadyRedactedSemanticValue(assignment.Value))
+            {
+                return true;
+            }
+
+            if (isSetCookie)
+            {
+                break;
+            }
+        }
+
+        return false;
+    }
+
+    private static IEnumerable<string> ReadRepresentations(string text)
+    {
+        if (TryReadJsonStringValues(text, out List<string> values))
+        {
+            foreach (string value in values)
+            {
+                yield return value;
+            }
+
+            yield break;
+        }
+
+        yield return text;
+    }
+
+    private static bool TryReadJsonStringValues(string text, out List<string> values)
+    {
+        values = [];
+        ReadOnlySpan<char> candidate = text.AsSpan().TrimStart();
+        if (candidate.IsEmpty || candidate[0] is not ('{' or '[' or '"'))
+        {
+            return false;
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(text);
+            AddJsonStringValues(document.RootElement, values);
             return true;
         }
         catch (JsonException)
         {
-            hasCredential = false;
+            values.Clear();
             return false;
         }
     }
 
-    private static bool HasNonEmptyJsonConnectionStringCredential(JsonElement element)
+    private static void AddJsonStringValues(JsonElement element, ICollection<string> values)
     {
         switch (element.ValueKind)
         {
             case JsonValueKind.String:
-                return HasNonEmptyConnectionStringCredential(element.GetString() ?? string.Empty);
-
+                values.Add(element.GetString() ?? string.Empty);
+                break;
             case JsonValueKind.Array:
                 foreach (JsonElement item in element.EnumerateArray())
                 {
-                    if (HasNonEmptyJsonConnectionStringCredential(item))
-                    {
-                        return true;
-                    }
+                    AddJsonStringValues(item, values);
                 }
 
                 break;
-
             case JsonValueKind.Object:
                 foreach (JsonProperty property in element.EnumerateObject())
                 {
-                    if (HasNonEmptyJsonConnectionStringCredential(property.Value))
-                    {
-                        return true;
-                    }
+                    AddJsonStringValues(property.Value, values);
                 }
 
                 break;
         }
-
-        return false;
     }
 
-    private static bool HasOnlyEmptyOrAlreadyRedactedCookieValues(string text)
+    private static string ReadOptionalDelimitedValue(string value)
     {
-        Match headerMatch = CookieHeader.Match(text);
-        if (!headerMatch.Success)
+        string trimmed = value.Trim();
+        if (trimmed.Length < 2 ||
+            (trimmed[0] is not ('"' or '\'') || trimmed[^1] != trimmed[0]))
         {
-            return false;
+            return trimmed;
         }
 
-        string[] assignments = headerMatch.Groups["value"].Value.Split(';');
-        bool isSetCookie = headerMatch.Groups["name"].Value.Equals("set-cookie", StringComparison.OrdinalIgnoreCase);
-        int valueCount = isSetCookie ? 1 : assignments.Length;
-        if (assignments.Length == 0 || string.IsNullOrWhiteSpace(assignments[0]))
-        {
-            return false;
-        }
-
-        for (int index = 0; index < valueCount; index++)
-        {
-            string assignment = assignments[index].Trim();
-            int equalsIndex = assignment.IndexOf('=');
-            string name = equalsIndex > 0 ? assignment[..equalsIndex].Trim() : string.Empty;
-            if (name.Length == 0 || name.Any(char.IsWhiteSpace))
-            {
-                return false;
-            }
-
-            string value = assignment[(equalsIndex + 1)..].Trim();
-            if (!IsEmptyOrAlreadyRedactedValue(value))
-            {
-                return false;
-            }
-        }
-
-        return true;
+        return trimmed[1..^1];
     }
 
-    private static bool IsEmptyOrAlreadyRedactedValue(string value)
+    private static IEnumerable<ParsedAssignment> ReadAssignments(string text, bool splitOnLineBreaks)
     {
-        return IsEmptyOrAlreadyRedactedValue(value, decodeJsonEscapes: true);
-    }
-
-    private static bool IsEmptyOrAlreadyRedactedSemanticValue(string value)
-    {
-        return IsEmptyOrAlreadyRedactedValue(value, decodeJsonEscapes: false);
-    }
-
-    private static bool IsEmptyOrAlreadyRedactedValue(string value, bool decodeJsonEscapes)
-    {
-        string trimmed = decodeJsonEscapes ? DecodeJsonEscapes(value).Trim() : value.Trim();
-        if (trimmed.Length >= 2 &&
-            ((trimmed[0] == '"' && trimmed[^1] == '"') ||
-             (trimmed[0] == '\'' && trimmed[^1] == '\'')))
-        {
-            trimmed = trimmed[1..^1].Trim();
-        }
-        else if (decodeJsonEscapes && trimmed.Length >= 4 &&
-                 trimmed.StartsWith("\\\"", StringComparison.Ordinal) &&
-                 trimmed.EndsWith("\\\"", StringComparison.Ordinal))
-        {
-            trimmed = trimmed[2..^2].Trim();
-        }
-
-        if (trimmed.Length == 0 || AlreadyRedactedValue.IsMatch(trimmed))
-        {
-            return true;
-        }
-
-        return false;
-    }
-
-    private static string ReadConnectionStringCredentialValue(string text, int start)
-    {
-        int index = start;
-        while (index < text.Length && char.IsWhiteSpace(text[index]))
-        {
-            index++;
-        }
-
-        if (index >= text.Length)
-        {
-            return string.Empty;
-        }
-
-        if (text[index] is '"' or '\'')
-        {
-            return ReadQuotedConnectionStringCredentialValue(text, index, 1, text[index]);
-        }
-
-        var value = new StringBuilder();
+        int index = 0;
         while (index < text.Length)
         {
-            char rawCharacter = text[index];
-            if (rawCharacter is ';' or '\r' or '\n')
+            while (index < text.Length && IsAssignmentSeparator(text[index], splitOnLineBreaks))
             {
-                break;
+                index++;
             }
 
-            value.Append(rawCharacter);
+            while (index < text.Length && char.IsWhiteSpace(text[index]) &&
+                   !IsAssignmentSeparator(text[index], splitOnLineBreaks))
+            {
+                index++;
+            }
+
+            if (index >= text.Length)
+            {
+                yield break;
+            }
+
+            int nameStart = index;
+            while (index < text.Length && text[index] != '=' &&
+                   !IsAssignmentSeparator(text[index], splitOnLineBreaks))
+            {
+                index++;
+            }
+
+            if (index >= text.Length || text[index] != '=')
+            {
+                SkipToAssignmentSeparator(text, ref index, splitOnLineBreaks);
+                continue;
+            }
+
+            string name = text[nameStart..index].Trim();
+            index++;
+            while (index < text.Length && char.IsWhiteSpace(text[index]) &&
+                   !IsAssignmentSeparator(text[index], splitOnLineBreaks))
+            {
+                index++;
+            }
+
+            string value;
+            if (index < text.Length && text[index] is '"' or '\'')
+            {
+                value = ReadQuotedValue(text, ref index, text[index]);
+                SkipToAssignmentSeparator(text, ref index, splitOnLineBreaks);
+            }
+            else
+            {
+                int valueStart = index;
+                while (index < text.Length && !IsAssignmentSeparator(text[index], splitOnLineBreaks))
+                {
+                    index++;
+                }
+
+                value = text[valueStart..index];
+            }
+
+            if (name.Length > 0)
+            {
+                yield return new ParsedAssignment(name, value);
+            }
+        }
+    }
+
+    private static bool IsAssignmentSeparator(char value, bool splitOnLineBreaks) =>
+        value == ';' || (splitOnLineBreaks && value is '\r' or '\n');
+
+    private static void SkipToAssignmentSeparator(string text, ref int index, bool splitOnLineBreaks)
+    {
+        while (index < text.Length && !IsAssignmentSeparator(text[index], splitOnLineBreaks))
+        {
             index++;
         }
 
-        return value.ToString();
+        if (index < text.Length)
+        {
+            index++;
+        }
     }
 
-    private static string ReadQuotedConnectionStringCredentialValue(
-        string text,
-        int openingIndex,
-        int openingLength,
-        char quote)
+    private static string ReadQuotedValue(string text, ref int index, char quote)
     {
-        int index = openingIndex + openingLength;
-        var value = new StringBuilder();
+        int openingIndex = index++;
+        var value = new System.Text.StringBuilder();
         while (index < text.Length)
         {
             if (text[index] == quote)
@@ -473,18 +656,7 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
                     continue;
                 }
 
-                return value.ToString();
-            }
-
-            if (text[index] == quote)
-            {
-                if (index + 1 < text.Length && text[index + 1] == quote)
-                {
-                    value.Append(quote);
-                    index += 2;
-                    continue;
-                }
-
+                index++;
                 return value.ToString();
             }
 
@@ -492,110 +664,29 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
             index++;
         }
 
-        return quote + value.ToString();
+        // Preserve an unterminated delimiter in malformed input so it cannot become an empty
+        // credential through a partial parse.
+        return text[openingIndex] + value.ToString();
     }
 
-    private static string DecodeJsonEscapes(string value)
+    private static bool IsEmptyOrAlreadyRedactedValue(string value) =>
+        IsEmptyOrAlreadyRedactedSemanticValue(ReadOptionalDelimitedValue(value));
+
+    private static bool IsEmptyOrAlreadyRedactedSemanticValue(string value) =>
+        string.IsNullOrWhiteSpace(value) || IsAcceptedRedactionMarker(value);
+
+    private static bool IsAcceptedRedactionMarker(string value)
     {
-        var decoded = new StringBuilder(value.Length);
-        int index = 0;
-        while (index < value.Length)
+        string trimmed = value.Trim();
+        if (RedactionMarkers.Contains(trimmed))
         {
-            if (TryReadJsonEscape(value, index, out char decodedCharacter, out int consumed))
-            {
-                decoded.Append(decodedCharacter);
-                index += consumed;
-            }
-            else
-            {
-                decoded.Append(value[index]);
-                index++;
-            }
+            return true;
         }
 
-        return decoded.ToString();
-    }
-
-    private static bool TryReadJsonEscape(string text, int index, out char decodedCharacter, out int consumed)
-    {
-        decodedCharacter = default;
-        consumed = 0;
-        if (index >= text.Length || text[index] != '\\' || index + 1 >= text.Length)
-        {
-            return false;
-        }
-
-        switch (text[index + 1])
-        {
-            case '"':
-                decodedCharacter = '"';
-                consumed = 2;
-                return true;
-            case '\\':
-                decodedCharacter = '\\';
-                consumed = 2;
-                return true;
-            case '/':
-                decodedCharacter = '/';
-                consumed = 2;
-                return true;
-            case 'b':
-                decodedCharacter = '\b';
-                consumed = 2;
-                return true;
-            case 'f':
-                decodedCharacter = '\f';
-                consumed = 2;
-                return true;
-            case 'n':
-                decodedCharacter = '\n';
-                consumed = 2;
-                return true;
-            case 'r':
-                decodedCharacter = '\r';
-                consumed = 2;
-                return true;
-            case 't':
-                decodedCharacter = '\t';
-                consumed = 2;
-                return true;
-            case 'u' when index + 6 <= text.Length &&
-                TryParseHexQuad(text.AsSpan(index + 2, 4), out decodedCharacter):
-                consumed = 6;
-                return true;
-            default:
-                return false;
-        }
-    }
-
-    private static bool TryParseHexQuad(ReadOnlySpan<char> value, out char result)
-    {
-        result = default;
-        if (value.Length != 4)
-        {
-            return false;
-        }
-
-        int parsed = 0;
-        for (int index = 0; index < value.Length; index++)
-        {
-            int digit = value[index] switch
-            {
-                >= '0' and <= '9' => value[index] - '0',
-                >= 'a' and <= 'f' => value[index] - 'a' + 10,
-                >= 'A' and <= 'F' => value[index] - 'A' + 10,
-                _ => -1
-            };
-            if (digit < 0)
-            {
-                return false;
-            }
-
-            parsed = (parsed << 4) | digit;
-        }
-
-        result = (char)parsed;
-        return true;
+        return trimmed.Length >= 2 &&
+            trimmed[0] is '"' or '\'' &&
+            trimmed[^1] == trimmed[0] &&
+            RedactionMarkers.Contains(trimmed[1..^1].Trim());
     }
 
     private static bool IsEmptyOrAlreadyRedactedQueryValue(string value)
@@ -614,4 +705,6 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
             return IsEmptyOrAlreadyRedactedValue(value);
         }
     }
+
+    private sealed record ParsedAssignment(string Name, string Value);
 }

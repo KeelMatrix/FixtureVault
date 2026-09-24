@@ -25,9 +25,10 @@ a read-boundary change, and the aggregate diagnostic bound. The
 aggregate bound applies to ordinary findings and skipped diagnostics as well as collision findings; exhaustion is
 `FV-E017`, exit code `2`, `Completed=false`, and no successful-scan telemetry.
 
-The CI matrix also runs the packed-tool consumer smoke on `ubuntu-24.04-arm`; that leg exercises `init`, a clean
-scan, positive and negative connection-string cases in both console and JSON formats, sensitive-data reporting
-without value disclosure, symbolic-link rejection, and FIFO rejection.
+The CI matrix runs the packed-tool consumer smoke on Windows, macOS, Linux x64, and `ubuntu-24.04-arm`; each leg
+exercises `init`, a clean scan, isolated FV007 structured-value cases in both console and JSON formats, strict and
+non-strict dispositions, sensitive-data reporting without value disclosure or fixture mutation, symbolic-link
+rejection, and FIFO rejection.
 
 ## Run the Tool from Source
 
@@ -55,4 +56,4 @@ pwsh -NoProfile -File ./scripts/inspect-package.ps1 -PackagePath ./artifacts/pac
 pwsh -NoProfile -File ./scripts/package-consumer-smoke.ps1 -PackagePath ./artifacts/packages/KeelMatrix.FixtureVault.0.1.0.nupkg -ExpectedVersion 0.1.0
 ```
 
-The smoke script installs only the built `.nupkg` from an isolated local feed and verifies `--help`, `init`, a clean scan, a blocking scan, exit codes, JSON output, and paired raw-vs-JSON connection-string `Password`/`Pwd` cases. Raw backslash spellings must remain findings when non-empty; valid JSON string values decode once for `\u0022` delimiters, quoted whitespace, redaction markers, genuine credentials, and double-encoded literal backslashes, including non-disclosure. For contract changes, use the [Durable Contract Change Checklist](SCHEMA_CHANGE_CHECKLIST.md).
+The smoke script installs only the built `.nupkg` from an isolated local feed and verifies `--help`, `init`, a clean scan, isolated FV007 cases, exit codes, JSON output, non-disclosure, non-mutation, and the non-strict/`--strict` disposition override. Its corpus covers raw and correctly JSON-serialized connection strings, literal backslashes, JSON escape spellings, quoted/doubled values, field boundaries, and independent positive findings; no combined positive fixture is used. The CI matrix runs this installed-package corpus on Windows, macOS, Linux x64, and Linux ARM64. For contract changes, use the [Durable Contract Change Checklist](SCHEMA_CHANGE_CHECKLIST.md).

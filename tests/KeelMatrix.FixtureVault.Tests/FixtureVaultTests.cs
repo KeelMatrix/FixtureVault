@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using System.Data.Common;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -2510,6 +2511,119 @@ public sealed class FixtureVaultTests
         Assert.DoesNotContain(
             repairedReport.RootElement.GetProperty("skipped").EnumerateArray(),
             item => item.GetProperty("code").GetString() == FixtureVaultContract.UninspectableContentSkippedCode);
+    }
+
+    public static IEnumerable<object[]> Fv007ClassificationCorpus()
+    {
+        yield return ["azure-marker", "accountkey=***", false, "", "", ""];
+        yield return ["azure-empty", "AccountKey = \"\";", false, "", "", ""];
+        yield return ["azure-multiple-markers", "AccountKey=[redacted];SharedAccessKey=[redacted]", false, "", "", ""];
+        yield return ["basic-marker", "Authorization: Basic redacted", false, "", "", ""];
+        yield return ["raw-api-unicode-spelling", @"X-Api-Key: \u0022\u0022", true, "", "", ""];
+        yield return ["raw-api-tab-spelling", @"X-Api-Key: \t", true, "", "", ""];
+        yield return ["query-api-unicode-spelling", "https://example.invalid/?api_key=%5Cu0022%5Cu0022", true, "", "", ""];
+        yield return ["query-api-tab-spelling", "https://example.invalid/?api_key=%5Ct", true, "", "", ""];
+        yield return ["quoted-double-quotes", "Server=localhost;Pwd='\"\"';", true, "", "Pwd", "\"\""];
+        yield return ["quoted-single-quotes", "Server=localhost;Pwd=\"''\";", true, "", "Pwd", "''"];
+        yield return ["quoted-whitespace-and-quotes", "Server=localhost;Pwd='\" \"';", true, "", "Pwd", "\" \""];
+        yield return ["raw-backslash-only", "Server=localhost;Pwd=\\;", true, "", "Pwd", "\\"];
+        yield return ["keyword-inside-quoted-value", "Server=localhost;Application Name=\"Pwd=Canary1234567890\";Integrated Security=true;", false, "Canary1234567890", "Application Name", "Pwd=Canary1234567890"];
+        yield return ["keyword-inside-unquoted-value", "Server=localhost;Application Name=Pwd=Canary1234567890;Integrated Security=true;", false, "Canary1234567890", "Application Name", "Pwd=Canary1234567890"];
+        yield return ["password-keyword-inside-quoted-value", "Server=localhost;Application Name=\"Password=Canary1234567890\";Integrated Security=true;", false, "Canary1234567890", "Application Name", "Password=Canary1234567890"];
+        yield return ["password-keyword-inside-unquoted-value", "Server=localhost;Application Name=Password=Canary1234567890;Integrated Security=true;", false, "Canary1234567890", "Application Name", "Password=Canary1234567890"];
+        yield return ["azure-keyword-inside-quoted-value", "Server=localhost;Application Name=\"AccountKey=Canary1234567890\";Integrated Security=true;", false, "Canary1234567890", "Application Name", "AccountKey=Canary1234567890"];
+        yield return ["azure-keyword-inside-unquoted-value", "Server=localhost;Application Name=AccountKey=Canary1234567890;Integrated Security=true;", false, "Canary1234567890", "Application Name", "AccountKey=Canary1234567890"];
+        yield return ["quoted-line-break", string.Concat("Server=localhost;Pwd=\"", '\n', "\";"), false, "", "Pwd", "\n"];
+        yield return ["empty-then-real", "Server=localhost;Pwd=;Password=fixture-order-secret-1234567890;", true, "fixture-order-secret-1234567890", "Password", "fixture-order-secret-1234567890"];
+        yield return ["real-then-empty", "Server=localhost;Password=fixture-order-secret-1234567890;Pwd=;", true, "fixture-order-secret-1234567890", "Password", "fixture-order-secret-1234567890"];
+        yield return ["azure-empty-then-real", "AccountKey=***;SharedAccessKey=fixture-azure-secret-1234567890;", true, "fixture-azure-secret-1234567890", "SharedAccessKey", "fixture-azure-secret-1234567890"];
+        yield return ["azure-real-then-empty", "SharedAccessKey=fixture-azure-secret-1234567890;AccountKey=***;", true, "fixture-azure-secret-1234567890", "SharedAccessKey", "fixture-azure-secret-1234567890"];
+        yield return ["cookie-markers", "Cookie: first=***; second=[redacted]", false, "", "", ""];
+        yield return ["cookie-real", "Cookie: first=; second=fixture-cookie-secret-1234567890", true, "fixture-cookie-secret-1234567890", "", ""];
+        yield return ["generic-marker", "password=<redacted>", false, "", "", ""];
+        yield return ["generic-real", "password=fixture-generic-secret-1234567890", true, "fixture-generic-secret-1234567890", "", ""];
+    }
+
+    [Theory]
+    [MemberData(nameof(Fv007ClassificationCorpus))]
+    public void Fv007_classification_is_representation_invariant_and_individual(
+        string caseName,
+        string rawFixture,
+        bool expectsFinding,
+        string canary,
+        string oracleKey,
+        string oracleValue)
+    {
+        if (oracleKey.Length > 0)
+        {
+            var builder = new DbConnectionStringBuilder { ConnectionString = rawFixture };
+            Assert.True(builder.ContainsKey(oracleKey), $"DbConnectionStringBuilder did not parse {caseName}.");
+            Assert.Equal(oracleValue, builder[oracleKey]?.ToString());
+        }
+
+        foreach (bool jsonSerialized in new[] { false, true })
+        {
+            string fixture = jsonSerialized ? JsonSerializer.Serialize(rawFixture) : rawFixture;
+            foreach (string format in new[] { "console", "json" })
+            {
+                AssertFv007Case(caseName, fixture, format, expectsFinding, canary, jsonSerialized);
+            }
+        }
+    }
+
+    private static void AssertFv007Case(
+        string caseName,
+        string fixture,
+        string format,
+        bool expectsFinding,
+        string canary,
+        bool jsonSerialized)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText($"tests/{caseName}-{format}-{jsonSerialized}.golden", fixture + "\n");
+
+        int exitCode = repository.Run(["scan", "--format", format], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.True(
+            exitCode == (expectsFinding ? 1 : 0),
+            $"{caseName} format={format} serialized={jsonSerialized} exit={exitCode} output={output} error={error}");
+        Assert.Empty(error);
+        if (canary.Length > 0)
+        {
+            Assert.DoesNotContain(canary, output, StringComparison.Ordinal);
+        }
+        if (format == "json")
+        {
+            using JsonDocument report = JsonDocument.Parse(output);
+            JsonElement[] findings = [.. report.RootElement.GetProperty("findings").EnumerateArray()];
+            Assert.Equal(expectsFinding, findings.Any(item => item.GetProperty("ruleId").GetString() == "FV007"));
+            Assert.Empty(report.RootElement.GetProperty("errors").EnumerateArray());
+        }
+        else
+        {
+            Assert.Equal(expectsFinding, output.Contains("FV007", StringComparison.Ordinal));
+        }
+    }
+
+    [Fact]
+    public void Fv007_strict_override_preserves_warning_and_block_dispositions()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Ci!.Strict = false);
+        repository.WriteText("tests/strict.golden", "Server=localhost;Pwd=fixture-strict-secret-1234567890;\n");
+
+        int warningExitCode = repository.Run(["scan", "--format", "json"], new RecordingTelemetry(), out string warningOutput, out string warningError);
+        int strictExitCode = repository.Run(["scan", "--format", "json", "--strict"], new RecordingTelemetry(), out string strictOutput, out string strictError);
+
+        Assert.Equal(0, warningExitCode);
+        Assert.Empty(warningError);
+        Assert.Equal(1, strictExitCode);
+        Assert.Empty(strictError);
+        using JsonDocument warningReport = JsonDocument.Parse(warningOutput);
+        using JsonDocument strictReport = JsonDocument.Parse(strictOutput);
+        Assert.Equal("warn", Assert.Single(warningReport.RootElement.GetProperty("findings").EnumerateArray()).GetProperty("disposition").GetString());
+        Assert.Equal("block", Assert.Single(strictReport.RootElement.GetProperty("findings").EnumerateArray()).GetProperty("disposition").GetString());
     }
 
     [Theory]

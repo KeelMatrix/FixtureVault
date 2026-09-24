@@ -136,11 +136,15 @@ internal static class CommandLineParser
             Safety:
               Findings and skipped diagnostics share a 4,096-record / 1 MiB report-field budget.
               Exhaustion returns FV-E017, an incomplete scan, and exit code 2.
+              FV007 classifies structured credential values independently for connection-string
+              Password/Pwd, AccountKey/SharedAccessKey/SharedAccessSignature, API-key headers
+              and queries, Basic/Bearer authorization, Cookie/Set-Cookie, and generic assignments.
               Raw connection-string Password/Pwd values preserve backslash spellings literally.
-              Structurally valid JSON string values decode supported JSON escapes exactly once,
-              including escaped quotes (\") and Unicode quote delimiters (\u0022), before raw
-              parsing; JSON-wrapped doubled-quote runs remain supported, and empty,
-              whitespace-only, and already-redacted semantic values are ignored.
+              Raw text preserves literal backslashes. Structurally valid JSON string values decode
+              exactly once, and query values URL-decode exactly once, before their field grammar
+              is parsed. Empty, whitespace-only, and finite accepted redaction markers are clean;
+              JSON escape spellings such as \u0022 and doubled-quote runs are parsed only in their
+              container context; quote and backslash characters remaining after parsing are data.
             """;
     }
 

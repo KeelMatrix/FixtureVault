@@ -134,31 +134,129 @@ try {
         Assert-Contract (-not ([IO.File]::ReadAllText($blockingReportPath).Contains("fixture-test-secret-1234567890", [StringComparison]::Ordinal))) "Sensitive data was disclosed by the package consumer report."
 
         $connectionPositiveRoot = Join-Path $workRoot "connection-positive"
-        $connectionPositiveTestsRoot = Join-Path $connectionPositiveRoot "tests"
-        New-Item -ItemType Directory -Force -Path $connectionPositiveTestsRoot | Out-Null
-        Push-Location $connectionPositiveRoot
+        New-Item -ItemType Directory -Force -Path $connectionPositiveRoot | Out-Null
+        $connectionPositiveCases = @(
+            [pscustomobject]@{ Name = "raw-doubled-double"; Fixture = 'Server=example.invalid;Password="""Canary123""";'; Secret = "Canary123" },
+            [pscustomobject]@{ Name = "raw-doubled-single"; Fixture = "Server=example.invalid;Pwd='''Canary123''';"; Secret = "Canary123" },
+            [pscustomobject]@{ Name = "raw-literal-unicode-spelling"; Fixture = 'Server=example.invalid;Pwd=\u0022UnicodeCanary123\u0022;'; Secret = "UnicodeCanary123" },
+            [pscustomobject]@{ Name = "json-doubled-double"; Fixture = ('Server=localhost;Password="""JsonDoubledCanary123""";' | ConvertTo-Json -Compress); Secret = "JsonDoubledCanary123" },
+            [pscustomobject]@{ Name = "json-literal-unicode-spelling"; Fixture = ('Server=localhost;Pwd=\u0022JsonUnicodeCanary123\u0022;' | ConvertTo-Json -Compress); Secret = "JsonUnicodeCanary123" },
+            [pscustomobject]@{ Name = "raw-quote-data"; Fixture = 'Server=localhost;Pwd=''""'';'; Secret = "" }
+        )
+
+        foreach ($case in $connectionPositiveCases) {
+            $caseRoot = Join-Path $connectionPositiveRoot $case.Name
+            $caseTestsRoot = Join-Path $caseRoot "tests"
+            New-Item -ItemType Directory -Force -Path $caseTestsRoot | Out-Null
+            $fixturePath = Join-Path $caseTestsRoot "$($case.Name).golden"
+            [IO.File]::WriteAllText($fixturePath, $case.Fixture + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+            $beforeHash = (Get-FileHash -LiteralPath $fixturePath -Algorithm SHA256).Hash
+
+            Push-Location $caseRoot
+            try {
+                Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "$($case.Name)-init.txt")) -eq 0) "$($case.Name) init failed."
+
+                $consolePath = Join-Path $workRoot "$($case.Name)-console.txt"
+                $consoleCode = Invoke-CommandCapture $fixtureVault @("scan") $consolePath
+                Assert-Contract ($consoleCode -eq 1) "$($case.Name) console scan returned $consoleCode instead of 1."
+                $consoleText = [IO.File]::ReadAllText($consolePath)
+                Assert-Contract ($consoleText.Contains("FV007", [StringComparison]::Ordinal)) "$($case.Name) console scan did not report FV007."
+                if ($case.Secret.Length -gt 0) {
+                    Assert-Contract (-not $consoleText.Contains($case.Secret, [StringComparison]::Ordinal)) "$($case.Name) console output disclosed the credential."
+                }
+
+                $jsonPath = Join-Path $workRoot "$($case.Name)-json.txt"
+                $jsonCode = Invoke-CommandCapture $fixtureVault @("scan", "--format", "json") $jsonPath
+                Assert-Contract ($jsonCode -eq 1) "$($case.Name) JSON scan returned $jsonCode instead of 1."
+                $jsonText = [IO.File]::ReadAllText($jsonPath)
+                $jsonReport = $jsonText | ConvertFrom-Json
+                Assert-Contract ($jsonReport.filesInspected -eq 1) "$($case.Name) JSON scan did not inspect exactly the intended fixture."
+                Assert-Contract (@($jsonReport.errors).Count -eq 0) "$($case.Name) JSON scan reported an execution error."
+                $jsonFindings = @($jsonReport.findings | Where-Object { $_.ruleId -eq "FV007" })
+                Assert-Contract ($jsonFindings.Count -eq 1 -and $jsonFindings[0].path -eq "tests/$($case.Name).golden") "$($case.Name) JSON scan did not report exactly one FV007 for the intended fixture path."
+                if ($case.Secret.Length -gt 0) {
+                    Assert-Contract (-not $jsonText.Contains($case.Secret, [StringComparison]::Ordinal)) "$($case.Name) JSON output disclosed the credential."
+                }
+
+                $afterHash = (Get-FileHash -LiteralPath $fixturePath -Algorithm SHA256).Hash
+                Assert-Contract ($beforeHash -eq $afterHash) "$($case.Name) scan mutated the fixture."
+                Write-Host "$($case.Name) package smoke: isolated console exit 1 and JSON exit 1, exactly one FV007, no execution error, no disclosure, no mutation."
+            }
+            finally {
+                Pop-Location
+            }
+        }
+
+        $structuredCases = @(
+            [pscustomobject]@{ Name = "azure-positive"; Fixture = 'AccountKey=fixture-azure-package-secret-1234567890;'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "fixture-azure-package-secret-1234567890" },
+            [pscustomobject]@{ Name = "api-header-literal-escape"; Fixture = 'X-Api-Key: \u0022\u0022'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "" },
+            [pscustomobject]@{ Name = "api-query-literal-escape"; Fixture = 'https://example.invalid/?api_key=%5Cu0022%5Cu0022'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "" },
+            [pscustomobject]@{ Name = "basic-marker"; Fixture = 'Authorization: Basic redacted'; ExpectedExit = 0; ExpectedFinding = $false; Secret = "" },
+            [pscustomobject]@{ Name = "cookie-sibling-positive"; Fixture = 'Cookie: empty=; second=fixture-cookie-package-secret-1234567890'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "fixture-cookie-package-secret-1234567890" },
+            [pscustomobject]@{ Name = "generic-marker"; Fixture = 'password=<redacted>'; ExpectedExit = 0; ExpectedFinding = $false; Secret = "" }
+        )
+
+        foreach ($case in $structuredCases) {
+            $caseRoot = Join-Path $connectionPositiveRoot "structured-$($case.Name)"
+            $caseTestsRoot = Join-Path $caseRoot "tests"
+            New-Item -ItemType Directory -Force -Path $caseTestsRoot | Out-Null
+            $fixturePath = Join-Path $caseTestsRoot "$($case.Name).golden"
+            [IO.File]::WriteAllText($fixturePath, $case.Fixture + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+            $beforeHash = (Get-FileHash -LiteralPath $fixturePath -Algorithm SHA256).Hash
+
+            Push-Location $caseRoot
+            try {
+                Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "structured-$($case.Name)-init.txt")) -eq 0) "structured $($case.Name) init failed."
+
+                $consolePath = Join-Path $workRoot "structured-$($case.Name)-console.txt"
+                $consoleCode = Invoke-CommandCapture $fixtureVault @("scan") $consolePath
+                Assert-Contract ($consoleCode -eq $case.ExpectedExit) "structured $($case.Name) console scan returned $consoleCode instead of $($case.ExpectedExit)."
+                $consoleText = [IO.File]::ReadAllText($consolePath)
+                Assert-Contract (($consoleText.Contains("FV007", [StringComparison]::Ordinal)) -eq $case.ExpectedFinding) "structured $($case.Name) console finding classification was incorrect."
+
+                $jsonPath = Join-Path $workRoot "structured-$($case.Name)-json.txt"
+                $jsonCode = Invoke-CommandCapture $fixtureVault @("scan", "--format", "json") $jsonPath
+                Assert-Contract ($jsonCode -eq $case.ExpectedExit) "structured $($case.Name) JSON scan returned $jsonCode instead of $($case.ExpectedExit)."
+                $jsonText = [IO.File]::ReadAllText($jsonPath)
+                $jsonReport = $jsonText | ConvertFrom-Json
+                Assert-Contract ($jsonReport.filesInspected -eq 1 -and @($jsonReport.errors).Count -eq 0) "structured $($case.Name) JSON scan did not inspect one valid fixture without errors."
+                $jsonFindings = @($jsonReport.findings | Where-Object { $_.ruleId -eq "FV007" })
+                Assert-Contract (($jsonFindings.Count -eq 1 -and $jsonFindings[0].path -eq "tests/$($case.Name).golden") -eq $case.ExpectedFinding) "structured $($case.Name) JSON finding classification or path was incorrect."
+                if ($case.Secret.Length -gt 0) {
+                    Assert-Contract (-not $consoleText.Contains($case.Secret, [StringComparison]::Ordinal) -and -not $jsonText.Contains($case.Secret, [StringComparison]::Ordinal)) "structured $($case.Name) disclosed its credential."
+                }
+
+                $afterHash = (Get-FileHash -LiteralPath $fixturePath -Algorithm SHA256).Hash
+                Assert-Contract ($beforeHash -eq $afterHash) "structured $($case.Name) scan mutated the fixture."
+                Write-Host "structured $($case.Name) package smoke: console/JSON classification $($case.ExpectedFinding), no execution error, no disclosure, no mutation."
+            }
+            finally {
+                Pop-Location
+            }
+        }
+
+        $strictRoot = Join-Path $connectionPositiveRoot "strict-override"
+        $strictTestsRoot = Join-Path $strictRoot "tests"
+        New-Item -ItemType Directory -Force -Path $strictTestsRoot | Out-Null
+        [IO.File]::WriteAllText((Join-Path $strictTestsRoot "strict.golden"), "Server=localhost;Pwd=strict-package-secret-1234567890;" + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+        Push-Location $strictRoot
         try {
-            [IO.File]::WriteAllText(
-                (Join-Path $connectionPositiveTestsRoot "connection.golden"),
-                ('Server=example.invalid;Password=' + '"""Canary123""";' + [Environment]::NewLine + "Server=example.invalid;Pwd='''Canary123''';" + [Environment]::NewLine + 'Server=example.invalid;Password=\"Canary123\";' + [Environment]::NewLine + 'Server=example.invalid;Pwd=\u0022UnicodeCanary123\u0022;' + [Environment]::NewLine + '{"ConnectionString":"Server=localhost;Password=\"\"\"JsonDoubledCanary123\"\"\""}' + [Environment]::NewLine),
-                [Text.UTF8Encoding]::new($false))
-            Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "connection-positive-init.txt")) -eq 0) "Positive connection-string init failed."
+            Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "strict-override-init.txt")) -eq 0) "Strict override init failed."
+            $policyPath = Join-Path $strictRoot ".fixturevault.json"
+            $policy = [IO.File]::ReadAllText($policyPath) | ConvertFrom-Json
+            $policy.ci.strict = $false
+            [IO.File]::WriteAllText($policyPath, ($policy | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
 
-            $positiveConsolePath = Join-Path $workRoot "connection-positive-console.txt"
-            $positiveConsoleCode = Invoke-CommandCapture $fixtureVault @("scan") $positiveConsolePath
-            Assert-Contract ($positiveConsoleCode -eq 1) "Positive connection-string console scan returned $positiveConsoleCode instead of 1."
-            $positiveConsole = [IO.File]::ReadAllText($positiveConsolePath)
-            Assert-Contract ($positiveConsole.Contains("FV007", [StringComparison]::Ordinal)) "Positive connection-string console scan did not report FV007."
-            Assert-Contract (-not $positiveConsole.Contains("Canary123", [StringComparison]::Ordinal) -and -not $positiveConsole.Contains("UnicodeCanary123", [StringComparison]::Ordinal) -and -not $positiveConsole.Contains("JsonDoubledCanary123", [StringComparison]::Ordinal)) "Positive connection-string console scan disclosed the credential."
+            $warningPath = Join-Path $workRoot "strict-override-warning.json"
+            $warningCode = Invoke-CommandCapture $fixtureVault @("scan", "--format", "json") $warningPath
+            $warningReport = [IO.File]::ReadAllText($warningPath) | ConvertFrom-Json
+            Assert-Contract ($warningCode -eq 0 -and @($warningReport.findings | Where-Object { $_.ruleId -eq "FV007" -and $_.disposition -eq "warn" }).Count -eq 1) "Non-strict package scan did not return exit 0 with a warning FV007."
 
-            $positiveJsonPath = Join-Path $workRoot "connection-positive.json"
-            $positiveJsonCode = Invoke-CommandCapture $fixtureVault @("scan", "--format", "json") $positiveJsonPath
-            Assert-Contract ($positiveJsonCode -eq 1) "Positive connection-string JSON scan returned $positiveJsonCode instead of 1."
-            $positiveReportText = [IO.File]::ReadAllText($positiveJsonPath)
-            $positiveReport = $positiveReportText | ConvertFrom-Json
-            Assert-Contract (@($positiveReport.findings | Where-Object { $_.ruleId -eq "FV007" }).Count -gt 0) "Positive connection-string JSON scan did not report FV007."
-            Assert-Contract (-not $positiveReportText.Contains("Canary123", [StringComparison]::Ordinal) -and -not $positiveReportText.Contains("UnicodeCanary123", [StringComparison]::Ordinal) -and -not $positiveReportText.Contains("JsonDoubledCanary123", [StringComparison]::Ordinal)) "Positive connection-string JSON scan disclosed the credential."
-            Write-Host 'Connection-string positive package smoke: console exit 1, JSON exit 1, including JSON-wrapped doubled-quote and \u0022-delimited values, FV007 present, credentials undisclosed.'
+            $strictPath = Join-Path $workRoot "strict-override-block.json"
+            $strictCode = Invoke-CommandCapture $fixtureVault @("scan", "--format", "json", "--strict") $strictPath
+            $strictReport = [IO.File]::ReadAllText($strictPath) | ConvertFrom-Json
+            Assert-Contract ($strictCode -eq 1 -and @($strictReport.findings | Where-Object { $_.ruleId -eq "FV007" -and $_.disposition -eq "block" }).Count -eq 1) "--strict did not override the package policy to a blocking FV007."
+            Write-Host 'Strict override package smoke: non-strict exit 0/warn and --strict exit 1/block.'
         }
         finally {
             Pop-Location
@@ -270,7 +368,9 @@ try {
                 Assert-Contract ($contextJsonCode -eq $case.ExpectedExit) "$($case.Name) JSON scan returned $contextJsonCode instead of $($case.ExpectedExit)."
                 $contextJsonText = [IO.File]::ReadAllText($contextJsonPath)
                 $contextReport = $contextJsonText | ConvertFrom-Json
-                Assert-Contract ((@($contextReport.findings | Where-Object { $_.ruleId -eq "FV007" }).Count -gt 0) -eq $case.ExpectedFinding) "$($case.Name) JSON finding classification was incorrect."
+                Assert-Contract (@($contextReport.errors).Count -eq 0) "$($case.Name) JSON scan reported an execution error."
+                $contextFindings = @($contextReport.findings | Where-Object { $_.ruleId -eq "FV007" })
+                Assert-Contract (($contextFindings.Count -eq 1 -and $contextFindings[0].path -eq "tests/$($case.Name).golden") -eq $case.ExpectedFinding) "$($case.Name) JSON finding classification or path was incorrect."
                 if ($case.Secret.Length -gt 0) {
                     Assert-Contract (-not $contextConsole.Contains($case.Secret, [StringComparison]::Ordinal) -and -not $contextJsonText.Contains($case.Secret, [StringComparison]::Ordinal)) "$($case.Name) disclosed its credential."
                 }
