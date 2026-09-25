@@ -3,6 +3,7 @@ using System.Data.Common;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using KeelMatrix.Redaction;
 using Xunit;
 using Xunit.Sdk;
 
@@ -2532,6 +2533,13 @@ public sealed class FixtureVaultTests
         yield return ["azure-empty", "AccountKey = \"\";", false, "", "", ""];
         yield return ["azure-multiple-markers", "AccountKey=[redacted];SharedAccessKey=[redacted]", false, "", "", ""];
         yield return ["basic-marker", "Authorization: Basic redacted", false, "", "", ""];
+        yield return ["prefixed-basic-marker", "[info] Authorization: Basic redacted", false, "", "", ""];
+        yield return ["prefixed-bearer-marker", "[info] Authorization: Bearer redacted", false, "", "", ""];
+        yield return ["prefixed-basic-real", "[info] Authorization: Basic fixture-auth-secret-1234567890", true, "fixture-auth-secret-1234567890", "", ""];
+        yield return ["prefixed-bearer-real", "[info] Authorization: Bearer fixture-auth-secret-1234567890", true, "fixture-auth-secret-1234567890", "", ""];
+        yield return ["prefixed-account-key", "metadata|AccountKey=Canary123", true, "Canary123", "", ""];
+        yield return ["prefixed-shared-access-key", "metadata|SharedAccessKey=Canary123", true, "Canary123", "", ""];
+        yield return ["prefixed-shared-access-signature", "metadata|SharedAccessSignature=Canary123", true, "Canary123", "", ""];
         yield return ["raw-api-unicode-spelling", @"X-Api-Key: \u0022\u0022", true, "", "", ""];
         yield return ["raw-api-tab-spelling", @"X-Api-Key: \t", true, "", "", ""];
         yield return ["query-api-unicode-spelling", "https://example.invalid/?api_key=%5Cu0022%5Cu0022", true, "", "", ""];
@@ -2667,6 +2675,61 @@ public sealed class FixtureVaultTests
         yield return ["generic-marker-then-secret", $"api-key=removed; client-secret={canary}", true, canary];
         yield return ["generic-secret-then-marker", $"client-secret={canary}; api-key=removed", true, canary];
         yield return ["generic-json-clean-siblings", "{\"metadata\":\"kind=fixture\",\"payload\":\"token=[redacted]\"}", false, ""];
+
+        string[] queryRepresentations =
+        [
+            "https://example.invalid/?token='%22%22'",
+            "https://example.invalid/?token=%27%22%22%27",
+            "https://example.invalid/?client_secret='%22%22'",
+            "https://example.invalid/?client_secret=%27%22%22%27"
+        ];
+        int queryIndex = 0;
+        foreach (string query in queryRepresentations)
+        {
+            yield return [$"generic-query-{queryIndex++:D2}", query, true, ""];
+            yield return [$"generic-query-json-{queryIndex++:D2}", JsonSerializer.Serialize(query), true, ""];
+        }
+    }
+
+    [Theory]
+    [InlineData("***")]
+    [InlineData("<redacted>")]
+    [InlineData("[redacted]")]
+    [InlineData("redacted")]
+    [InlineData("masked")]
+    [InlineData("removed")]
+    public void Prefixed_authorization_markers_are_clean_for_the_authorization_adapter(string marker)
+    {
+        var detector = new RedactionSensitiveDataDetector(new AuthorizationRedactor());
+
+        Assert.False(detector.IsSensitive($"[info] Authorization: Basic {marker}"));
+        Assert.False(detector.IsSensitive($"[info] Authorization: Bearer {marker}"));
+    }
+
+    [Theory]
+    [InlineData("https://example.invalid/?api_key='%22%22'")]
+    [InlineData("https://example.invalid/?api_key=%27%22%22%27")]
+    public void Api_key_query_values_decode_once_before_field_classification(string query)
+    {
+        var detector = new RedactionSensitiveDataDetector(new ApiKeyRedactor());
+
+        Assert.True(detector.IsSensitive(query));
+        Assert.True(detector.IsSensitive(JsonSerializer.Serialize(query)));
+    }
+
+    [Fact]
+    public void Azure_sibling_lookahead_scales_with_the_current_cursor()
+    {
+        const int fieldCount = 20_000;
+        string fixture = string.Join(';', Enumerable.Repeat("AccountKey= [redacted]", fieldCount));
+        var detector = new RedactionSensitiveDataDetector(new AzureKeyLikeRedactor());
+        var stopwatch = Stopwatch.StartNew();
+
+        bool sensitive = detector.IsSensitive(fixture);
+
+        stopwatch.Stop();
+        Assert.False(sensitive);
+        Assert.InRange(stopwatch.Elapsed, TimeSpan.Zero, TimeSpan.FromSeconds(10));
     }
 
     public static IEnumerable<object[]> GenericCredentialJsonScalarCases()

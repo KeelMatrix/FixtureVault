@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [string]$PackagePath,
@@ -29,6 +29,31 @@ function Invoke-CommandCapture {
 
     & $Executable @Arguments *> $OutputPath
     return $LASTEXITCODE
+}
+
+function Invoke-CommandCaptureWithTimeout {
+    param(
+        [string]$Executable,
+        [string[]]$Arguments,
+        [string]$WorkingDirectory,
+        [string]$OutputPath,
+        [int]$TimeoutMilliseconds = 10000
+    )
+
+    $errorPath = $OutputPath + ".stderr"
+    $process = Start-Process -FilePath $Executable `
+        -WorkingDirectory $WorkingDirectory `
+        -ArgumentList $Arguments `
+        -RedirectStandardOutput $OutputPath `
+        -RedirectStandardError $errorPath `
+        -PassThru
+    if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+        $process.Kill()
+        $process.WaitForExit()
+        throw "Command exceeded the ${TimeoutMilliseconds}ms package-smoke timeout: $Executable $($Arguments -join ' ')"
+    }
+
+    return $process.ExitCode
 }
 
 $resolvedPackage = (Resolve-Path -LiteralPath $PackagePath).Path
@@ -114,7 +139,7 @@ try {
         $helpPath = Join-Path $workRoot "help.txt"
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("--help") $helpPath) -eq 0) "fixturevault --help failed."
         $help = [IO.File]::ReadAllText($helpPath)
-        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault" -and $help -match "api_key/api-key" -and $help -match "client_secret/client-secret" -and $help -match "must be unquoted or use matching single/double quotes" -and $help -match "mismatched quotes are not assignment syntax" -and $help -match "Both '=' and ':' are supported" -and $help -match "JSON credential properties classify string, number, true, and false scalars" -and $help -match "Null and empty/whitespace strings are clean" -and $help -match "Parsed generic fields own only their exact key/operator/value spans" -and $help -match "Clean fields never suppress later fields or JSON siblings" -and $help -match "the shared sibling grammar recognizes '=' and ':' forms" -and $help -match "URI-like values stay intact" -and $help -match "only Azure credential keys are classified" -and $help -match "Raw connection-string Password/Pwd values preserve backslash spellings literally" -and $help -match "doubled-quote runs" -and $help -match "u0022") "fixturevault --help did not print the expected usage text."
+        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault" -and $help -match "api_key/api-key" -and $help -match "client_secret/client-secret" -and $help -match "must be unquoted or use matching single/double quotes" -and $help -match "mismatched quotes are not assignment syntax" -and $help -match "Both '=' and ':' are supported" -and $help -match "JSON credential properties classify string, number, true, and false scalars" -and $help -match "Null and empty/whitespace strings are clean" -and $help -match "Parsed generic fields own only their exact key/operator/value spans" -and $help -match "Clean fields never suppress later fields or JSON siblings" -and $help -match "the shared sibling grammar recognizes '=' and ':' forms" -and $help -match "URI-like values stay intact" -and $help -match "only Azure credential keys are classified" -and $help -match "Raw connection-string Password/Pwd values preserve backslash spellings literally" -and $help -match "doubled-quote runs" -and $help -match "u0022" -and $help -match "Prefixed Basic/Bearer headers classify their value" -and $help -match "Azure credential names after non-word field prefixes" -and $help -match "Sibling lookahead is local to the current cursor") "fixturevault --help did not print the expected usage text."
 
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "init.txt")) -eq 0) "fixturevault init failed."
         Assert-Contract (Test-Path -LiteralPath (Join-Path $consumerRoot ".fixturevault.json")) "fixturevault init did not create .fixturevault.json."
@@ -222,6 +247,19 @@ try {
             [pscustomobject]@{ Name = "api-header-literal-escape"; Fixture = 'X-Api-Key: \u0022\u0022'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "" },
             [pscustomobject]@{ Name = "api-query-literal-escape"; Fixture = 'https://example.invalid/?api_key=%5Cu0022%5Cu0022'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "" },
             [pscustomobject]@{ Name = "basic-marker"; Fixture = 'Authorization: Basic redacted'; ExpectedExit = 0; ExpectedFinding = $false; Secret = "" },
+            [pscustomobject]@{ Name = "query-token-literal-quotes"; Fixture = "https://example.invalid/?token='%22%22'"; ExpectedExit = 1; ExpectedFinding = $true; Secret = "" },
+            [pscustomobject]@{ Name = "query-token-encoded-quotes"; Fixture = 'https://example.invalid/?token=%27%22%22%27'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "" },
+            [pscustomobject]@{ Name = "query-client-secret-literal-quotes"; Fixture = "https://example.invalid/?client_secret='%22%22'"; ExpectedExit = 1; ExpectedFinding = $true; Secret = "" },
+            [pscustomobject]@{ Name = "query-client-secret-encoded-quotes"; Fixture = 'https://example.invalid/?client_secret=%27%22%22%27'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "" },
+            [pscustomobject]@{ Name = "query-token-json-string"; Fixture = ('https://example.invalid/?token=%27%22%22%27' | ConvertTo-Json -Compress); ExpectedExit = 1; ExpectedFinding = $true; Secret = "" },
+            [pscustomobject]@{ Name = "query-api-key-literal-quotes"; Fixture = "https://example.invalid/?api_key='%22%22'"; ExpectedExit = 1; ExpectedFinding = $true; Secret = "" },
+            [pscustomobject]@{ Name = "query-api-key-encoded-quotes"; Fixture = 'https://example.invalid/?api_key=%27%22%22%27'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "" },
+            [pscustomobject]@{ Name = "prefixed-basic-marker"; Fixture = '[info] Authorization: Basic redacted'; ExpectedExit = 0; ExpectedFinding = $false; Secret = "" },
+            [pscustomobject]@{ Name = "prefixed-bearer-marker"; Fixture = '[info] Authorization: Bearer redacted'; ExpectedExit = 0; ExpectedFinding = $false; Secret = "" },
+            [pscustomobject]@{ Name = "prefixed-bearer-real"; Fixture = '[info] Authorization: Bearer fixture-auth-package-secret-1234567890'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "fixture-auth-package-secret-1234567890" },
+            [pscustomobject]@{ Name = "prefixed-account-key"; Fixture = 'metadata|AccountKey=fixture-prefixed-azure-package-secret-1234567890'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "fixture-prefixed-azure-package-secret-1234567890" },
+            [pscustomobject]@{ Name = "prefixed-shared-access-key"; Fixture = 'metadata|SharedAccessKey=fixture-prefixed-shared-package-secret-1234567890'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "fixture-prefixed-shared-package-secret-1234567890" },
+            [pscustomobject]@{ Name = "prefixed-shared-access-signature"; Fixture = 'metadata|SharedAccessSignature=fixture-prefixed-signature-package-secret-1234567890'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "fixture-prefixed-signature-package-secret-1234567890" },
             [pscustomobject]@{ Name = "cookie-sibling-positive"; Fixture = 'Cookie: empty=; second=fixture-cookie-package-secret-1234567890'; ExpectedExit = 1; ExpectedFinding = $true; Secret = "fixture-cookie-package-secret-1234567890" },
             [pscustomobject]@{ Name = "generic-marker"; Fixture = 'password=<redacted>'; ExpectedExit = 0; ExpectedFinding = $false; Secret = "" }
         )
@@ -419,6 +457,37 @@ try {
                 $afterHash = (Get-FileHash -LiteralPath $fixturePath -Algorithm SHA256).Hash
                 Assert-Contract ($beforeHash -eq $afterHash) "structured $($case.Name) scan mutated the fixture."
                 Write-Host "structured $($case.Name) package smoke: console/JSON classification $($case.ExpectedFinding), no execution error, no disclosure, no mutation."
+            }
+            finally {
+                Pop-Location
+            }
+        }
+
+        $scaleRoot = Join-Path $connectionPositiveRoot "azure-scale"
+        foreach ($fieldCount in @(1000, 2500, 5000)) {
+            $scaleCaseRoot = Join-Path $scaleRoot "fields-$fieldCount"
+            $scaleTestsRoot = Join-Path $scaleCaseRoot "tests"
+            New-Item -ItemType Directory -Force -Path $scaleTestsRoot | Out-Null
+            $scaleFixturePath = Join-Path $scaleTestsRoot "repeated-azure-$fieldCount.golden"
+            $scaleFixture = ((1..$fieldCount | ForEach-Object { "AccountKey= [redacted];" }) -join '')
+            [IO.File]::WriteAllText($scaleFixturePath, $scaleFixture, [Text.UTF8Encoding]::new($false))
+            $scaleBeforeHash = (Get-FileHash -LiteralPath $scaleFixturePath -Algorithm SHA256).Hash
+
+            Push-Location $scaleCaseRoot
+            try {
+                Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "azure-scale-$fieldCount-init.txt")) -eq 0) "Azure scale $fieldCount init failed."
+                $scaleConsolePath = Join-Path $workRoot "azure-scale-$fieldCount-console.txt"
+                $scaleConsoleCode = Invoke-CommandCaptureWithTimeout $fixtureVault @("scan") $scaleCaseRoot $scaleConsolePath
+                Assert-Contract ($scaleConsoleCode -eq 0) "Azure scale $fieldCount console scan returned $scaleConsoleCode instead of 0."
+                Assert-Contract (-not ([IO.File]::ReadAllText($scaleConsolePath).Contains("FV007", [StringComparison]::Ordinal))) "Azure scale $fieldCount console scan reported FV007."
+
+                $scaleJsonPath = Join-Path $workRoot "azure-scale-$fieldCount.json"
+                $scaleJsonCode = Invoke-CommandCaptureWithTimeout $fixtureVault @("scan", "--format", "json") $scaleCaseRoot $scaleJsonPath
+                Assert-Contract ($scaleJsonCode -eq 0) "Azure scale $fieldCount JSON scan returned $scaleJsonCode instead of 0."
+                $scaleReport = [IO.File]::ReadAllText($scaleJsonPath) | ConvertFrom-Json
+                Assert-Contract ($scaleReport.filesInspected -eq 1 -and @($scaleReport.findings).Count -eq 0 -and @($scaleReport.errors).Count -eq 0) "Azure scale $fieldCount JSON scan did not remain clean and error-free."
+                Assert-Contract ((Get-FileHash -LiteralPath $scaleFixturePath -Algorithm SHA256).Hash -eq $scaleBeforeHash) "Azure scale $fieldCount scan mutated the fixture."
+                Write-Host "Azure repeated-field scale $fieldCount package smoke: console/JSON completed within the 10s timeout, clean, no errors, no mutation."
             }
             finally {
                 Pop-Location

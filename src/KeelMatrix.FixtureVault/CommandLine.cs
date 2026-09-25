@@ -148,9 +148,14 @@ internal static class CommandLineParser
               JSON credential properties classify string, number, true, and false scalars.
               Null and empty/whitespace strings are clean; object/array values are containers only.
               Query values URL-decode exactly once before their field grammar is parsed.
+              Prefixed Basic/Bearer headers classify their value, so accepted redaction markers
+              remain clean while genuine prefixed values remain findings.
               Parsed generic fields own only their exact key/operator/value spans;
               unconsumed prefix and unknown-key text remains independently inspected. Clean fields never suppress later fields or JSON siblings.
               Azure-style assignments also separate siblings at semicolons, commas, and whitespace.
+              Azure credential names after non-word field prefixes remain classifiable, while
+              credential-shaped text inside a consumed value is not rediscovered.
+              Sibling lookahead is local to the current cursor and does not rescan the remaining suffix.
               After an empty Azure value, the shared sibling grammar recognizes '=' and ':' forms.
               Arbitrary-name ':' requires following whitespace or end-of-input, so URI-like values stay intact.
               Only Azure credential keys are classified. Empty, whitespace-only, and finite accepted redaction markers are clean;
