@@ -150,6 +150,10 @@ public sealed class FixtureVaultTests
         Assert.Contains("Raw connection-string Password/Pwd values preserve backslash spellings literally.", output, StringComparison.Ordinal);
         Assert.Contains("doubled-quote runs", output, StringComparison.Ordinal);
         Assert.Contains("\\u0022", output, StringComparison.Ordinal);
+        Assert.Contains("Query fields end at raw '&' or '#' boundaries", output, StringComparison.Ordinal);
+        Assert.Contains("ordinary trailing", output, StringComparison.Ordinal);
+        Assert.Contains("connection-string value spans are not reinterpreted", output, StringComparison.Ordinal);
+        Assert.Contains("complete parsed field name ends at the credential key", output, StringComparison.Ordinal);
         Assert.Contains("4,096-record / 1 MiB report-field budget", output, StringComparison.Ordinal);
     }
 
@@ -2544,6 +2548,22 @@ public sealed class FixtureVaultTests
         yield return ["raw-api-tab-spelling", @"X-Api-Key: \t", true, "", "", ""];
         yield return ["query-api-unicode-spelling", "https://example.invalid/?api_key=%5Cu0022%5Cu0022", true, "", "", ""];
         yield return ["query-api-tab-spelling", "https://example.invalid/?api_key=%5Ct", true, "", "", ""];
+        yield return ["query-generic-literal-doubled-secret", "https://example.invalid/?token='''Canary123'''", true, "Canary123", "", ""];
+        yield return ["query-generic-encoded-doubled-secret", "https://example.invalid/?token=%27%27%27Canary123%27%27%27", true, "Canary123", "", ""];
+        yield return ["query-generic-literal-quote-data", "https://example.invalid/?token=''''", true, "", "", ""];
+        yield return ["query-generic-encoded-quote-data", "https://example.invalid/?token=%27%27%27%27", true, "", "", ""];
+        yield return ["query-api-key-literal-doubled-secret", "https://example.invalid/?api_key='''Canary123'''", true, "Canary123", "", ""];
+        yield return ["query-api-key-encoded-doubled-secret", "https://example.invalid/?api_key=%27%27%27Canary123%27%27%27", true, "Canary123", "", ""];
+        yield return ["azure-account-key-suffix", "AccountKey.Length=0", false, "", "", ""];
+        yield return ["azure-shared-access-key-suffix", "SharedAccessKey.Enabled=false", false, "", "", ""];
+        yield return ["azure-shared-access-signature-suffix", "SharedAccessSignature.Expires=0", false, "", "", ""];
+        yield return ["azure-prefixed-account-key-suffix", "metadata|AccountKey.Length=0", false, "", "", ""];
+        yield return ["connection-string-quoted-space-keyword", "Server=localhost;Application Name=\"display Pwd=Canary123\";Integrated Security=true;", false, "Canary123", "", ""];
+        yield return ["connection-string-quoted-semicolon-keyword", "Server=localhost;Application Name=\"display;Pwd=Canary123\";Integrated Security=true;", false, "Canary123", "", ""];
+        yield return ["connection-string-sibling-password", "Server=localhost;Application Name=\"display\";Pwd=Canary123;", true, "Canary123", "", ""];
+        yield return ["authorization-basic-marker-log-suffix", "[info] Authorization: Basic redacted; requestId=42", false, "", "", ""];
+        yield return ["authorization-bearer-marker-log-suffix", "[info] Authorization: Bearer [redacted]; requestId=42", false, "", "", ""];
+        yield return ["authorization-bearer-real-log-suffix", "[info] Authorization: Bearer Canary123; requestId=42", true, "Canary123", "", ""];
         yield return ["quoted-double-quotes", "Server=localhost;Pwd='\"\"';", true, "", "Pwd", "\"\""];
         yield return ["quoted-single-quotes", "Server=localhost;Pwd=\"''\";", true, "", "Pwd", "''"];
         yield return ["quoted-whitespace-and-quotes", "Server=localhost;Pwd='\" \"';", true, "", "Pwd", "\" \""];
@@ -2715,6 +2735,63 @@ public sealed class FixtureVaultTests
 
         Assert.True(detector.IsSensitive(query));
         Assert.True(detector.IsSensitive(JsonSerializer.Serialize(query)));
+    }
+
+    [Fact]
+    public void Fv007_boundary_adapters_classify_complete_fields_without_cross_adapter_rescans()
+    {
+        var genericDetector = new RedactionSensitiveDataDetector(
+            new RegexReplaceRedactor(GenericCredentialKeyGrammar.FallbackAssignmentPattern, "$1=<redacted>"));
+        var apiKeyDetector = new RedactionSensitiveDataDetector(new ApiKeyRedactor());
+        var azureDetector = new RedactionSensitiveDataDetector(new AzureKeyLikeRedactor());
+        var connectionStringDetector = new RedactionSensitiveDataDetector(new ConnectionStringPasswordRedactor());
+        var authorizationDetector = new RedactionSensitiveDataDetector(new AuthorizationRedactor());
+
+        Assert.True(genericDetector.IsSensitive("https://example.invalid/?token='''Canary123'''"));
+        Assert.True(apiKeyDetector.IsSensitive("https://example.invalid/?api_key='''Canary123'''"));
+        Assert.True(apiKeyDetector.IsSensitive("https://example.invalid/?api_key=%27%27%27Canary123%27%27%27"));
+
+        Assert.False(azureDetector.IsSensitive("AccountKey.Length=0"));
+        Assert.False(azureDetector.IsSensitive("SharedAccessKey.Enabled=false"));
+        Assert.False(azureDetector.IsSensitive("SharedAccessSignature.Expires=0"));
+        Assert.True(azureDetector.IsSensitive("metadata|AccountKey=Canary123"));
+
+        Assert.False(connectionStringDetector.IsSensitive(
+            "Server=localhost;Application Name=\"display Pwd=Canary123\";Integrated Security=true;"));
+        Assert.False(genericDetector.IsSensitive(
+            "Server=localhost;Application Name=\"display;Pwd=Canary123\";Integrated Security=true;"));
+        Assert.True(genericDetector.IsSensitive(
+            "Server=localhost;Application Name=\"display\";Pwd=Canary123;"));
+
+        Assert.False(authorizationDetector.IsSensitive(
+            "[info] Authorization: Basic redacted; requestId=42"));
+        Assert.False(authorizationDetector.IsSensitive(
+            "[info] Authorization: Bearer [redacted]; requestId=42"));
+        Assert.True(authorizationDetector.IsSensitive(
+            "[info] Authorization: Bearer Canary123; requestId=42"));
+    }
+
+    [Fact]
+    public void Connection_string_boundary_seeds_are_verified_by_db_connection_string_builder()
+    {
+        string[] seeds =
+        [
+            "Server=localhost;Application Name=\"display Pwd=Canary123\";Integrated Security=true;",
+            "Server=localhost;Application Name=\"display;Pwd=Canary123\";Integrated Security=true;"
+        ];
+
+        foreach (string seed in seeds)
+        {
+            var builder = new DbConnectionStringBuilder { ConnectionString = seed };
+
+            Assert.Equal(
+                seed.Contains("display;", StringComparison.Ordinal)
+                    ? "display;Pwd=Canary123"
+                    : "display Pwd=Canary123",
+                builder["Application Name"]?.ToString());
+            Assert.False(builder.ContainsKey("Password"));
+            Assert.False(builder.ContainsKey("Pwd"));
+        }
     }
 
     [Fact]

@@ -30,6 +30,11 @@ exercises `init`, a clean scan, isolated FV007 structured-value cases in both co
 non-strict dispositions, sensitive-data reporting without value disclosure or fixture mutation, symbolic-link
 rejection, and FIFO rejection.
 
+The installed-package FV007 boundary corpus also covers complete literal and encoded query fields (including
+doubled-quote data), exact versus suffixed Azure key names, connection-string quoted values that contain credential
+keywords, actual sibling credentials, and embedded Authorization markers or values followed by log metadata. Each
+case is run as an isolated raw and correctly JSON-serialized fixture where applicable.
+
 ## Run the Tool from Source
 
 ```powershell

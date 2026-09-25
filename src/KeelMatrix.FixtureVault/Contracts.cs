@@ -211,6 +211,9 @@ internal static class GenericCredentialKeyGrammar
     internal static bool TryNormalizeDecodedKey(string key, out string normalizedKey) =>
         TryNormalize(key, allowQuotedSyntax: false, out normalizedKey);
 
+    internal static bool TryNormalizeAssignmentKey(string key, out string normalizedKey) =>
+        TryNormalize(key, allowQuotedSyntax: true, out normalizedKey);
+
     internal static bool TryFindAssignment(
         string text,
         int startAt,
@@ -306,16 +309,16 @@ internal static class GenericCredentialKeyGrammar
 internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : ISensitiveDataDetector
 {
     private static readonly Regex AuthorizationHeader = new(
-        "^\\s*authorization\\s*:\\s*(?:bearer|basic)(?:\\s+(?<value>[^\\r\\n]*))?\\s*$",
+        "^\\s*authorization\\s*:\\s*(?:bearer|basic)(?:\\s+(?<value>\"[^\"\\r\\n]*\"|'[^'\\r\\n]*'|\\[[^\\]\\r\\n]*\\]|[^;\\s,\\]\\r\\n]+))?\\s*$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
     private static readonly Regex EmbeddedAuthorizationHeader = new(
-        "\\bauthorization\\s*:\\s*(?:bearer|basic)(?:\\s+(?<value>[^\\r\\n]*))?",
+        "\\bauthorization\\s*:\\s*(?:bearer|basic)(?:\\s+(?<value>\"[^\"\\r\\n]*\"|'[^'\\r\\n]*'|\\[[^\\]\\r\\n]*\\]|[^;\\s,\\]\\r\\n]+))?",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
     private static readonly Regex ApiKeyHeader = new(
         "^\\s*(?<prefix>(?:x-?api-?key|apikey)\\s*:\\s*)(?<value>[^\\r\\n]*)\\s*$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
     private static readonly Regex ApiKeyQueryValue = new(
-        "(?<prefix>[?&]\\s*(?:x-)?api[-_]?key\\s*=\\s*)(?<value>\"[^\"]*\"|'[^']*'|[^&#\\s]*)",
+        "(?<prefix>[?&]\\s*(?:x-)?api[-_]?key\\s*=\\s*)(?<value>[^&#\\r\\n]*)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
     private static readonly Regex CookieHeader = new(
         "^\\s*(?<name>set-cookie|cookie)\\s*:\\s*(?<value>[^\\r\\n]*)\\s*$",
@@ -335,6 +338,17 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         "SharedAccessKey",
         "SharedAccessSignature"
     ];
+    private static readonly HashSet<string> ConnectionStringIndicatorNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Application Name",
+        "Data Source",
+        "Database",
+        "Initial Catalog",
+        "Integrated Security",
+        "Server",
+        "User ID",
+        "UID"
+    };
     public bool IsSensitive(string text)
     {
         if (redactor is ConnectionStringPasswordRedactor)
@@ -505,10 +519,13 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         string candidate = name.Trim();
         foreach (string key in AzureCredentialKeys)
         {
-            int keyStart = candidate.LastIndexOf(key, StringComparison.OrdinalIgnoreCase);
-            if (keyStart < 0 ||
-                (keyStart > 0 && IsAzureKeyCharacter(candidate[keyStart - 1])) ||
-                (keyStart + key.Length < candidate.Length && IsAzureKeyCharacter(candidate[keyStart + key.Length])))
+            if (!candidate.EndsWith(key, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            int keyStart = candidate.Length - key.Length;
+            if (keyStart > 0 && IsAzureKeyCharacter(candidate[keyStart - 1]))
             {
                 continue;
             }
@@ -543,7 +560,8 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
 
     private static bool HasSensitiveGenericCredentialRepresentation(string text)
     {
-        if (TryClassifyGenericCredentialRepresentation(text, out List<ClassifiedSpan> classifiedSpans))
+        string classifiedText = MaskConsumedConnectionStringValues(text);
+        if (TryClassifyGenericCredentialRepresentation(classifiedText, out List<ClassifiedSpan> classifiedSpans))
         {
             return true;
         }
@@ -552,7 +570,7 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         foreach (ClassifiedSpan span in classifiedSpans)
         {
             if (span.Start > unclassifiedStart &&
-                GenericCredentialKeyGrammar.HasFallbackAssignment(text[unclassifiedStart..span.Start]))
+                GenericCredentialKeyGrammar.HasFallbackAssignment(classifiedText[unclassifiedStart..span.Start]))
             {
                 return true;
             }
@@ -560,8 +578,34 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
             unclassifiedStart = Math.Max(unclassifiedStart, span.End);
         }
 
-        return unclassifiedStart < text.Length &&
-            GenericCredentialKeyGrammar.HasFallbackAssignment(text[unclassifiedStart..]);
+        return unclassifiedStart < classifiedText.Length &&
+            GenericCredentialKeyGrammar.HasFallbackAssignment(classifiedText[unclassifiedStart..]);
+    }
+
+    private static string MaskConsumedConnectionStringValues(string text)
+    {
+        List<ParsedAssignmentSpan> assignments = [.. ReadAssignmentSpans(text, splitOnLineBreaks: true)];
+        if (!assignments.Any(assignment => ConnectionStringIndicatorNames.Contains(assignment.Name)))
+        {
+            return text;
+        }
+
+        char[] masked = text.ToCharArray();
+        foreach (ParsedAssignmentSpan assignment in assignments)
+        {
+            if (GenericCredentialKeyGrammar.TryNormalizeAssignmentKey(assignment.Name, out _))
+            {
+                continue;
+            }
+
+            int length = assignment.End - assignment.ValueStart;
+            if (length > 0)
+            {
+                Array.Fill(masked, ' ', assignment.ValueStart, length);
+            }
+        }
+
+        return new string(masked);
     }
 
     private static bool TryClassifyGenericCredentialRepresentation(
@@ -882,7 +926,7 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         return trimmed[1..^1];
     }
 
-    private static IEnumerable<ParsedAssignment> ReadAssignments(
+    private static IEnumerable<ParsedAssignmentSpan> ReadAssignmentSpans(
         string text,
         bool splitOnLineBreaks,
         bool allowColonOperator = false)
@@ -927,6 +971,7 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
                 index++;
             }
 
+            int valueStart = index;
             string value;
             if (index < text.Length && text[index] is '"' or '\'')
             {
@@ -935,7 +980,6 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
             }
             else
             {
-                int valueStart = index;
                 while (index < text.Length && !IsAssignmentSeparator(text[index], splitOnLineBreaks))
                 {
                     index++;
@@ -946,10 +990,17 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
 
             if (name.Length > 0)
             {
-                yield return new ParsedAssignment(name, value);
+                yield return new ParsedAssignmentSpan(name, value, valueStart, index);
             }
         }
     }
+
+    private static IEnumerable<ParsedAssignment> ReadAssignments(
+        string text,
+        bool splitOnLineBreaks,
+        bool allowColonOperator = false) =>
+        ReadAssignmentSpans(text, splitOnLineBreaks, allowColonOperator)
+            .Select(assignment => new ParsedAssignment(assignment.Name, assignment.Value));
 
     private static IEnumerable<ParsedAssignment> ReadAzureAssignments(string text)
     {
@@ -1025,28 +1076,12 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
     private static string ReadQueryValue(string text, ref int index)
     {
         int valueStart = index;
-        if (index < text.Length && text[index] is '"' or '\'')
-        {
-            char quote = text[index++];
-            while (index < text.Length && text[index] != quote)
-            {
-                index++;
-            }
-
-            if (index < text.Length)
-            {
-                index++;
-            }
-
-            return text[valueStart..index];
-        }
-
-        while (index < text.Length && text[index] is not '&' and not '#' && !char.IsWhiteSpace(text[index]))
+        while (index < text.Length && text[index] is not '&' and not '#' and not '\r' and not '\n')
         {
             index++;
         }
 
-        return text[valueStart..index].TrimEnd();
+        return text[valueStart..index];
     }
 
     private static bool IsAzureAssignmentBoundary(char value) =>
@@ -1134,6 +1169,8 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
     }
 
     private sealed record ParsedAssignment(string Name, string Value);
+
+    private sealed record ParsedAssignmentSpan(string Name, string Value, int ValueStart, int End);
 
     private readonly record struct ClassifiedSpan(int Start, int Length)
     {
