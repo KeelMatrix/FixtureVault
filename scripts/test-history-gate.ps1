@@ -528,6 +528,8 @@ $bodyLabelLineBreaks = @("`n", "`r", "`r`n")
 foreach ($lineBreak in $bodyLabelLineBreaks) {
     Add-TestCase -List $positiveCases -Name "positive-body-label-$($lineBreak.Length)" -Body ("Agent: parser role" + $lineBreak + "Continue ordinary body text") -ExpectedExitCode 0
 }
+$candidateMessageShape = "fix: close FV007 and release gates`n`nKeep credential ownership local and validate package and history contracts before publication."
+Add-TestCase -List $positiveCases -Name "release-message-shape" -Body $candidateMessageShape -ExpectedExitCode 0
 
 $asciiPunctuation = @(
     '!', '"', '#', '$', '%', '&', "'", '(', ')', '*', '+', ',', '-', '.', '/',
