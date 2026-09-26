@@ -3,12 +3,19 @@ set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 temporary_file=$(mktemp "${TMPDIR:-/tmp}/commit-history.XXXXXX")
-trap 'rm -f "$temporary_file"' EXIT HUP INT TERM
+reachable_history_file=$(mktemp "${TMPDIR:-/tmp}/reachable-history.XXXXXX")
+independent_history_file=$(mktemp "${TMPDIR:-/tmp}/independent-history.XXXXXX")
+trap 'rm -f "$temporary_file" "$reachable_history_file" "$independent_history_file"' EXIT HUP INT TERM
 allowed_author_keelmatrix='KeelMatrix|keelmatrix@gmail.com'
 allowed_author_dependabot='dependabot[bot]|49699333+dependabot[bot]@users.noreply.github.com'
 allowed_committer_keelmatrix='KeelMatrix|keelmatrix@gmail.com'
 allowed_committer_dependabot='dependabot[bot]|49699333+dependabot[bot]@users.noreply.github.com'
 allowed_committer_github='GitHub|noreply@github.com'
+
+fail_shallow_history() {
+  printf '%s\n' 'HISTORY_GUARD=FAIL reason=shallow-history' >&2
+  exit 1
+}
 
 if ! shallow_state=$(git rev-parse --is-shallow-repository 2>/dev/null); then
   printf '%s\n' 'HISTORY_GUARD=FAIL reason=not-a-git-repository' >&2
@@ -16,8 +23,27 @@ if ! shallow_state=$(git rev-parse --is-shallow-repository 2>/dev/null); then
 fi
 
 if [ "$shallow_state" = 'true' ]; then
-  printf '%s\n' 'HISTORY_GUARD=FAIL reason=shallow-history' >&2
-  exit 1
+  fail_shallow_history
+fi
+
+if ! replacement_refs=$(git replace -l 2>/dev/null); then
+  fail_shallow_history
+fi
+
+if [ -n "$replacement_refs" ]; then
+  fail_shallow_history
+fi
+
+if ! git rev-list --all --parents > "$reachable_history_file"; then
+  fail_shallow_history
+fi
+
+if ! git --no-replace-objects rev-list --all --parents > "$independent_history_file"; then
+  fail_shallow_history
+fi
+
+if ! cmp -s "$reachable_history_file" "$independent_history_file"; then
+  fail_shallow_history
 fi
 
 if [ "$#" -eq 0 ]; then
@@ -36,7 +62,9 @@ else
 fi
 
 for commit in $commits; do
-  identity=$(git show --no-patch --format='%an%n%ae%n%cn%n%ce' "$commit")
+  if ! identity=$(git show --no-patch --format='%an%n%ae%n%cn%n%ce' "$commit"); then
+    fail_shallow_history
+  fi
   old_ifs=$IFS
   IFS='
 '
@@ -62,9 +90,13 @@ for commit in $commits; do
     exit 1
   fi
 
-  git show --no-patch --format=%B "$commit" > "$temporary_file"
+  if ! git show --no-patch --format=%B "$commit" > "$temporary_file"; then
+    fail_shallow_history
+  fi
   if ! "$script_dir/commit-msg" "$temporary_file" >/dev/null; then
     printf 'History check failed at %s.\n' "$commit" >&2
     exit 1
   fi
 done
+
+printf '%s\n' 'HISTORY_GUARD=PASS reason=complete-history'
