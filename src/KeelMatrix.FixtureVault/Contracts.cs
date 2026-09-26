@@ -478,7 +478,10 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
 
     private static bool HasNonEmptyConnectionStringCredential(string text)
     {
-        foreach (ParsedAssignment assignment in ReadAssignments(text, splitOnLineBreaks: true))
+        foreach (ParsedAssignment assignment in ReadAssignments(
+                     text,
+                     splitOnLineBreaks: true,
+                     splitOnCommas: true))
         {
             if (IsConnectionStringCredentialKey(assignment.Name) &&
                 !IsEmptyOrAlreadyRedactedSemanticValue(assignment.Value))
@@ -584,16 +587,21 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
 
     private static string MaskConsumedConnectionStringValues(string text)
     {
-        List<ParsedAssignmentSpan> assignments = [.. ReadAssignmentSpans(text, splitOnLineBreaks: true)];
-        if (!assignments.Any(assignment => ConnectionStringIndicatorNames.Contains(assignment.Name)))
-        {
-            return text;
-        }
+        List<ParsedAssignmentSpan> assignments =
+        [
+            .. ReadAssignmentSpans(
+                text,
+                splitOnLineBreaks: true,
+                splitOnCommas: true)
+        ];
 
         char[] masked = text.ToCharArray();
         foreach (ParsedAssignmentSpan assignment in assignments)
         {
-            if (GenericCredentialKeyGrammar.TryNormalizeAssignmentKey(assignment.Name, out _))
+            // Only a value owned by a recognized connection-string indicator may be
+            // hidden from generic fallback. An indicator in one record must not
+            // authorize masking every unrelated record in the representation.
+            if (!ConnectionStringIndicatorNames.Contains(assignment.Name))
             {
                 continue;
             }
@@ -929,18 +937,20 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
     private static IEnumerable<ParsedAssignmentSpan> ReadAssignmentSpans(
         string text,
         bool splitOnLineBreaks,
+        bool splitOnCommas = false,
         bool allowColonOperator = false)
     {
         int index = 0;
         while (index < text.Length)
         {
-            while (index < text.Length && IsAssignmentSeparator(text[index], splitOnLineBreaks))
+            while (index < text.Length &&
+                   IsAssignmentSeparator(text[index], splitOnLineBreaks, splitOnCommas))
             {
                 index++;
             }
 
             while (index < text.Length && char.IsWhiteSpace(text[index]) &&
-                   !IsAssignmentSeparator(text[index], splitOnLineBreaks))
+                   !IsAssignmentSeparator(text[index], splitOnLineBreaks, splitOnCommas))
             {
                 index++;
             }
@@ -952,36 +962,60 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
 
             int nameStart = index;
             while (index < text.Length && !IsAssignmentOperator(text[index], allowColonOperator) &&
-                   !IsAssignmentSeparator(text[index], splitOnLineBreaks))
+                   !IsAssignmentSeparator(text[index], splitOnLineBreaks, splitOnCommas))
             {
                 index++;
             }
 
             if (index >= text.Length || !IsAssignmentOperator(text[index], allowColonOperator))
             {
-                SkipToAssignmentSeparator(text, ref index, splitOnLineBreaks);
+                SkipToAssignmentSeparator(text, ref index, splitOnLineBreaks, splitOnCommas);
                 continue;
             }
 
             string name = text[nameStart..index].Trim();
             index++;
+            int whitespaceStart = index;
             while (index < text.Length && char.IsWhiteSpace(text[index]) &&
-                   !IsAssignmentSeparator(text[index], splitOnLineBreaks))
+                   !IsAssignmentSeparator(text[index], splitOnLineBreaks, splitOnCommas))
             {
                 index++;
             }
 
             int valueStart = index;
             string value;
-            if (index < text.Length && text[index] is '"' or '\'')
+            bool siblingAfterWhitespace = index > whitespaceStart &&
+                LooksLikeSiblingAssignment(text, index);
+            if (siblingAfterWhitespace)
+            {
+                value = string.Empty;
+            }
+            else if (index < text.Length && text[index] is '"' or '\'')
             {
                 value = ReadQuotedValue(text, ref index, text[index]);
-                SkipToAssignmentSeparator(text, ref index, splitOnLineBreaks);
+                SkipToAssignmentSeparator(text, ref index, splitOnLineBreaks, splitOnCommas);
             }
             else
             {
-                while (index < text.Length && !IsAssignmentSeparator(text[index], splitOnLineBreaks))
+                while (index < text.Length &&
+                       !IsAssignmentSeparator(text[index], splitOnLineBreaks, splitOnCommas))
                 {
+                    if (char.IsWhiteSpace(text[index]))
+                    {
+                        int siblingStart = index;
+                        while (siblingStart < text.Length &&
+                               char.IsWhiteSpace(text[siblingStart]) &&
+                               !IsAssignmentSeparator(text[siblingStart], splitOnLineBreaks, splitOnCommas))
+                        {
+                            siblingStart++;
+                        }
+
+                        if (siblingStart > index && LooksLikeSiblingAssignment(text, siblingStart))
+                        {
+                            break;
+                        }
+                    }
+
                     index++;
                 }
 
@@ -998,8 +1032,9 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
     private static IEnumerable<ParsedAssignment> ReadAssignments(
         string text,
         bool splitOnLineBreaks,
+        bool splitOnCommas = false,
         bool allowColonOperator = false) =>
-        ReadAssignmentSpans(text, splitOnLineBreaks, allowColonOperator)
+        ReadAssignmentSpans(text, splitOnLineBreaks, splitOnCommas, allowColonOperator)
             .Select(assignment => new ParsedAssignment(assignment.Name, assignment.Value));
 
     private static IEnumerable<ParsedAssignment> ReadAzureAssignments(string text)
@@ -1087,12 +1122,22 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
     private static bool IsAzureAssignmentBoundary(char value) =>
         value is ';' or ',' or '\r' or '\n' || char.IsWhiteSpace(value);
 
-    private static bool IsAssignmentSeparator(char value, bool splitOnLineBreaks) =>
-        value == ';' || (splitOnLineBreaks && value is '\r' or '\n');
+    private static bool IsAssignmentSeparator(
+        char value,
+        bool splitOnLineBreaks,
+        bool splitOnCommas) =>
+        value == ';' ||
+        (splitOnCommas && value == ',') ||
+        (splitOnLineBreaks && value is '\r' or '\n');
 
-    private static void SkipToAssignmentSeparator(string text, ref int index, bool splitOnLineBreaks)
+    private static void SkipToAssignmentSeparator(
+        string text,
+        ref int index,
+        bool splitOnLineBreaks,
+        bool splitOnCommas)
     {
-        while (index < text.Length && !IsAssignmentSeparator(text[index], splitOnLineBreaks))
+        while (index < text.Length &&
+               !IsAssignmentSeparator(text[index], splitOnLineBreaks, splitOnCommas))
         {
             index++;
         }

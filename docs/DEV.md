@@ -20,6 +20,12 @@ dotnet format KeelMatrix.FixtureVault.sln --verify-no-changes
 
 Use `KEELMATRIX_NO_TELEMETRY=1` during local validation when a command runs the tool and should not emit telemetry.
 
+History validation is fail-closed and uses the same `.githooks/check-history` policy in ordinary CI, history hygiene, and release validation. Authors must be KeelMatrix or Dependabot; committers may additionally be GitHub's web-flow identity. Run the disposable identity and commit-message regression corpus with:
+
+```powershell
+pwsh -NoProfile -File ./scripts/test-history-gate.ps1
+```
+
 The safety regressions cover ancestor-link replacement during repository-wide path-policy discovery, both directions of
 a read-boundary change, and the aggregate diagnostic bound. The
 aggregate bound applies to ordinary findings and skipped diagnostics as well as collision findings; exhaustion is
@@ -30,10 +36,10 @@ exercises `init`, a clean scan, isolated FV007 structured-value cases in both co
 non-strict dispositions, sensitive-data reporting without value disclosure or fixture mutation, symbolic-link
 rejection, and FIFO rejection.
 
-The installed-package FV007 boundary corpus also covers complete literal and encoded query fields (including
-doubled-quote data), exact versus suffixed Azure key names, connection-string quoted values that contain credential
-keywords, actual sibling credentials, and embedded Authorization markers or values followed by log metadata. Each
-case is run as an isolated raw and correctly JSON-serialized fixture where applicable.
+The installed-package smoke corpus exercises the FV007 contract through the complete tool in console and JSON modes,
+including ownership boundaries, quoted values, sibling credentials, accepted markers, strict/non-strict dispositions,
+non-disclosure, non-mutation, and bounded scale cases. The full grammar is maintained in the [canonical detection
+grammar](DETECTION_GRAMMAR.md).
 
 ## Run the Tool from Source
 

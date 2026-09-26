@@ -2,7 +2,7 @@
 
 Run `git config core.hooksPath .githooks` once per clone to enable the repository's local commit checks.
 
-The versioned checks reject identity trailers and internal metadata in new commit messages. The public repository workflow checks all commits reachable from the checked-out references on every push and pull request. It also requires every reachable commit to have both author and committer set exactly to `KeelMatrix <keelmatrix@gmail.com>`.
+The versioned checks reject identity trailers and internal metadata in new commit messages. The public repository workflow checks all commits reachable from the checked-out references on every push and pull request. History authors must be `KeelMatrix <keelmatrix@gmail.com>` or `dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>`. History committers may be those two identities or GitHub's web-flow identity, `GitHub <noreply@github.com>`. Authorship is the author identity; a valid GitHub web commit must not be rejected merely because its technical committer is GitHub.
 
 The commit-message hook uses a closed, configured deny contract. It rejects only the configured internal reference prefixes, internal vocabulary words, identity or metadata trailer labels, review-process phrases, and generated attribution phrase. The message is normalized as one stream first so the configured forms cannot be hidden by line breaks, whitespace runs, controls, or non-ASCII separators. The lists are plain literals at the top of `.githooks/commit-msg` and are the complete policy surface.
 

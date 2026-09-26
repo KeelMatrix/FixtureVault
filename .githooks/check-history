@@ -4,8 +4,11 @@ set -eu
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 temporary_file=$(mktemp "${TMPDIR:-/tmp}/commit-history.XXXXXX")
 trap 'rm -f "$temporary_file"' EXIT HUP INT TERM
-required_identity_name='KeelMatrix'
-required_identity_email='keelmatrix@gmail.com'
+allowed_author_keelmatrix='KeelMatrix|keelmatrix@gmail.com'
+allowed_author_dependabot='dependabot[bot]|49699333+dependabot[bot]@users.noreply.github.com'
+allowed_committer_keelmatrix='KeelMatrix|keelmatrix@gmail.com'
+allowed_committer_dependabot='dependabot[bot]|49699333+dependabot[bot]@users.noreply.github.com'
+allowed_committer_github='GitHub|noreply@github.com'
 
 if [ "$#" -eq 0 ]; then
   commits=$(git rev-list --all)
@@ -33,12 +36,19 @@ for commit in $commits; do
   author_email=$2
   committer_name=$3
   committer_email=$4
-  if [ "$author_name" != "$required_identity_name" ] \
-    || [ "$author_email" != "$required_identity_email" ] \
-    || [ "$committer_name" != "$required_identity_name" ] \
-    || [ "$committer_email" != "$required_identity_email" ]; then
-    printf 'History check failed at %s: author and committer must be %s <%s>.\n' \
-      "$commit" "$required_identity_name" "$required_identity_email" >&2
+  author_identity="$author_name|$author_email"
+  committer_identity="$committer_name|$committer_email"
+  if [ "$author_identity" != "$allowed_author_keelmatrix" ] \
+    && [ "$author_identity" != "$allowed_author_dependabot" ]; then
+    printf 'History check failed at %s: author is not an approved KeelMatrix or Dependabot identity.\n' \
+      "$commit" >&2
+    exit 1
+  fi
+  if [ "$committer_identity" != "$allowed_committer_keelmatrix" ] \
+    && [ "$committer_identity" != "$allowed_committer_dependabot" ] \
+    && [ "$committer_identity" != "$allowed_committer_github" ]; then
+    printf 'History check failed at %s: committer is not an approved KeelMatrix, Dependabot, or GitHub identity.\n' \
+      "$commit" >&2
     exit 1
   fi
 

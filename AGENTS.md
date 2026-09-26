@@ -50,6 +50,7 @@ Do not create or push the release tag until this command passes on the finalized
 - Every configured root stays within the repository boundary; reparse points and symbolic links are never followed.
 - Findings use repository-relative paths and never include matched sensitive values or fixture contents.
 - Keep convention detection conservative. Do not turn an ambiguous file relationship into an orphan claim.
+- History hygiene validates complete reachable history with a closed author allowlist (`KeelMatrix` or Dependabot) and committer allowlist (`KeelMatrix`, Dependabot, or GitHub web-flow); the same `.githooks/check-history` policy is invoked by ordinary CI, history hygiene, and release validation.
 - Telemetry runs only after a completed scan and is best-effort; `KEELMATRIX_NO_TELEMETRY=1` is used for local validation.
 
 ## Validation Strategy

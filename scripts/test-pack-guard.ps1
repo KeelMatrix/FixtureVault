@@ -3,6 +3,7 @@ param()
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 function Assert-Contract {
     param(
@@ -140,14 +141,157 @@ function New-PackageWithoutReadme {
     }
 }
 
+function Copy-ZipWithoutEntry {
+    param(
+        [string]$SourcePath,
+        [string]$DestinationPath,
+        [string]$EntryName
+    )
+
+    Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath
+    $archive = [IO.Compression.ZipFile]::Open($DestinationPath, [IO.Compression.ZipArchiveMode]::Update)
+    try {
+        $entries = @($archive.Entries | Where-Object { $_.FullName -eq $EntryName })
+        Assert-Contract ($entries.Count -gt 0) "The archive mutation source is missing $EntryName."
+        $entries | ForEach-Object { $_.Delete() }
+    }
+    finally { $archive.Dispose() }
+}
+
+function Copy-ZipWithEntryBytes {
+    param(
+        [string]$SourcePath,
+        [string]$DestinationPath,
+        [string]$EntryName,
+        [byte[]]$Bytes
+    )
+
+    Copy-ZipWithoutEntry $SourcePath $DestinationPath $EntryName
+    $archive = [IO.Compression.ZipFile]::Open($DestinationPath, [IO.Compression.ZipArchiveMode]::Update)
+    try {
+        $entry = $archive.CreateEntry($EntryName)
+        $stream = $entry.Open()
+        try {
+            if ($Bytes.Length -gt 0) { $stream.Write($Bytes, 0, $Bytes.Length) }
+        }
+        finally { $stream.Dispose() }
+    }
+    finally { $archive.Dispose() }
+}
+
+function Copy-ZipWithDuplicateEntry {
+    param(
+        [string]$SourcePath,
+        [string]$DestinationPath,
+        [string]$EntryName
+    )
+
+    Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath
+    $archive = [IO.Compression.ZipFile]::Open($DestinationPath, [IO.Compression.ZipArchiveMode]::Update)
+    try {
+        $sourceEntry = $archive.Entries | Where-Object { $_.FullName -eq $EntryName } | Select-Object -First 1
+        Assert-Contract ($null -ne $sourceEntry) "The archive duplicate mutation source is missing $EntryName."
+        $sourceStream = $sourceEntry.Open()
+        try {
+            $bytes = [IO.MemoryStream]::new()
+            try {
+                $sourceStream.CopyTo($bytes)
+                $duplicate = $archive.CreateEntry($EntryName)
+                $duplicateStream = $duplicate.Open()
+                try { $duplicateStream.Write($bytes.ToArray(), 0, [int]$bytes.Length) }
+                finally { $duplicateStream.Dispose() }
+            }
+            finally { $bytes.Dispose() }
+        }
+        finally { $sourceStream.Dispose() }
+    }
+    finally { $archive.Dispose() }
+}
+
+function Copy-ZipWithUnexpectedEntry {
+    param(
+        [string]$SourcePath,
+        [string]$DestinationPath,
+        [string]$EntryName
+    )
+
+    Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath
+    $archive = [IO.Compression.ZipFile]::Open($DestinationPath, [IO.Compression.ZipArchiveMode]::Update)
+    try {
+        $null = $archive.CreateEntry($EntryName)
+    }
+    finally { $archive.Dispose() }
+}
+
+function New-EmptyZipPackage {
+    param([string]$DestinationPath)
+
+    $stream = [IO.File]::Open($DestinationPath, [IO.FileMode]::CreateNew)
+    try {
+        $archive = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Create)
+        $archive.Dispose()
+    }
+    finally { $stream.Dispose() }
+}
+
+function Copy-ZipWithNuspecMutation {
+    param(
+        [string]$SourcePath,
+        [string]$DestinationPath,
+        [string]$Mutation,
+        [string]$Value
+    )
+
+    Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath
+    $archive = [IO.Compression.ZipFile]::Open($DestinationPath, [IO.Compression.ZipArchiveMode]::Update)
+    try {
+        $entry = $archive.Entries | Where-Object { $_.FullName -eq "KeelMatrix.FixtureVault.nuspec" } | Select-Object -First 1
+        $reader = [IO.StreamReader]::new($entry.Open())
+        try { [xml]$nuspec = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        $nodePath = switch ($Mutation) {
+            "id" { "/*[local-name()='package']/*[local-name()='metadata']/*[local-name()='id']" }
+            "version" { "/*[local-name()='package']/*[local-name()='metadata']/*[local-name()='version']" }
+            "commit" { "/*[local-name()='package']/*[local-name()='metadata']/*[local-name()='repository']" }
+            default { throw "Unknown symbol nuspec mutation: $Mutation" }
+        }
+        $node = $nuspec.SelectSingleNode($nodePath)
+        Assert-Contract ($null -ne $node) "The symbol nuspec mutation source is missing $Mutation."
+        if ($Mutation -eq "commit") { $node.SetAttribute("commit", $Value) } else { $node.InnerText = $Value }
+        $settings = [Xml.XmlWriterSettings]::new()
+        $settings.Encoding = [Text.UTF8Encoding]::new($false)
+        $xmlStream = [IO.MemoryStream]::new()
+        try {
+            $writer = [Xml.XmlWriter]::Create($xmlStream, $settings)
+            try { $nuspec.Save($writer) } finally { $writer.Dispose() }
+            $bytes = $xmlStream.ToArray()
+        }
+        finally { $xmlStream.Dispose() }
+        $entry.Delete()
+        $replacement = $archive.CreateEntry("KeelMatrix.FixtureVault.nuspec")
+        $replacementStream = $replacement.Open()
+        try { $replacementStream.Write($bytes, 0, $bytes.Length) } finally { $replacementStream.Dispose() }
+    }
+    finally { $archive.Dispose() }
+}
+
 function Invoke-PackageInspection {
     param(
         [string]$InspectionScriptPath,
         [string]$PackagePath,
-        [string]$ExpectedCommit
+        [string]$ExpectedCommit,
+        [string]$SymbolsPackagePath = ""
     )
 
-    $output = @(& pwsh -NoProfile -File $InspectionScriptPath -PackagePath $PackagePath -ExpectedVersion "0.1.0" -ExpectedCommit $ExpectedCommit 2>&1)
+    $arguments = @(
+        "-NoProfile", "-File", $InspectionScriptPath,
+        "-PackagePath", $PackagePath,
+        "-ExpectedVersion", "0.1.0",
+        "-ExpectedCommit", $ExpectedCommit
+    )
+    if (-not [string]::IsNullOrWhiteSpace($SymbolsPackagePath)) {
+        $arguments += @("-SymbolsPackagePath", $SymbolsPackagePath)
+    }
+    $output = @(& pwsh @arguments 2>&1)
     [PSCustomObject]@{
         ExitCode = $LASTEXITCODE
         Output = ($output -join [Environment]::NewLine)
@@ -255,6 +399,78 @@ try {
     $inspectionScriptPath = Join-Path $repositoryRoot "scripts/inspect-package.ps1"
     & pwsh -NoProfile -File $inspectionScriptPath -PackagePath $normalPackagePath -SymbolsPackagePath $normalSymbolsPackagePath -ExpectedVersion "0.1.0" -ExpectedCommit $repositoryCommit
     Assert-Contract ($LASTEXITCODE -eq 0) "Normal pack archives failed package-content inspection."
+
+    $symbolRequiredEntries = @(
+        "_rels/.rels",
+        "KeelMatrix.FixtureVault.nuspec",
+        "tools/net8.0/any/KeelMatrix.FixtureVault.pdb",
+        "[Content_Types].xml"
+    )
+    $emptySymbolsRoot = Join-Path $workRoot "empty-symbols"
+    New-Item -ItemType Directory -Force -Path $emptySymbolsRoot | Out-Null
+    $emptySymbolsPath = Join-Path $emptySymbolsRoot "KeelMatrix.FixtureVault.0.1.0.snupkg"
+    New-EmptyZipPackage $emptySymbolsPath
+    $emptySymbolsResult = Invoke-PackageInspection $inspectionScriptPath $normalPackagePath $repositoryCommit $emptySymbolsPath
+    Assert-Contract ($emptySymbolsResult.ExitCode -ne 0) "Package inspection unexpectedly accepted an empty symbols archive."
+    Write-Host "Package inspection rejected an empty symbols archive as expected."
+
+    foreach ($requiredSymbolEntry in $symbolRequiredEntries) {
+        $missingName = $requiredSymbolEntry.Replace('/', '-').Replace('[', '').Replace(']', '')
+        $missingPath = Join-Path $workRoot ("missing-symbol-" + $missingName + ".snupkg")
+        Copy-ZipWithoutEntry $normalSymbolsPackagePath $missingPath $requiredSymbolEntry
+        $missingResult = Invoke-PackageInspection $inspectionScriptPath $normalPackagePath $repositoryCommit $missingPath
+        Assert-Contract ($missingResult.ExitCode -ne 0) "Package inspection unexpectedly accepted symbols missing $requiredSymbolEntry."
+    }
+    Write-Host "Package inspection rejected every mandatory symbol entry removal as expected."
+
+    $emptyPdbPath = Join-Path $workRoot "empty-symbol-pdb.snupkg"
+    Copy-ZipWithEntryBytes $normalSymbolsPackagePath $emptyPdbPath "tools/net8.0/any/KeelMatrix.FixtureVault.pdb" ([byte[]]@())
+    $emptyPdbResult = Invoke-PackageInspection $inspectionScriptPath $normalPackagePath $repositoryCommit $emptyPdbPath
+    Assert-Contract ($emptyPdbResult.ExitCode -ne 0) "Package inspection unexpectedly accepted an empty symbol PDB."
+
+    $truncatedPdbPath = Join-Path $workRoot "truncated-symbol-pdb.snupkg"
+    Copy-ZipWithEntryBytes $normalSymbolsPackagePath $truncatedPdbPath "tools/net8.0/any/KeelMatrix.FixtureVault.pdb" ([byte[]](0x01, 0x02, 0x03))
+    $truncatedPdbResult = Invoke-PackageInspection $inspectionScriptPath $normalPackagePath $repositoryCommit $truncatedPdbPath
+    Assert-Contract ($truncatedPdbResult.ExitCode -ne 0) "Package inspection unexpectedly accepted a truncated symbol PDB."
+
+    $mismatchedPdbPath = Join-Path $workRoot "mismatched-symbol-pdb.snupkg"
+    Copy-ZipWithEntryBytes $normalSymbolsPackagePath $mismatchedPdbPath "tools/net8.0/any/KeelMatrix.FixtureVault.pdb" ([byte[]](0x50, 0x44, 0x42, 0x2D, 0x6D, 0x69, 0x73, 0x6D, 0x61, 0x74, 0x63, 0x68))
+    $mismatchedPdbResult = Invoke-PackageInspection $inspectionScriptPath $normalPackagePath $repositoryCommit $mismatchedPdbPath
+    Assert-Contract ($mismatchedPdbResult.ExitCode -ne 0) "Package inspection unexpectedly accepted a mismatched symbol PDB."
+
+    $wrongSymbolIdentityCases = @(
+        [pscustomobject]@{ Name = "id"; Value = "Other.Package"; Expected = "Symbol package id" },
+        [pscustomobject]@{ Name = "version"; Value = "9.9.9"; Expected = "Symbol package version" },
+        [pscustomobject]@{ Name = "commit"; Value = ("0" * 40); Expected = "Symbol package repository provenance" }
+    )
+    foreach ($wrongCase in $wrongSymbolIdentityCases) {
+        $wrongPath = Join-Path $workRoot ("wrong-symbol-" + $wrongCase.Name + ".snupkg")
+        Copy-ZipWithNuspecMutation $normalSymbolsPackagePath $wrongPath $wrongCase.Name $wrongCase.Value
+        $wrongResult = Invoke-PackageInspection $inspectionScriptPath $normalPackagePath $repositoryCommit $wrongPath
+        Assert-Contract ($wrongResult.ExitCode -ne 0) "Package inspection unexpectedly accepted a symbol package with wrong $($wrongCase.Name)."
+    }
+    Write-Host "Package inspection rejected wrong symbol identity, version, and repository commit as expected."
+
+    $duplicateSymbolPath = Join-Path $workRoot "duplicate-symbol-entry.snupkg"
+    Copy-ZipWithDuplicateEntry $normalSymbolsPackagePath $duplicateSymbolPath "tools/net8.0/any/KeelMatrix.FixtureVault.pdb"
+    $duplicateSymbolResult = Invoke-PackageInspection $inspectionScriptPath $normalPackagePath $repositoryCommit $duplicateSymbolPath
+    Assert-Contract ($duplicateSymbolResult.ExitCode -ne 0) "Package inspection unexpectedly accepted duplicate symbol entries."
+
+    $unexpectedSymbolPath = Join-Path $workRoot "unexpected-symbol-entry.snupkg"
+    Copy-ZipWithUnexpectedEntry $normalSymbolsPackagePath $unexpectedSymbolPath "unexpected-symbol-entry.txt"
+    $unexpectedSymbolResult = Invoke-PackageInspection $inspectionScriptPath $normalPackagePath $repositoryCommit $unexpectedSymbolPath
+    Assert-Contract ($unexpectedSymbolResult.ExitCode -ne 0) "Package inspection unexpectedly accepted an unexpected symbol entry."
+
+    $duplicatePrimaryPath = Join-Path $workRoot "duplicate-primary-entry.nupkg"
+    Copy-ZipWithDuplicateEntry $normalPackagePath $duplicatePrimaryPath "KeelMatrix.FixtureVault.nuspec"
+    $duplicatePrimaryResult = Invoke-PackageInspection $inspectionScriptPath $duplicatePrimaryPath $repositoryCommit
+    Assert-Contract ($duplicatePrimaryResult.ExitCode -ne 0) "Package inspection unexpectedly accepted duplicate primary entries."
+
+    $unexpectedPrimaryPath = Join-Path $workRoot "unexpected-primary-entry.nupkg"
+    Copy-ZipWithUnexpectedEntry $normalPackagePath $unexpectedPrimaryPath "unexpected-primary-entry.txt"
+    $unexpectedPrimaryResult = Invoke-PackageInspection $inspectionScriptPath $unexpectedPrimaryPath $repositoryCommit
+    Assert-Contract ($unexpectedPrimaryResult.ExitCode -ne 0) "Package inspection unexpectedly accepted an unexpected primary entry."
+    Write-Host "Package inspection rejected duplicate and unexpected entries in both archives, plus symbol PDB mutations."
 
     $staleCommit = ("0" * 40) -join ""
     $staleProvenancePackagePath = Join-Path $workRoot "stale-provenance.nupkg"

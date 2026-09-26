@@ -136,36 +136,11 @@ internal static class CommandLineParser
             Safety:
               Findings and skipped diagnostics share a 4,096-record / 1 MiB report-field budget.
               Exhaustion returns FV-E017, an incomplete scan, and exit code 2.
-              FV007 classifies structured credential values independently for connection-string
-              Password/Pwd, AccountKey/SharedAccessKey/SharedAccessSignature, API-key headers
-              and queries, Basic/Bearer authorization, Cookie/Set-Cookie, and generic assignments.
-              Generic assignment keys are case-insensitive: ApiKey/api_key/api-key,
-              ClientSecret/client_secret/client-secret, Password, Pwd, Secret, and Token. Raw
-              assignment keys must be unquoted or use matching single/double quotes; unmatched or
-              mismatched quotes are not assignment syntax. Both '=' and ':' are supported.
-              Raw connection-string Password/Pwd values preserve backslash spellings literally.
-              Raw text preserves literal backslashes. Structurally valid JSON strings decode once.
-              JSON credential properties classify string, number, true, and false scalars.
-              Null and empty/whitespace strings are clean; object/array values are containers only.
-              Query values URL-decode exactly once before their field grammar is parsed.
-              Query fields end at raw '&' or '#' boundaries; quote runs remain value data until
-              the complete field is decoded and classified.
-              Prefixed Basic/Bearer headers classify their value, so accepted redaction markers
-              remain clean while genuine prefixed values remain findings; ordinary trailing
-              delimiters and log metadata are outside the classified value.
-              Parsed generic fields own only their exact key/operator/value spans;
-              connection-string value spans are not reinterpreted as generic assignments, while
-              unconsumed prefix and unknown-key text remains independently inspected. Clean fields never suppress later fields or JSON siblings.
-              Azure-style assignments also separate siblings at semicolons, commas, and whitespace.
-              Azure credential names after non-word field prefixes remain classifiable only when
-              the complete parsed field name ends at the credential key, while
-              credential-shaped text inside a consumed value is not rediscovered.
-              Sibling lookahead is local to the current cursor and does not rescan the remaining suffix.
-              After an empty Azure value, the shared sibling grammar recognizes '=' and ':' forms.
-              Arbitrary-name ':' requires following whitespace or end-of-input, so URI-like values stay intact.
-              Only Azure credential keys are classified. Empty, whitespace-only, and finite accepted redaction markers are clean;
-              JSON escape spellings such as \u0022 and doubled-quote runs are parsed only in their
-              container context; quote and backslash characters remaining after parsing are data.
+              FV007 detects high-confidence structured credentials without disclosing matched
+              values. Connection-string masking is limited to syntactically owned value spans,
+              so unrelated clean context cannot suppress a finding while quoted non-secret values
+              remain owned. The complete ownership and boundary grammar is maintained at:
+              https://github.com/KeelMatrix/FixtureVault/blob/main/docs/DETECTION_GRAMMAR.md
             """;
     }
 

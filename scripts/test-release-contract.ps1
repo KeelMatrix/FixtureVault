@@ -86,6 +86,8 @@ Assert-Contract ($validation.Contains('$expectedCommit = (git rev-parse HEAD).Tr
 Assert-Contract ($validation.Contains('-ExpectedCommit $expectedCommit', [StringComparison]::Ordinal)) "Release package inspection must validate exact repository provenance."
 Assert-Contract ($validation.Contains("package-consumer-smoke.ps1", [StringComparison]::Ordinal)) "Release validation must run the package consumer smoke."
 Assert-Contract ($validation.Contains("audit-vulnerabilities.ps1", [StringComparison]::Ordinal)) "Release validation must run the repository vulnerability audit."
+Assert-Contract ($ciWorkflow.Contains(".githooks/check-history", [StringComparison]::Ordinal)) "Ordinary CI must enforce the same complete-history guard as release validation."
+Assert-Contract ($ciWorkflow.Contains("fetch-depth: 0", [StringComparison]::Ordinal)) "Ordinary CI must provide complete history to the history guard."
 Assert-Contract ($validation.Contains('KeelMatrix.FixtureVault.${{ steps.release-version.outputs.version }}.nupkg', [StringComparison]::Ordinal)) "Release validation must upload the primary package by exact name."
 Assert-Contract ($validation.Contains('KeelMatrix.FixtureVault.${{ steps.release-version.outputs.version }}.snupkg', [StringComparison]::Ordinal)) "Release validation must upload the symbols package by exact name."
 Assert-Contract ($validation.Contains('RELEASE_TAG: ${{ github.ref_name }}', [StringComparison]::Ordinal)) "The release ref must be passed through RELEASE_TAG."

@@ -12,6 +12,8 @@ $negativeCount = 0
 $matrixCount = 0
 $matrixAcceptedCount = 0
 $timeoutCount = 0
+$identityPositiveCount = 0
+$identityNegativeCount = 0
 
 function Assert-Contract {
     param(
@@ -667,8 +669,66 @@ try {
     $historyExitCode = $LASTEXITCODE
     $historyText = $historyOutput -join [Environment]::NewLine
     Assert-Contract ($historyExitCode -ne 0) "The history gate accepted a commit with a non-standard author and committer identity."
-    Assert-Contract ($historyText.Contains("author and committer must be KeelMatrix <keelmatrix@gmail.com>.", [StringComparison]::Ordinal)) "The history gate did not report the required identity rule. Output: $historyText"
+    Assert-Contract ($historyText.Contains("author is not an approved KeelMatrix or Dependabot identity.", [StringComparison]::Ordinal)) "The history gate did not report the author allowlist failure. Output: $historyText"
     Write-Host "Identity check: non-standard author and committer rejected."
+
+    $identityCases = @(
+        [pscustomobject]@{ Name = "keelmatrix-keelmatrix"; AuthorName = "KeelMatrix"; AuthorEmail = "keelmatrix@gmail.com"; CommitterName = "KeelMatrix"; CommitterEmail = "keelmatrix@gmail.com"; ExpectedExit = 0; Message = "Create maintenance history" },
+        [pscustomobject]@{ Name = "keelmatrix-github"; AuthorName = "KeelMatrix"; AuthorEmail = "keelmatrix@gmail.com"; CommitterName = "GitHub"; CommitterEmail = "noreply@github.com"; ExpectedExit = 0; Message = "Create web maintenance history" },
+        [pscustomobject]@{ Name = "keelmatrix-dependabot"; AuthorName = "KeelMatrix"; AuthorEmail = "keelmatrix@gmail.com"; CommitterName = "dependabot[bot]"; CommitterEmail = "49699333+dependabot[bot]@users.noreply.github.com"; ExpectedExit = 0; Message = "Create automated maintenance history" },
+        [pscustomobject]@{ Name = "dependabot-keelmatrix"; AuthorName = "dependabot[bot]"; AuthorEmail = "49699333+dependabot[bot]@users.noreply.github.com"; CommitterName = "KeelMatrix"; CommitterEmail = "keelmatrix@gmail.com"; ExpectedExit = 0; Message = "Create dependency maintenance history" },
+        [pscustomobject]@{ Name = "dependabot-github"; AuthorName = "dependabot[bot]"; AuthorEmail = "49699333+dependabot[bot]@users.noreply.github.com"; CommitterName = "GitHub"; CommitterEmail = "noreply@github.com"; ExpectedExit = 0; Message = "Create web dependency maintenance history" },
+        [pscustomobject]@{ Name = "dependabot-dependabot"; AuthorName = "dependabot[bot]"; AuthorEmail = "49699333+dependabot[bot]@users.noreply.github.com"; CommitterName = "dependabot[bot]"; CommitterEmail = "49699333+dependabot[bot]@users.noreply.github.com"; ExpectedExit = 0; Message = "Create dependency bot history" },
+        [pscustomobject]@{ Name = "unknown-author"; AuthorName = "Example Author"; AuthorEmail = "example.author@example.com"; CommitterName = "KeelMatrix"; CommitterEmail = "keelmatrix@gmail.com"; ExpectedExit = 1; Message = "Create unauthorized history" },
+        [pscustomobject]@{ Name = "unknown-committer"; AuthorName = "KeelMatrix"; AuthorEmail = "keelmatrix@gmail.com"; CommitterName = "Example Committer"; CommitterEmail = "example.committer@example.com"; ExpectedExit = 1; Message = "Create unauthorized committer history" },
+        [pscustomobject]@{ Name = "coauthor-trailer"; AuthorName = "KeelMatrix"; AuthorEmail = "keelmatrix@gmail.com"; CommitterName = "KeelMatrix"; CommitterEmail = "keelmatrix@gmail.com"; ExpectedExit = 1; Message = "Maintenance with forbidden trailer`n`nCo-authored-by: Agent <agent@example.com>" },
+        [pscustomobject]@{ Name = "internal-metadata"; AuthorName = "KeelMatrix"; AuthorEmail = "keelmatrix@gmail.com"; CommitterName = "KeelMatrix"; CommitterEmail = "keelmatrix@gmail.com"; ExpectedExit = 1; Message = "$($internalPrefixes[0])-999 maintenance metadata" }
+    )
+
+    foreach ($identityCase in $identityCases) {
+        $identityRoot = Join-Path $temporaryRoot ("identity-" + $identityCase.Name)
+        New-Item -ItemType Directory -Force -Path $identityRoot | Out-Null
+        Copy-Item -LiteralPath (Join-Path $repositoryRoot ".githooks") -Destination (Join-Path $identityRoot ".githooks") -Recurse
+        Push-Location $identityRoot
+        $previousIdentityEnvironment = @{
+            GIT_AUTHOR_NAME = $env:GIT_AUTHOR_NAME
+            GIT_AUTHOR_EMAIL = $env:GIT_AUTHOR_EMAIL
+            GIT_COMMITTER_NAME = $env:GIT_COMMITTER_NAME
+            GIT_COMMITTER_EMAIL = $env:GIT_COMMITTER_EMAIL
+        }
+        try {
+            $null = Invoke-Git @("init", "--quiet")
+            $null = Invoke-Git @("config", "user.name", $identityCase.AuthorName)
+            $null = Invoke-Git @("config", "user.email", $identityCase.AuthorEmail)
+            $env:GIT_AUTHOR_NAME = $identityCase.AuthorName
+            $env:GIT_AUTHOR_EMAIL = $identityCase.AuthorEmail
+            $env:GIT_COMMITTER_NAME = $identityCase.CommitterName
+            $env:GIT_COMMITTER_EMAIL = $identityCase.CommitterEmail
+            $created = Invoke-Git @("commit", "--allow-empty", "-m", $identityCase.Message)
+            Assert-Contract ($created.ExitCode -eq 0) "Could not create identity case $($identityCase.Name): $($created.Output -join [Environment]::NewLine)"
+            $identityOutput = @(& $shellPath @historyArguments 2>&1)
+            $identityExit = $LASTEXITCODE
+            Assert-Contract ($identityExit -eq $identityCase.ExpectedExit) "Identity case $($identityCase.Name) returned $identityExit instead of $($identityCase.ExpectedExit): $($identityOutput -join [Environment]::NewLine)"
+            if ($identityCase.ExpectedExit -eq 0) {
+                $identityPositiveCount++
+            }
+            else {
+                $identityNegativeCount++
+            }
+        }
+        finally {
+            foreach ($environmentName in $previousIdentityEnvironment.Keys) {
+                if ($null -eq $previousIdentityEnvironment[$environmentName]) {
+                    Remove-Item "Env:$environmentName" -ErrorAction SilentlyContinue
+                }
+                else {
+                    Set-Item "Env:$environmentName" $previousIdentityEnvironment[$environmentName]
+                }
+            }
+            Pop-Location
+        }
+    }
+    Write-Host "Identity allowlist corpus: positive=$identityPositiveCount; negative=$identityNegativeCount; GitHub web-flow and Dependabot combinations verified."
 
     $completed = $true
 }
@@ -681,5 +741,5 @@ finally {
     }
     $timer.Stop()
     $status = if ($completed) { "passed" } else { "failed" }
-    Write-Host ("History gate summary: status={0}; positive={1}; negative={2}; matrix={3}; matrixAccepted={4}; time={5:N3}s; timeouts={6}." -f $status, $positiveCount, $negativeCount, $matrixCount, $matrixAcceptedCount, $timer.Elapsed.TotalSeconds, $timeoutCount)
+    Write-Host ("History gate summary: status={0}; positive={1}; negative={2}; matrix={3}; matrixAccepted={4}; identityPositive={5}; identityNegative={6}; time={7:N3}s; timeouts={8}." -f $status, $positiveCount, $negativeCount, $matrixCount, $matrixAcceptedCount, $identityPositiveCount, $identityNegativeCount, $timer.Elapsed.TotalSeconds, $timeoutCount)
 }

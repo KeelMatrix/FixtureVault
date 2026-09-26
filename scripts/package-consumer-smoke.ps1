@@ -139,7 +139,7 @@ try {
         $helpPath = Join-Path $workRoot "help.txt"
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("--help") $helpPath) -eq 0) "fixturevault --help failed."
         $help = [IO.File]::ReadAllText($helpPath)
-        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault" -and $help -match "api_key/api-key" -and $help -match "client_secret/client-secret" -and $help -match "must be unquoted or use matching single/double quotes" -and $help -match "mismatched quotes are not assignment syntax" -and $help -match "Both '=' and ':' are supported" -and $help -match "JSON credential properties classify string, number, true, and false scalars" -and $help -match "Null and empty/whitespace strings are clean" -and $help -match "Parsed generic fields own only their exact key/operator/value spans" -and $help -match "Clean fields never suppress later fields or JSON siblings" -and $help -match "the shared sibling grammar recognizes '=' and ':' forms" -and $help -match "URI-like values stay intact" -and $help -match "only Azure credential keys are classified" -and $help -match "Raw connection-string Password/Pwd values preserve backslash spellings literally" -and $help -match "doubled-quote runs" -and $help -match "u0022" -and $help -match "Prefixed Basic/Bearer headers classify their value" -and $help -match "Azure credential names after non-word field prefixes" -and $help -match "Sibling lookahead is local to the current cursor") "fixturevault --help did not print the expected usage text."
+        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault" -and $help -match "FV007 detects high-confidence structured credentials without disclosing" -and $help -match "DETECTION_GRAMMAR.md") "fixturevault --help did not print the expected usage text."
 
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "init.txt")) -eq 0) "fixturevault init failed."
         Assert-Contract (Test-Path -LiteralPath (Join-Path $consumerRoot ".fixturevault.json")) "fixturevault init did not create .fixturevault.json."
@@ -166,7 +166,11 @@ try {
             [pscustomobject]@{ Name = "raw-literal-unicode-spelling"; Fixture = 'Server=example.invalid;Pwd=\u0022UnicodeCanary123\u0022;'; Secret = "UnicodeCanary123" },
             [pscustomobject]@{ Name = "json-doubled-double"; Fixture = ('Server=localhost;Password="""JsonDoubledCanary123""";' | ConvertTo-Json -Compress); Secret = "JsonDoubledCanary123" },
             [pscustomobject]@{ Name = "json-literal-unicode-spelling"; Fixture = ('Server=localhost;Pwd=\u0022JsonUnicodeCanary123\u0022;' | ConvertTo-Json -Compress); Secret = "JsonUnicodeCanary123" },
-            [pscustomobject]@{ Name = "raw-quote-data"; Fixture = 'Server=localhost;Pwd=''""'';'; Secret = "" }
+            [pscustomobject]@{ Name = "raw-quote-data"; Fixture = 'Server=localhost;Pwd=''""'';'; Secret = "" },
+            [pscustomobject]@{ Name = "cross-record-before"; Fixture = "Server=localhost;`nMessage=ok Password=fixture-cross-record-package-secret-1234567890"; Secret = "fixture-cross-record-package-secret-1234567890" },
+            [pscustomobject]@{ Name = "cross-record-after"; Fixture = "Message=ok Password=fixture-cross-record-package-secret-1234567890`nServer=localhost;"; Secret = "fixture-cross-record-package-secret-1234567890" },
+            [pscustomobject]@{ Name = "cross-record-before-json"; Fixture = ("Server=localhost;`nMessage=ok Password=fixture-cross-record-package-secret-1234567890" | ConvertTo-Json -Compress); Secret = "fixture-cross-record-package-secret-1234567890" },
+            [pscustomobject]@{ Name = "cross-record-after-json"; Fixture = ("Message=ok Password=fixture-cross-record-package-secret-1234567890`nServer=localhost;" | ConvertTo-Json -Compress); Secret = "fixture-cross-record-package-secret-1234567890" }
         )
 
         foreach ($case in $connectionPositiveCases) {

@@ -37,8 +37,10 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive = [IO.Compression.ZipFile]::OpenRead($resolvedPackage)
 try {
     $entries = @($archive.Entries | ForEach-Object { $_.FullName })
+    $duplicateEntries = @($entries | Group-Object | Where-Object Count -gt 1 | ForEach-Object Name)
+    Assert-Contract ($duplicateEntries.Count -eq 0) "Duplicate package entries are not allowed: $($duplicateEntries -join ', ')"
 
-    foreach ($requiredEntry in @(
+    $requiredPackageEntries = @(
         "README.md",
         "LICENSE/LICENSE",
         "icon.png",
@@ -46,8 +48,12 @@ try {
         "tools/net8.0/any/DotnetToolSettings.xml",
         "tools/net8.0/any/KeelMatrix.FixtureVault.dll",
         "tools/net8.0/any/KeelMatrix.Redaction.dll",
-        "tools/net8.0/any/KeelMatrix.Telemetry.dll")) {
+        "tools/net8.0/any/KeelMatrix.Telemetry.dll"
+    )
+    foreach ($requiredEntry in $requiredPackageEntries) {
     Assert-Contract ($entries -contains $requiredEntry) "Expected package entry is missing: $requiredEntry"
+        $requiredArchiveEntry = $archive.Entries | Where-Object { $_.FullName -eq $requiredEntry } | Select-Object -First 1
+        Assert-Contract ($requiredArchiveEntry.Length -gt 0) "Required package entry is empty: $requiredEntry"
     }
 
     $readmeEntry = $archive.Entries | Where-Object { $_.FullName -eq "README.md" } | Select-Object -First 1
@@ -168,6 +174,11 @@ try {
 
     $repositoryCommit = [string]$metadata.repository.commit
     Assert-Contract ($repositoryCommit -eq $ExpectedCommit) "Package repository commit is '$repositoryCommit', expected '$ExpectedCommit'."
+    $primaryPackageId = [string]$metadata.id
+    $primaryPackageVersion = [string]$metadata.version
+    $primaryRepositoryType = [string]$metadata.repository.type
+    $primaryRepositoryUrl = [string]$metadata.repository.url
+    $primaryRepositoryCommit = $repositoryCommit
 
     $pdbEntry = $archive.Entries | Where-Object { $_.FullName -eq "tools/net8.0/any/KeelMatrix.FixtureVault.pdb" } | Select-Object -First 1
     Assert-Contract ($null -ne $pdbEntry) "The package is missing the FixtureVault PDB required for SourceLink provenance inspection."
@@ -176,7 +187,8 @@ try {
         $pdbBytes = [IO.MemoryStream]::new()
         try {
             $pdbStream.CopyTo($pdbBytes)
-            $pdbText = [Text.Encoding]::UTF8.GetString($pdbBytes.ToArray())
+            $primaryPdbBytes = $pdbBytes.ToArray()
+            $pdbText = [Text.Encoding]::UTF8.GetString($primaryPdbBytes)
         }
         finally {
             $pdbBytes.Dispose()
@@ -203,12 +215,19 @@ if (-not [string]::IsNullOrWhiteSpace($SymbolsPackagePath)) {
     $symbolsArchive = [IO.Compression.ZipFile]::OpenRead($resolvedSymbolsPackage)
     try {
         $symbolEntries = @($symbolsArchive.Entries | ForEach-Object { $_.FullName })
+        $duplicateSymbolEntries = @($symbolEntries | Group-Object | Where-Object Count -gt 1 | ForEach-Object Name)
+        Assert-Contract ($duplicateSymbolEntries.Count -eq 0) "Duplicate symbol package entries are not allowed: $($duplicateSymbolEntries -join ', ')"
         $allowedSymbolEntries = @(
             "_rels/.rels",
             "KeelMatrix.FixtureVault.nuspec",
             "tools/net8.0/any/KeelMatrix.FixtureVault.pdb",
             "[Content_Types].xml"
         )
+        foreach ($requiredSymbolEntry in $allowedSymbolEntries) {
+            Assert-Contract ($symbolEntries -contains $requiredSymbolEntry) "Expected symbol package entry is missing: $requiredSymbolEntry"
+            $requiredSymbolArchiveEntry = $symbolsArchive.Entries | Where-Object { $_.FullName -eq $requiredSymbolEntry } | Select-Object -First 1
+            Assert-Contract ($requiredSymbolArchiveEntry.Length -gt 0) "Required symbol package entry is empty: $requiredSymbolEntry"
+        }
         $unexpectedSymbolEntries = @($symbolEntries | Where-Object {
             ($_ -notin $allowedSymbolEntries) -and ($_ -notmatch '^package/services/metadata/core-properties/[^/]+\.psmdcp$')
         })
@@ -220,6 +239,39 @@ if (-not [string]::IsNullOrWhiteSpace($SymbolsPackagePath)) {
             $_ -match '(secret|credential|password)'
         })
         Assert-Contract ($forbiddenSymbolEntries.Count -eq 0) "Forbidden entries were packed in the symbol package: $($forbiddenSymbolEntries -join ', ')"
+
+        $symbolNuspecEntry = $symbolsArchive.Entries | Where-Object { $_.FullName -eq "KeelMatrix.FixtureVault.nuspec" } | Select-Object -First 1
+        $symbolNuspecReader = [IO.StreamReader]::new($symbolNuspecEntry.Open())
+        try {
+            [xml]$symbolNuspec = $symbolNuspecReader.ReadToEnd()
+        }
+        finally {
+            $symbolNuspecReader.Dispose()
+        }
+        $symbolMetadata = $symbolNuspec.SelectSingleNode("/*[local-name()='package']/*[local-name()='metadata']")
+        Assert-Contract ($null -ne $symbolMetadata) "The symbol package metadata is missing."
+        Assert-Contract ([string]$symbolMetadata.id -eq $primaryPackageId) "Symbol package id '$($symbolMetadata.id)' does not match the primary package id '$primaryPackageId'."
+        Assert-Contract ([string]$symbolMetadata.version -eq $ExpectedVersion -and [string]$symbolMetadata.version -eq $primaryPackageVersion) "Symbol package version '$($symbolMetadata.version)' does not match the intended release '$ExpectedVersion'."
+        Assert-Contract ([string]$symbolMetadata.repository.type -eq $primaryRepositoryType -and
+            [string]$symbolMetadata.repository.url -eq $primaryRepositoryUrl -and
+            [string]$symbolMetadata.repository.commit -eq $primaryRepositoryCommit) "Symbol package repository provenance does not match the primary package."
+
+        $symbolPdbEntry = $symbolsArchive.Entries | Where-Object { $_.FullName -eq "tools/net8.0/any/KeelMatrix.FixtureVault.pdb" } | Select-Object -First 1
+        $symbolPdbStream = $symbolPdbEntry.Open()
+        try {
+            $symbolPdbBytesStream = [IO.MemoryStream]::new()
+            try {
+                $symbolPdbStream.CopyTo($symbolPdbBytesStream)
+                $symbolPdbBytes = $symbolPdbBytesStream.ToArray()
+            }
+            finally {
+                $symbolPdbBytesStream.Dispose()
+            }
+        }
+        finally {
+            $symbolPdbStream.Dispose()
+        }
+        Assert-Contract ([Convert]::ToBase64String($symbolPdbBytes) -eq [Convert]::ToBase64String($primaryPdbBytes)) "Symbol PDB does not match the primary package PDB."
         Write-Host "Symbol package contract passed: $([IO.Path]::GetFileName($resolvedSymbolsPackage))"
     }
     finally {

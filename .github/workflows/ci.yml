@@ -25,6 +25,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v6
@@ -33,6 +35,10 @@ jobs:
 
       - name: Restore dependencies
         run: dotnet restore KeelMatrix.FixtureVault.sln
+
+      - name: Check complete commit history
+        shell: bash
+        run: bash .githooks/check-history
 
       - name: Build Release
         run: dotnet build KeelMatrix.FixtureVault.sln -c Release --no-restore

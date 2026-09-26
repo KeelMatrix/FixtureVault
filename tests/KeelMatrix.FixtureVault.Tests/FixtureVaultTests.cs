@@ -134,26 +134,9 @@ public sealed class FixtureVaultTests
         Assert.Empty(error);
         Assert.Contains("Usage:", output, StringComparison.Ordinal);
         Assert.Contains("fixturevault", output, StringComparison.Ordinal);
-        Assert.Contains("ApiKey/api_key/api-key", output, StringComparison.Ordinal);
-        Assert.Contains("ClientSecret/client_secret/client-secret", output, StringComparison.Ordinal);
-        Assert.Contains("must be unquoted or use matching single/double quotes", output, StringComparison.Ordinal);
-        Assert.Contains("unmatched or", output, StringComparison.Ordinal);
-        Assert.Contains("mismatched quotes are not assignment syntax", output, StringComparison.Ordinal);
-        Assert.Contains("Both '=' and ':' are supported", output, StringComparison.Ordinal);
-        Assert.Contains("JSON credential properties classify string, number, true, and false scalars", output, StringComparison.Ordinal);
-        Assert.Contains("Null and empty/whitespace strings are clean; object/array values are containers only", output, StringComparison.Ordinal);
-        Assert.Contains("Parsed generic fields own only their exact key/operator/value spans", output, StringComparison.Ordinal);
-        Assert.Contains("Clean fields never suppress later fields or JSON siblings", output, StringComparison.Ordinal);
-        Assert.Contains("the shared sibling grammar recognizes '=' and ':' forms", output, StringComparison.Ordinal);
-        Assert.Contains("URI-like values stay intact", output, StringComparison.Ordinal);
-        Assert.Contains("Only Azure credential keys are classified", output, StringComparison.Ordinal);
-        Assert.Contains("Raw connection-string Password/Pwd values preserve backslash spellings literally.", output, StringComparison.Ordinal);
-        Assert.Contains("doubled-quote runs", output, StringComparison.Ordinal);
-        Assert.Contains("\\u0022", output, StringComparison.Ordinal);
-        Assert.Contains("Query fields end at raw '&' or '#' boundaries", output, StringComparison.Ordinal);
-        Assert.Contains("ordinary trailing", output, StringComparison.Ordinal);
-        Assert.Contains("connection-string value spans are not reinterpreted", output, StringComparison.Ordinal);
-        Assert.Contains("complete parsed field name ends at the credential key", output, StringComparison.Ordinal);
+        Assert.Contains("FV007 detects high-confidence structured credentials without disclosing", output, StringComparison.Ordinal);
+        Assert.Contains("Connection-string masking is limited to syntactically owned value spans", output, StringComparison.Ordinal);
+        Assert.Contains("DETECTION_GRAMMAR.md", output, StringComparison.Ordinal);
         Assert.Contains("4,096-record / 1 MiB report-field budget", output, StringComparison.Ordinal);
     }
 
@@ -2769,6 +2752,37 @@ public sealed class FixtureVaultTests
             "[info] Authorization: Bearer [redacted]; requestId=42"));
         Assert.True(authorizationDetector.IsSensitive(
             "[info] Authorization: Bearer Canary123; requestId=42"));
+    }
+
+    [Theory]
+    [InlineData("Password=fixture-cross-record-secret-1234567890")]
+    [InlineData("Server=localhost;\nMessage=ok Password=fixture-cross-record-secret-1234567890")]
+    [InlineData("Message=ok Password=fixture-cross-record-secret-1234567890\nServer=localhost;")]
+    [InlineData("Server=localhost,Password=fixture-cross-record-secret-1234567890")]
+    [InlineData("Server=localhost Password=fixture-cross-record-secret-1234567890")]
+    [InlineData("Data Source=localhost;\nMessage=ok Password=fixture-cross-record-secret-1234567890")]
+    [InlineData("Initial Catalog=fixture;\nMessage=ok Password=fixture-cross-record-secret-1234567890")]
+    public void Generic_detector_preserves_credentials_outside_owned_connection_string_values(string fixture)
+    {
+        var detector = new RedactionSensitiveDataDetector(
+            new RegexReplaceRedactor(GenericCredentialKeyGrammar.FallbackAssignmentPattern, "$1=<redacted>"));
+
+        Assert.True(detector.IsSensitive(fixture));
+        Assert.True(detector.IsSensitive(JsonSerializer.Serialize(fixture)));
+    }
+
+    [Theory]
+    [InlineData("Server=localhost;Application Name=\"display Pwd=Canary123\";Integrated Security=true;")]
+    [InlineData("Server=localhost;Data Source=\"display Password=Canary123\";Integrated Security=true;")]
+    [InlineData("Server=localhost;Application Name=\"display;Pwd=Canary123\";Integrated Security=true;")]
+    [InlineData("Server=localhost;Message=ok Password=[redacted];Integrated Security=true;")]
+    public void Generic_detector_keeps_owned_quoted_values_and_markers_clean(string fixture)
+    {
+        var detector = new RedactionSensitiveDataDetector(
+            new RegexReplaceRedactor(GenericCredentialKeyGrammar.FallbackAssignmentPattern, "$1=<redacted>"));
+
+        Assert.False(detector.IsSensitive(fixture));
+        Assert.False(detector.IsSensitive(JsonSerializer.Serialize(fixture)));
     }
 
     [Fact]

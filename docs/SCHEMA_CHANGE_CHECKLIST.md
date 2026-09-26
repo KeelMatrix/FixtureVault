@@ -2,7 +2,7 @@
 
 This is the normative v1 checklist for changes to FixtureVault policy, manifest, and report contracts. It applies to schema, rule, and exit-code changes that can affect existing repositories or consumers. Evaluate compatibility against current v1 behavior and representative prior-version documents; when a breaking change is required, increase the relevant version, document the impact and migration path, add the required evidence, and update the release notes before merging.
 
-Use this checklist before changing a FixtureVault contract. Treat the current behavior and examples in the README as compatibility commitments.
+Use this checklist before changing a FixtureVault contract. Treat the current behavior and examples in the README as compatibility commitments. The complete FV007 grammar is maintained in [DETECTION_GRAMMAR.md](DETECTION_GRAMMAR.md); user-facing surfaces link there instead of duplicating it.
 
 ## Contracts to Review
 
