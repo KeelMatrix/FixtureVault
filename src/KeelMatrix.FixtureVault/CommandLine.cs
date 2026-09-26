@@ -136,6 +136,9 @@ internal static class CommandLineParser
             Safety:
               Findings and skipped diagnostics share a 4,096-record / 1 MiB report-field budget.
               Exhaustion returns FV-E017, an incomplete scan, and exit code 2.
+              JSON representations are inspected through a maximum depth of 64 containers.
+              A valid deeper representation returns FV-E014, an incomplete scan, and exit code 2;
+              malformed JSON remains eligible for raw-text inspection.
               FV007 detects high-confidence structured credentials without disclosing matched
               values. Connection-string masking is limited to syntactically owned value spans,
               so unrelated clean context cannot suppress a finding while quoted non-secret values

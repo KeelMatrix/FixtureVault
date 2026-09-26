@@ -664,6 +664,86 @@ try {
             }
         }
 
+        $boundaryRoot = Join-Path $workRoot "parser-boundaries"
+        $boundaryTestsRoot = Join-Path $boundaryRoot "tests"
+        New-Item -ItemType Directory -Force -Path $boundaryTestsRoot | Out-Null
+        Push-Location $boundaryRoot
+        try {
+            $boundarySecret = "package-boundary-secret-1234567890"
+            [IO.File]::WriteAllText(
+                (Join-Path $boundaryTestsRoot "quoted-sibling.golden"),
+                "Server=`"local`" Password=$boundarySecret`n",
+                [Text.UTF8Encoding]::new($false))
+            Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "parser-boundaries-init.txt")) -eq 0) "Parser-boundaries init failed."
+
+            $quotedStrictPath = Join-Path $workRoot "quoted-sibling-strict.json"
+            $quotedStrictCode = Invoke-CommandCapture $fixtureVault @("scan", "--format", "json") $quotedStrictPath
+            $quotedStrictText = [IO.File]::ReadAllText($quotedStrictPath)
+            $quotedStrictReport = $quotedStrictText | ConvertFrom-Json
+            Assert-Contract ($quotedStrictCode -eq 1 -and @($quotedStrictReport.findings | Where-Object { $_.ruleId -eq "FV007" -and $_.disposition -eq "block" }).Count -eq 1) "Quoted sibling package regression did not return strict FV007."
+            Assert-Contract (-not $quotedStrictText.Contains($boundarySecret, [StringComparison]::Ordinal)) "Quoted sibling package regression disclosed its credential."
+
+            $boundaryPolicyPath = Join-Path $boundaryRoot ".fixturevault.json"
+            $boundaryPolicy = [IO.File]::ReadAllText($boundaryPolicyPath) | ConvertFrom-Json
+            $boundaryPolicy.ci.strict = $false
+            [IO.File]::WriteAllText($boundaryPolicyPath, ($boundaryPolicy | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
+            $quotedWarningPath = Join-Path $workRoot "quoted-sibling-warning.json"
+            $quotedWarningCode = Invoke-CommandCapture $fixtureVault @("scan", "--format", "json") $quotedWarningPath
+            $quotedWarningText = [IO.File]::ReadAllText($quotedWarningPath)
+            $quotedWarningReport = $quotedWarningText | ConvertFrom-Json
+            Assert-Contract ($quotedWarningCode -eq 0 -and @($quotedWarningReport.findings | Where-Object { $_.ruleId -eq "FV007" -and $_.disposition -eq "warn" }).Count -eq 1) "Quoted sibling package regression did not preserve non-strict FV007."
+            Assert-Contract (-not $quotedWarningText.Contains($boundarySecret, [StringComparison]::Ordinal)) "Quoted sibling warning disclosed its credential."
+
+            $deepRoot = Join-Path $workRoot "json-depth"
+            $deepTestsRoot = Join-Path $deepRoot "tests"
+            New-Item -ItemType Directory -Force -Path $deepTestsRoot | Out-Null
+            $deepPayload = ("[" * 65) + '{"Passw\u006frd":"package-depth-secret-1234567890"}' + ("]" * 65)
+            [IO.File]::WriteAllText((Join-Path $deepTestsRoot "deep.golden"), $deepPayload, [Text.UTF8Encoding]::new($false))
+            Push-Location $deepRoot
+            try {
+                Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "json-depth-init.txt")) -eq 0) "JSON depth init failed."
+                $deepStrictPath = Join-Path $workRoot "json-depth-strict.json"
+                $deepStrictCode = Invoke-CommandCapture $fixtureVault @("scan", "--format", "json") $deepStrictPath
+                $deepStrictText = [IO.File]::ReadAllText($deepStrictPath)
+                $deepStrictReport = $deepStrictText | ConvertFrom-Json
+                Assert-Contract ($deepStrictCode -eq 2 -and @($deepStrictReport.errors | Where-Object { $_.code -eq "FV-E014" }).Count -eq 1 -and @($deepStrictReport.findings).Count -eq 0) "JSON depth package regression did not fail closed in strict mode."
+                Assert-Contract (-not $deepStrictText.Contains("package-depth-secret-1234567890", [StringComparison]::Ordinal)) "JSON depth strict report disclosed its credential."
+
+                $deepPolicyPath = Join-Path $deepRoot ".fixturevault.json"
+                $deepPolicy = [IO.File]::ReadAllText($deepPolicyPath) | ConvertFrom-Json
+                $deepPolicy.ci.strict = $false
+                [IO.File]::WriteAllText($deepPolicyPath, ($deepPolicy | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
+                $deepWarningPath = Join-Path $workRoot "json-depth-warning.json"
+                $deepWarningCode = Invoke-CommandCapture $fixtureVault @("scan", "--format", "json") $deepWarningPath
+                $deepWarningText = [IO.File]::ReadAllText($deepWarningPath)
+                $deepWarningReport = $deepWarningText | ConvertFrom-Json
+                Assert-Contract ($deepWarningCode -eq 2 -and @($deepWarningReport.errors | Where-Object { $_.code -eq "FV-E014" }).Count -eq 1 -and @($deepWarningReport.findings).Count -eq 0) "JSON depth package regression did not fail closed in non-strict mode."
+            }
+            finally {
+                Pop-Location
+            }
+
+            $whitespaceRoot = Join-Path $workRoot "whitespace-bound"
+            $whitespaceTestsRoot = Join-Path $whitespaceRoot "tests"
+            New-Item -ItemType Directory -Force -Path $whitespaceTestsRoot | Out-Null
+            [IO.File]::WriteAllText((Join-Path $whitespaceTestsRoot "whitespace.golden"), ("Server=x" + (" " * 100000) + "tail"), [Text.UTF8Encoding]::new($false))
+            Push-Location $whitespaceRoot
+            try {
+                Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "whitespace-bound-init.txt")) -eq 0) "Whitespace-bound init failed."
+                $whitespacePath = Join-Path $workRoot "whitespace-bound.json"
+                $whitespaceCode = Invoke-CommandCaptureWithTimeout $fixtureVault @("scan", "--format", "json") $whitespaceRoot $whitespacePath
+                $whitespaceReport = [IO.File]::ReadAllText($whitespacePath) | ConvertFrom-Json
+                Assert-Contract ($whitespaceCode -eq 0 -and @($whitespaceReport.findings).Count -eq 0 -and @($whitespaceReport.errors).Count -eq 0) "Whitespace-bound package regression did not complete cleanly."
+                Write-Host "Installed parser-boundary package smoke: quoted sibling strict/non-strict FV007, deep JSON FV-E014 in both modes, and 100,000-space scan completed within timeout."
+            }
+            finally {
+                Pop-Location
+            }
+        }
+        finally {
+            Pop-Location
+        }
+
         if ([OperatingSystem]::IsLinux()) {
             $safetyRoot = Join-Path $workRoot "safety-consumer"
             $safetyTestsRoot = Join-Path $safetyRoot "tests"

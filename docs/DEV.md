@@ -38,8 +38,8 @@ rejection, and FIFO rejection.
 
 The installed-package smoke corpus exercises the FV007 contract through the complete tool in console and JSON modes,
 including ownership boundaries, quoted values, sibling credentials, accepted markers, strict/non-strict dispositions,
-non-disclosure, non-mutation, and bounded scale cases. The full grammar is maintained in the [canonical detection
-grammar](DETECTION_GRAMMAR.md).
+non-disclosure, non-mutation, the 64-container JSON depth boundary, and bounded whitespace scale cases. The full
+grammar is maintained in the [canonical detection grammar](DETECTION_GRAMMAR.md).
 
 ## Run the Tool from Source
 

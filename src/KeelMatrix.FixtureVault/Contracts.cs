@@ -17,6 +17,9 @@ internal static class FixtureVaultContract
     internal const string IgnoredPathMatchingErrorCode = "FV-E013";
     internal const string SensitiveDataDetectorErrorCode = "FV-E014";
     internal const string SensitiveDataDetectorErrorMessage = "Sensitive-data detection could not be completed safely.";
+    // JSON is decoded only within this bounded structural depth. A valid document
+    // beyond the boundary is an incomplete inspection, never raw-text fallback.
+    internal const int MaximumSupportedJsonDepth = 64;
     internal const string PathPolicyTraversalErrorCode = "FV-E015";
     internal const string PathPolicyTraversalErrorMessage = "Repository path-policy discovery could not be completed safely.";
     internal const string UninspectableContentErrorCode = "FV-E016";
@@ -162,6 +165,10 @@ internal sealed record ScanResult(ScanReport Report, int ExitCode, bool Complete
 internal interface ISensitiveDataDetector
 {
     bool IsSensitive(string text);
+}
+
+internal sealed class UnsupportedJsonDepthException : Exception
+{
 }
 
 internal static class GenericCredentialKeyGrammar
@@ -682,7 +689,8 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
     private static bool LooksLikeSiblingAssignment(
         string text,
         int index,
-        bool allowColonOperator = true)
+        bool allowColonOperator = true,
+        AssignmentParserMetrics? metrics = null)
     {
         if ((uint)index >= (uint)text.Length)
         {
@@ -702,6 +710,7 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
             int nameStart = cursor;
             while (cursor < text.Length && text[cursor] != quote)
             {
+                metrics?.Step();
                 cursor++;
             }
 
@@ -718,6 +727,7 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
             while (cursor < text.Length &&
                    (char.IsLetterOrDigit(text[cursor]) || text[cursor] is '_' or '-' or '.'))
             {
+                metrics?.Step();
                 cursor++;
             }
 
@@ -729,6 +739,7 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
 
         while (cursor < text.Length && char.IsWhiteSpace(text[cursor]))
         {
+            metrics?.Step();
             cursor++;
         }
 
@@ -765,15 +776,16 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
             return false;
         }
 
-        try
-        {
-            using JsonDocument document = JsonDocument.Parse(text);
-            hasCredential = ClassifyJsonCredentialDocument(document.RootElement);
-            return true;
-        }
-        catch (JsonException)
+        JsonDocumentParseResult parseResult = TryParseJsonDocument(text, out JsonDocument? document);
+        if (parseResult == JsonDocumentParseResult.NotJson)
         {
             return false;
+        }
+
+        using (document)
+        {
+            hasCredential = ClassifyJsonCredentialDocument(document!.RootElement);
+            return true;
         }
     }
 
@@ -885,15 +897,103 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
             return false;
         }
 
+        JsonDocumentParseResult parseResult = TryParseJsonDocument(text, out JsonDocument? document);
+        if (parseResult == JsonDocumentParseResult.NotJson)
+        {
+            return false;
+        }
+
+        using (document)
+        {
+            AddJsonStringValues(document!.RootElement, values);
+            return true;
+        }
+    }
+
+    private static JsonDocumentParseResult TryParseJsonDocument(
+        string text,
+        out JsonDocument? document)
+    {
+        document = null;
         try
         {
-            using JsonDocument document = JsonDocument.Parse(text);
-            AddJsonStringValues(document.RootElement, values);
+            document = JsonDocument.Parse(
+                text,
+                new JsonDocumentOptions { MaxDepth = FixtureVaultContract.MaximumSupportedJsonDepth });
+        }
+        catch (JsonException)
+        {
+            // Use the streaming reader only as a bounded validity probe. It never inspects
+            // an over-depth document or builds a recursive tree; it distinguishes valid but
+            // unsupported JSON from malformed/raw text so raw fixture support remains intact.
+            if (!IsValidJsonAtAnyDepth(text))
+            {
+                return JsonDocumentParseResult.NotJson;
+            }
+
+            throw new UnsupportedJsonDepthException();
+        }
+
+        if (GetJsonDepth(document!.RootElement) > FixtureVaultContract.MaximumSupportedJsonDepth)
+        {
+            document.Dispose();
+            document = null;
+            throw new UnsupportedJsonDepthException();
+        }
+
+        return JsonDocumentParseResult.Parsed;
+    }
+
+    private static int GetJsonDepth(JsonElement root)
+    {
+        int maximumDepth = 0;
+        var pending = new Stack<(JsonElement Element, int Depth)>();
+        pending.Push((root, 0));
+        while (pending.Count > 0)
+        {
+            (JsonElement element, int depth) = pending.Pop();
+            if (element.ValueKind is not (JsonValueKind.Object or JsonValueKind.Array))
+            {
+                continue;
+            }
+
+            int childDepth = depth + 1;
+            maximumDepth = Math.Max(maximumDepth, childDepth);
+            if (element.ValueKind == JsonValueKind.Object)
+            {
+                foreach (JsonProperty property in element.EnumerateObject())
+                {
+                    pending.Push((property.Value, childDepth));
+                }
+            }
+            else
+            {
+                foreach (JsonElement item in element.EnumerateArray())
+                {
+                    pending.Push((item, childDepth));
+                }
+            }
+        }
+
+        return maximumDepth;
+    }
+
+    private static bool IsValidJsonAtAnyDepth(string text)
+    {
+        byte[] utf8 = System.Text.Encoding.UTF8.GetBytes(text);
+        var reader = new Utf8JsonReader(
+            utf8,
+            new JsonReaderOptions { MaxDepth = Math.Max(text.Length, FixtureVaultContract.MaximumSupportedJsonDepth + 1) });
+        try
+        {
+            while (reader.Read())
+            {
+            }
+
             return true;
         }
         catch (JsonException)
         {
-            values.Clear();
             return false;
         }
     }
@@ -938,20 +1038,24 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         string text,
         bool splitOnLineBreaks,
         bool splitOnCommas = false,
-        bool allowColonOperator = false)
+        bool allowColonOperator = false,
+        AssignmentParserMetrics? metrics = null)
     {
         int index = 0;
         while (index < text.Length)
         {
+            metrics?.Step();
             while (index < text.Length &&
                    IsAssignmentSeparator(text[index], splitOnLineBreaks, splitOnCommas))
             {
+                metrics?.Step();
                 index++;
             }
 
             while (index < text.Length && char.IsWhiteSpace(text[index]) &&
                    !IsAssignmentSeparator(text[index], splitOnLineBreaks, splitOnCommas))
             {
+                metrics?.Step();
                 index++;
             }
 
@@ -964,12 +1068,13 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
             while (index < text.Length && !IsAssignmentOperator(text[index], allowColonOperator) &&
                    !IsAssignmentSeparator(text[index], splitOnLineBreaks, splitOnCommas))
             {
+                metrics?.Step();
                 index++;
             }
 
             if (index >= text.Length || !IsAssignmentOperator(text[index], allowColonOperator))
             {
-                SkipToAssignmentSeparator(text, ref index, splitOnLineBreaks, splitOnCommas);
+                SkipToAssignmentSeparator(text, ref index, splitOnLineBreaks, splitOnCommas, metrics);
                 continue;
             }
 
@@ -979,13 +1084,14 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
             while (index < text.Length && char.IsWhiteSpace(text[index]) &&
                    !IsAssignmentSeparator(text[index], splitOnLineBreaks, splitOnCommas))
             {
+                metrics?.Step();
                 index++;
             }
 
             int valueStart = index;
             string value;
             bool siblingAfterWhitespace = index > whitespaceStart &&
-                LooksLikeSiblingAssignment(text, index);
+                LooksLikeSiblingAssignment(text, index, metrics: metrics);
             if (siblingAfterWhitespace)
             {
                 value = string.Empty;
@@ -993,7 +1099,6 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
             else if (index < text.Length && text[index] is '"' or '\'')
             {
                 value = ReadQuotedValue(text, ref index, text[index]);
-                SkipToAssignmentSeparator(text, ref index, splitOnLineBreaks, splitOnCommas);
             }
             else
             {
@@ -1002,20 +1107,28 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
                 {
                     if (char.IsWhiteSpace(text[index]))
                     {
-                        int siblingStart = index;
-                        while (siblingStart < text.Length &&
-                               char.IsWhiteSpace(text[siblingStart]) &&
-                               !IsAssignmentSeparator(text[siblingStart], splitOnLineBreaks, splitOnCommas))
+                        int whitespaceEnd = index;
+                        while (whitespaceEnd < text.Length &&
+                               char.IsWhiteSpace(text[whitespaceEnd]) &&
+                               !IsAssignmentSeparator(text[whitespaceEnd], splitOnLineBreaks, splitOnCommas))
                         {
-                            siblingStart++;
+                            metrics?.Step();
+                            whitespaceEnd++;
                         }
 
-                        if (siblingStart > index && LooksLikeSiblingAssignment(text, siblingStart))
+                        if (whitespaceEnd > index &&
+                            LooksLikeSiblingAssignment(text, whitespaceEnd, metrics: metrics))
                         {
                             break;
                         }
+
+                        // The complete whitespace run was inspected once. Advancing over it
+                        // here prevents a non-assignment suffix from causing quadratic rescans.
+                        index = whitespaceEnd;
+                        continue;
                     }
 
+                    metrics?.Step();
                     index++;
                 }
 
@@ -1134,18 +1247,28 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         string text,
         ref int index,
         bool splitOnLineBreaks,
-        bool splitOnCommas)
+        bool splitOnCommas,
+        AssignmentParserMetrics? metrics = null)
     {
         while (index < text.Length &&
                !IsAssignmentSeparator(text[index], splitOnLineBreaks, splitOnCommas))
         {
+            metrics?.Step();
             index++;
         }
 
         if (index < text.Length)
         {
+            metrics?.Step();
             index++;
         }
+    }
+
+    internal static long MeasureAssignmentParserOperationsForTesting(string text)
+    {
+        var metrics = new AssignmentParserMetrics();
+        _ = ReadAssignmentSpans(text, splitOnLineBreaks: true, splitOnCommas: true, metrics: metrics).ToList();
+        return metrics.Operations;
     }
 
     private static string ReadQuotedValue(string text, ref int index, char quote)
@@ -1216,6 +1339,19 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
     private sealed record ParsedAssignment(string Name, string Value);
 
     private sealed record ParsedAssignmentSpan(string Name, string Value, int ValueStart, int End);
+
+    private sealed class AssignmentParserMetrics
+    {
+        internal long Operations { get; private set; }
+
+        internal void Step() => Operations++;
+    }
+
+    private enum JsonDocumentParseResult
+    {
+        NotJson,
+        Parsed
+    }
 
     private readonly record struct ClassifiedSpan(int Start, int Length)
     {

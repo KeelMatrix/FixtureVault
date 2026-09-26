@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Fixed
 
 - FV007 now scopes connection-string masking to owned value spans, so unrelated context cannot suppress credentials while quoted non-secret values remain clean. The complete grammar is maintained in [DETECTION_GRAMMAR.md](docs/DETECTION_GRAMMAR.md).
+- Hardened FV007 parser boundaries so quoted non-secret values cannot consume whitespace-separated credentials, valid JSON deeper than the supported 64-container depth fails closed with `FV-E014`, and unquoted whitespace lookahead advances linearly instead of rescanning the same run.
 
 - History validation now accepts approved KeelMatrix, Dependabot, and GitHub web-flow identity combinations while remaining fail-closed for unauthorized attribution.
 

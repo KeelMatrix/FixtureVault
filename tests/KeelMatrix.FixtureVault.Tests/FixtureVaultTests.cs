@@ -2755,6 +2755,130 @@ public sealed class FixtureVaultTests
     }
 
     [Theory]
+    [InlineData("Application Name")]
+    [InlineData("Data Source")]
+    [InlineData("Database")]
+    [InlineData("Initial Catalog")]
+    [InlineData("Integrated Security")]
+    [InlineData("Server")]
+    [InlineData("User ID")]
+    [InlineData("UID")]
+    public void Quoted_connection_string_indicators_do_not_own_following_siblings(string indicator)
+    {
+        string fixture = $"{indicator}=\"local\" Password={SensitiveValue}";
+        var genericDetector = new RedactionSensitiveDataDetector(
+            new RegexReplaceRedactor(GenericCredentialKeyGrammar.FallbackAssignmentPattern, "$1=<redacted>"));
+        var connectionStringDetector = new RedactionSensitiveDataDetector(new ConnectionStringPasswordRedactor());
+
+        Assert.True(genericDetector.IsSensitive(fixture));
+        Assert.True(genericDetector.IsSensitive(JsonSerializer.Serialize(fixture)));
+        Assert.True(connectionStringDetector.IsSensitive(fixture));
+        Assert.True(connectionStringDetector.IsSensitive(JsonSerializer.Serialize(fixture)));
+    }
+
+    [Theory]
+    [InlineData("Server=\"contains Password=inside\"")]
+    [InlineData("Data Source='contains Pwd=inside'")]
+    [InlineData("Application Name=\"display \"\" Password=inside\"\"\"")]
+    [InlineData("Initial Catalog=\"\"")]
+    public void Credential_looking_text_inside_owned_quoted_values_stays_clean(string fixture)
+    {
+        var genericDetector = new RedactionSensitiveDataDetector(
+            new RegexReplaceRedactor(GenericCredentialKeyGrammar.FallbackAssignmentPattern, "$1=<redacted>"));
+        var connectionStringDetector = new RedactionSensitiveDataDetector(new ConnectionStringPasswordRedactor());
+
+        Assert.False(genericDetector.IsSensitive(fixture));
+        Assert.False(genericDetector.IsSensitive(JsonSerializer.Serialize(fixture)));
+        Assert.False(connectionStringDetector.IsSensitive(fixture));
+        Assert.False(connectionStringDetector.IsSensitive(JsonSerializer.Serialize(fixture)));
+    }
+
+    [Fact]
+    public void Json_depth_boundary_is_explicit_and_fails_closed_above_the_supported_limit()
+    {
+        var detector = new RedactionSensitiveDataDetector(
+            new RegexReplaceRedactor(GenericCredentialKeyGrammar.FallbackAssignmentPattern, "$1=<redacted>"));
+        string belowLimit = CreateNestedJson(FixtureVaultContract.MaximumSupportedJsonDepth - 1, SensitiveValue);
+        string atLimit = CreateNestedJson(FixtureVaultContract.MaximumSupportedJsonDepth, SensitiveValue);
+        string aboveLimit = CreateNestedJson(FixtureVaultContract.MaximumSupportedJsonDepth + 1, SensitiveValue);
+        var connectionStringDetector = new RedactionSensitiveDataDetector(new ConnectionStringPasswordRedactor());
+        var authorizationDetector = new RedactionSensitiveDataDetector(new AuthorizationRedactor());
+
+        Assert.True(detector.IsSensitive(belowLimit));
+        Assert.True(detector.IsSensitive(atLimit));
+        Assert.Throws<UnsupportedJsonDepthException>(() => detector.IsSensitive(aboveLimit));
+        Assert.Throws<UnsupportedJsonDepthException>(() => connectionStringDetector.IsSensitive(aboveLimit));
+        Assert.Throws<UnsupportedJsonDepthException>(() => authorizationDetector.IsSensitive(aboveLimit));
+        Assert.True(detector.IsSensitive($"[log] Password={SensitiveValue}"));
+    }
+
+    [Theory]
+    [InlineData(true, 2)]
+    [InlineData(false, 2)]
+    public void Unsupported_json_depth_fails_closed_without_successful_telemetry(bool strict, int expectedExitCode)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Ci!.Strict = strict);
+        string fixture = CreateNestedJson(
+            FixtureVaultContract.MaximumSupportedJsonDepth + 1,
+            SensitiveValue,
+            escapedPasswordKey: true);
+        repository.WriteText("tests/probe.golden", fixture);
+        IReadOnlyDictionary<string, string> before = repository.HashTree();
+        var telemetry = new RecordingTelemetry();
+
+        ScanResult directResult = repository.Scan();
+        int exitCode = repository.Run(["scan", "--format", "json"], telemetry, out string output, out string error);
+        using JsonDocument report = JsonDocument.Parse(output);
+
+        Assert.Equal(expectedExitCode, directResult.ExitCode);
+        Assert.False(directResult.Completed);
+        Assert.Contains(directResult.Report.Errors, item => item.Code == FixtureVaultContract.SensitiveDataDetectorErrorCode);
+        Assert.Equal(expectedExitCode, exitCode);
+        Assert.Contains(report.RootElement.GetProperty("errors").EnumerateArray(), item =>
+            item.GetProperty("code").GetString() == FixtureVaultContract.SensitiveDataDetectorErrorCode);
+        Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
+        Assert.Empty(error);
+        Assert.Equal(0, telemetry.SuccessfulScans);
+        Assert.Equal(before, repository.HashTree());
+        Assert.DoesNotContain(SensitiveValue, output, StringComparison.Ordinal);
+    }
+
+    private static string CreateNestedJson(int containerDepth, string secret, bool escapedPasswordKey = false)
+    {
+        Assert.True(containerDepth >= 1);
+        string key = escapedPasswordKey ? "Passw\\u006frd" : "Password";
+        return new string('[', containerDepth - 1) +
+            $"{{\"{key}\":\"{secret}\"}}" +
+            new string(']', containerDepth - 1);
+    }
+
+    [Fact]
+    public void Unquoted_whitespace_lookahead_has_linear_operation_growth()
+    {
+        long previousOperations = 0;
+        foreach (int whitespaceLength in new[] { 1_000, 2_000, 4_000, 8_000, 16_000 })
+        {
+            string fixture = "Server=x" + new string(' ', whitespaceLength) + "tail";
+            long operations = RedactionSensitiveDataDetector.MeasureAssignmentParserOperationsForTesting(fixture);
+
+            Assert.InRange(operations, 0, (whitespaceLength * 8L) + 256L);
+            if (previousOperations > 0)
+            {
+                Assert.True(
+                    operations <= previousOperations * 3,
+                    $"Parser work grew superlinearly: {previousOperations} -> {operations}.");
+            }
+
+            previousOperations = operations;
+        }
+
+        var detector = new RedactionSensitiveDataDetector(new ConnectionStringPasswordRedactor());
+        Assert.True(detector.IsSensitive("Server=x" + new string(' ', 16_000) + $"Password={SensitiveValue}"));
+        Assert.False(detector.IsSensitive("Server=x" + new string('\t', 16_000) + "tail"));
+    }
+
+    [Theory]
     [InlineData("Password=fixture-cross-record-secret-1234567890")]
     [InlineData("Server=localhost;\nMessage=ok Password=fixture-cross-record-secret-1234567890")]
     [InlineData("Message=ok Password=fixture-cross-record-secret-1234567890\nServer=localhost;")]
