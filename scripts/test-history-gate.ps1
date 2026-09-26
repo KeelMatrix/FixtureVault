@@ -667,6 +667,67 @@ try {
     if ([IO.Path]::GetFileName($shellPath) -eq "bash.exe") {
         $historyArguments = @("--noprofile", "--norc", "-c", "export PATH=/usr/bin:/bin:`$PATH; sh ./.githooks/check-history")
     }
+
+    function Invoke-HistoryGuard {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$WorkingDirectory
+        )
+
+        Push-Location $WorkingDirectory
+        try {
+            $guardOutput = @(& $shellPath @historyArguments 2>&1)
+            $guardExitCode = $LASTEXITCODE
+        }
+        finally {
+            Pop-Location
+        }
+
+        [pscustomobject]@{
+            ExitCode = $guardExitCode
+            Output = $guardOutput
+        }
+    }
+
+    $repositoryUri = ([Uri]::new($repositoryRoot)).AbsoluteUri
+    $historySource = Join-Path $temporaryRoot "history-source"
+    $sourceCloneResult = Invoke-Git @("clone", $repositoryUri, $historySource)
+    Assert-Contract ($sourceCloneResult.ExitCode -eq 0) "Could not create the disposable history source clone: $($sourceCloneResult.Output -join [Environment]::NewLine)"
+    Copy-Item -Path (Join-Path $repositoryRoot ".githooks\*") -Destination (Join-Path $historySource ".githooks") -Recurse -Force
+    $stageSourceResult = Invoke-Git @("-C", $historySource, "add", "--", ".githooks")
+    Assert-Contract ($stageSourceResult.ExitCode -eq 0) "Could not stage the current history guard in the disposable source clone: $($stageSourceResult.Output -join [Environment]::NewLine)"
+    $sourceCommitResult = Invoke-Git @("-C", $historySource, "-c", "user.name=KeelMatrix", "-c", "user.email=keelmatrix@gmail.com", "commit", "--allow-empty", "-m", "Exercise shallow history guard")
+    Assert-Contract ($sourceCommitResult.ExitCode -eq 0) "Could not commit the current history guard into the disposable source clone: $($sourceCommitResult.Output -join [Environment]::NewLine)"
+    $historySourceUri = ([Uri]::new($historySource)).AbsoluteUri
+    foreach ($depth in @(1, 2)) {
+        $shallowRoot = Join-Path $temporaryRoot ("shallow-depth-" + $depth)
+        $cloneTimer = [Diagnostics.Stopwatch]::StartNew()
+        $cloneResult = Invoke-Git @("clone", "--depth", $depth, $historySourceUri, $shallowRoot)
+        $cloneTimer.Stop()
+        Assert-Contract ($cloneResult.ExitCode -eq 0) "Could not create the depth-$depth disposable shallow clone: $($cloneResult.Output -join [Environment]::NewLine)"
+
+        $shallowState = Invoke-Git @("-C", $shallowRoot, "rev-parse", "--is-shallow-repository")
+        Assert-Contract ($shallowState.ExitCode -eq 0 -and $shallowState.Output.Trim() -eq "true") "The depth-$depth disposable clone did not report shallow Git state: $($shallowState.Output -join [Environment]::NewLine)"
+
+        $guardTimer = [Diagnostics.Stopwatch]::StartNew()
+        $shallowResult = Invoke-HistoryGuard -WorkingDirectory $shallowRoot
+        $guardTimer.Stop()
+        $shallowText = $shallowResult.Output -join [Environment]::NewLine
+        Assert-Contract ($shallowResult.ExitCode -ne 0) "The history guard accepted a depth-$depth shallow clone. Output: $shallowText"
+        Assert-Contract ($shallowText.Contains("HISTORY_GUARD=FAIL reason=shallow-history", [StringComparison]::Ordinal)) "The depth-$depth shallow history failure did not identify the missing complete history. Output: $shallowText"
+        Write-Host ("Shallow clone depth={0}: guard exit={1}, failure message matched; clone={2:N3}s, guard={3:N3}s." -f $depth, $shallowResult.ExitCode, $cloneTimer.Elapsed.TotalSeconds, $guardTimer.Elapsed.TotalSeconds)
+
+        $unshallowTimer = [Diagnostics.Stopwatch]::StartNew()
+        $unshallowResult = Invoke-Git @("-C", $shallowRoot, "fetch", "--unshallow")
+        $unshallowTimer.Stop()
+        Assert-Contract ($unshallowResult.ExitCode -eq 0) "Could not unshallow the depth-$depth disposable clone: $($unshallowResult.Output -join [Environment]::NewLine)"
+        $unshallowedState = Invoke-Git @("-C", $shallowRoot, "rev-parse", "--is-shallow-repository")
+        Assert-Contract ($unshallowedState.ExitCode -eq 0 -and $unshallowedState.Output.Trim() -eq "false") "The unshallowed depth-$depth clone did not report complete Git state: $($unshallowedState.Output -join [Environment]::NewLine)"
+        $unshallowedResult = Invoke-HistoryGuard -WorkingDirectory $shallowRoot
+        Assert-Contract ($unshallowedResult.ExitCode -eq 0) "The history guard rejected the unshallowed depth-$depth clone: $($unshallowedResult.Output -join [Environment]::NewLine)"
+        Write-Host ("Unshallow control depth={0}: guard exit=0; fetch={1:N3}s." -f $depth, $unshallowTimer.Elapsed.TotalSeconds)
+    }
+
     $historyOutput = @(& $shellPath @historyArguments 2>&1)
     $historyExitCode = $LASTEXITCODE
     $historyText = $historyOutput -join [Environment]::NewLine

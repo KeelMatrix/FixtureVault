@@ -36,7 +36,7 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore KeelMatrix.FixtureVault.sln
 
-      - name: Check complete commit history
+      - name: Check complete non-shallow commit history
         shell: bash
         run: bash .githooks/check-history
 

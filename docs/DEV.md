@@ -20,7 +20,7 @@ dotnet format KeelMatrix.FixtureVault.sln --verify-no-changes
 
 Use `KEELMATRIX_NO_TELEMETRY=1` during local validation when a command runs the tool and should not emit telemetry.
 
-History validation is fail-closed and uses the same `.githooks/check-history` policy in ordinary CI, history hygiene, and release validation. Authors must be KeelMatrix or Dependabot; committers may additionally be GitHub's web-flow identity. Run the disposable identity and commit-message regression corpus with:
+History validation is fail-closed and uses the same `.githooks/check-history` policy in ordinary CI, history hygiene, and release validation. The guard first rejects shallow repositories, then checks complete reachable history. Authors must be KeelMatrix or Dependabot; committers may additionally be GitHub's web-flow identity. The CI, history-hygiene, and release workflows provide complete history with `fetch-depth: 0`. Run the disposable identity, commit-message, shallow-clone, and unshallow-control regression corpus with:
 
 ```powershell
 pwsh -NoProfile -File ./scripts/test-history-gate.ps1

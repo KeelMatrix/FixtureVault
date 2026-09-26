@@ -45,10 +45,14 @@ function Assert-AuditBeforePack {
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $workflowPath = Join-Path $repositoryRoot ".github/workflows/release.yml"
 $ciWorkflowPath = Join-Path $repositoryRoot ".github/workflows/ci.yml"
+$historyWorkflowPath = Join-Path $repositoryRoot ".github/workflows/history-hygiene.yml"
+$historyGuardPath = Join-Path $repositoryRoot ".githooks/check-history"
 $tagScriptPath = Join-Path $repositoryRoot "scripts/validate-release-tag.ps1"
 $changelogScriptPath = Join-Path $repositoryRoot "scripts/test-changelog-contract.ps1"
 $workflow = [IO.File]::ReadAllText($workflowPath)
 $ciWorkflow = [IO.File]::ReadAllText($ciWorkflowPath)
+$historyWorkflow = [IO.File]::ReadAllText($historyWorkflowPath)
+$historyGuard = [IO.File]::ReadAllText($historyGuardPath)
 
 $validationMatch = [Text.RegularExpressions.Regex]::Match(
     $workflow,
@@ -71,8 +75,8 @@ Assert-JobTimeout "Release validate-release" $validation 45
 Assert-JobTimeout "Release publish" $publication 20
 Assert-Contract (-not $validation.Contains("id-token: write", [StringComparison]::Ordinal)) "The release validation job must not request id-token: write."
 Assert-Contract ($validation.Contains("dotnet restore", [StringComparison]::Ordinal)) "Release validation must restore the solution."
-Assert-Contract ($validation.Contains("fetch-depth: 0", [StringComparison]::Ordinal)) "Release validation must check out complete history for repository-wide gates."
-Assert-Contract ($validation.Contains("sh .githooks/check-history", [StringComparison]::Ordinal)) "Release validation must enforce the commit-history gate over every reachable commit."
+Assert-Contract ($validation.Contains("fetch-depth: 0", [StringComparison]::Ordinal)) "Release validation must check out complete non-shallow history for repository-wide gates."
+Assert-Contract ($validation.Contains("sh .githooks/check-history", [StringComparison]::Ordinal)) "Release validation must enforce the non-shallow commit-history gate over every reachable commit."
 Assert-Contract ($validation.Contains("dotnet build", [StringComparison]::Ordinal)) "Release validation must build the solution."
 Assert-Contract ($validation.Contains("dotnet test", [StringComparison]::Ordinal)) "Release validation must test the solution."
 Assert-Contract ($validation.Contains("dotnet pack", [StringComparison]::Ordinal)) "Release validation must pack the tool."
@@ -86,8 +90,12 @@ Assert-Contract ($validation.Contains('$expectedCommit = (git rev-parse HEAD).Tr
 Assert-Contract ($validation.Contains('-ExpectedCommit $expectedCommit', [StringComparison]::Ordinal)) "Release package inspection must validate exact repository provenance."
 Assert-Contract ($validation.Contains("package-consumer-smoke.ps1", [StringComparison]::Ordinal)) "Release validation must run the package consumer smoke."
 Assert-Contract ($validation.Contains("audit-vulnerabilities.ps1", [StringComparison]::Ordinal)) "Release validation must run the repository vulnerability audit."
-Assert-Contract ($ciWorkflow.Contains(".githooks/check-history", [StringComparison]::Ordinal)) "Ordinary CI must enforce the same complete-history guard as release validation."
-Assert-Contract ($ciWorkflow.Contains("fetch-depth: 0", [StringComparison]::Ordinal)) "Ordinary CI must provide complete history to the history guard."
+Assert-Contract ($ciWorkflow.Contains(".githooks/check-history", [StringComparison]::Ordinal)) "Ordinary CI must enforce the same non-shallow complete-history guard as release validation."
+Assert-Contract ($ciWorkflow.Contains("fetch-depth: 0", [StringComparison]::Ordinal)) "Ordinary CI must provide complete non-shallow history to the history guard."
+Assert-Contract ($historyWorkflow.Contains(".githooks/check-history", [StringComparison]::Ordinal)) "History hygiene must enforce the same non-shallow complete-history guard as ordinary CI and release validation."
+Assert-Contract ($historyWorkflow.Contains("fetch-depth: 0", [StringComparison]::Ordinal)) "History hygiene must provide complete non-shallow history to the history guard."
+Assert-Contract ($historyGuard.Contains("git rev-parse --is-shallow-repository", [StringComparison]::Ordinal)) "The history guard must detect shallow state from Git itself."
+Assert-Contract ($historyGuard.Contains("HISTORY_GUARD=FAIL reason=shallow-history", [StringComparison]::Ordinal)) "The history guard must report an honest shallow-history failure."
 Assert-Contract ($validation.Contains('KeelMatrix.FixtureVault.${{ steps.release-version.outputs.version }}.nupkg', [StringComparison]::Ordinal)) "Release validation must upload the primary package by exact name."
 Assert-Contract ($validation.Contains('KeelMatrix.FixtureVault.${{ steps.release-version.outputs.version }}.snupkg', [StringComparison]::Ordinal)) "Release validation must upload the symbols package by exact name."
 Assert-Contract ($validation.Contains('RELEASE_TAG: ${{ github.ref_name }}', [StringComparison]::Ordinal)) "The release ref must be passed through RELEASE_TAG."

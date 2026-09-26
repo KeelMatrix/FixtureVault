@@ -23,7 +23,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check complete commit history
+      - name: Check complete non-shallow commit history
         shell: bash
         run: sh .githooks/check-history
 

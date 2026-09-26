@@ -10,6 +10,16 @@ allowed_committer_keelmatrix='KeelMatrix|keelmatrix@gmail.com'
 allowed_committer_dependabot='dependabot[bot]|49699333+dependabot[bot]@users.noreply.github.com'
 allowed_committer_github='GitHub|noreply@github.com'
 
+if ! shallow_state=$(git rev-parse --is-shallow-repository 2>/dev/null); then
+  printf '%s\n' 'HISTORY_GUARD=FAIL reason=not-a-git-repository' >&2
+  exit 1
+fi
+
+if [ "$shallow_state" = 'true' ]; then
+  printf '%s\n' 'HISTORY_GUARD=FAIL reason=shallow-history' >&2
+  exit 1
+fi
+
 if [ "$#" -eq 0 ]; then
   commits=$(git rev-list --all)
 elif [ "$#" -eq 2 ]; then

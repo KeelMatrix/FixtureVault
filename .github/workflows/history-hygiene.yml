@@ -16,7 +16,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check all reachable commits
+      - name: Check complete non-shallow reachable history
         shell: bash
         run: sh .githooks/check-history
 
