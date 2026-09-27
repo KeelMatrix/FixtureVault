@@ -41,13 +41,20 @@ function Invoke-CommandCaptureWithTimeout {
     )
 
     $errorPath = $OutputPath + ".stderr"
-    $process = Start-Process -FilePath $Executable `
-        -WorkingDirectory $WorkingDirectory `
-        -ArgumentList $Arguments `
-        -WindowStyle Hidden `
-        -RedirectStandardOutput $OutputPath `
-        -RedirectStandardError $errorPath `
-        -PassThru
+    $startProcessParameters = @{
+        FilePath               = $Executable
+        WorkingDirectory       = $WorkingDirectory
+        ArgumentList           = $Arguments
+        RedirectStandardOutput = $OutputPath
+        RedirectStandardError  = $errorPath
+        PassThru                = $true
+    }
+    if ($IsWindows)
+    {
+        $startProcessParameters.WindowStyle = "Hidden"
+    }
+
+    $process = Start-Process @startProcessParameters
     if (-not $process.WaitForExit($TimeoutMilliseconds)) {
         $process.Kill()
         $process.WaitForExit()
