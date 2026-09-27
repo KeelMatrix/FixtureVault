@@ -1800,6 +1800,22 @@ internal static class SafeFileWalker
                 try
                 {
                     BeforeEnumerationForTesting?.Invoke(directory.RelativePath);
+                    // The directory stream is bound to the descriptor, but the pathname is
+                    // still part of the authorization contract. Validate it after the test seam
+                    // (which models a replacement during enumeration) and before consuming any
+                    // entries. Run the second seam even when validation fails so the deterministic
+                    // replacement-and-restoration schedule is fully exercised before failing closed.
+                    bool trustedPathAfterEnumerationHook = IsTrustedCurrentDirectory(
+                        boundary,
+                        directory.RelativePath);
+                    AfterEnumerationOpenedForTesting?.Invoke(directory.RelativePath);
+                    if (!trustedPathAfterEnumerationHook)
+                    {
+                        return new WalkResult(files, reparsePaths, new ScanError(
+                            "FV-E002",
+                            "A configured fixture root could not be inspected completely."));
+                    }
+
                     while (true)
                     {
                         IntPtr entry = SafePathBoundary.ReadDirectoryEntry(directoryStream);
@@ -1852,6 +1868,20 @@ internal static class SafeFileWalker
                                     files,
                                     reparsePaths,
                                     new ScanError(FixtureVaultContract.IgnoredPathMatchingErrorCode, "Ignored path matching could not be completed safely."));
+                            }
+
+                            // A callback can replace the queued directory or one of its
+                            // ancestors after the child descriptor was opened. The descriptor is
+                            // safe to hold, but accepting the changed pathname would make the
+                            // scan report a state different from the authorized tree. Require the
+                            // current pathname to resolve through the same trusted root before
+                            // queueing the child.
+                            if (!IsTrustedCurrentDirectory(boundary, relativePath))
+                            {
+                                SafePathBoundary.CloseDescriptor(childDescriptor);
+                                return new WalkResult(files, reparsePaths, new ScanError(
+                                    "FV-E002",
+                                    "A configured fixture root could not be inspected completely."));
                             }
 
                             if (directoryStatus == GlobMatchStatus.Match)
@@ -2075,6 +2105,19 @@ internal static class SafeFileWalker
         catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or NotSupportedException)
         {
             return false;
+        }
+        finally
+        {
+            handle?.Dispose();
+        }
+    }
+
+    private static bool IsTrustedCurrentDirectory(SafePathBoundary boundary, string relativePath)
+    {
+        SafeFileHandle? handle = null;
+        try
+        {
+            return boundary.TryOpenDirectory(relativePath, out handle) && handle is not null;
         }
         finally
         {

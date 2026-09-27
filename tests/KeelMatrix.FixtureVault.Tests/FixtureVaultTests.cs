@@ -2914,15 +2914,19 @@ public sealed class FixtureVaultTests
     [InlineData("UID")]
     public void Quoted_connection_string_indicators_do_not_own_following_siblings(string indicator)
     {
-        string fixture = $"{indicator}=\"local\" Password={SensitiveValue}";
         var genericDetector = new RedactionSensitiveDataDetector(
             new RegexReplaceRedactor(GenericCredentialKeyGrammar.FallbackAssignmentPattern, "$1=<redacted>"));
         var connectionStringDetector = new RedactionSensitiveDataDetector(new ConnectionStringPasswordRedactor());
 
-        Assert.True(genericDetector.IsSensitive(fixture));
-        Assert.True(genericDetector.IsSensitive(JsonSerializer.Serialize(fixture)));
-        Assert.True(connectionStringDetector.IsSensitive(fixture));
-        Assert.True(connectionStringDetector.IsSensitive(JsonSerializer.Serialize(fixture)));
+        foreach (char quote in new[] { '\"', '\'' })
+        {
+            string fixture = $"{indicator}={quote}local{quote} Password={SensitiveValue}";
+
+            Assert.True(genericDetector.IsSensitive(fixture));
+            Assert.True(genericDetector.IsSensitive(JsonSerializer.Serialize(fixture)));
+            Assert.True(connectionStringDetector.IsSensitive(fixture));
+            Assert.True(connectionStringDetector.IsSensitive(JsonSerializer.Serialize(fixture)));
+        }
     }
 
     [Fact]
@@ -2939,6 +2943,41 @@ public sealed class FixtureVaultTests
         foreach (string representation in representations)
         {
             AssertIncompleteQuotedRepresentation(repositoryText: representation);
+        }
+    }
+
+    [Fact]
+    public void Incomplete_quoted_connection_string_boundaries_fail_closed_across_indicators_quotes_and_terminators()
+    {
+        string[] indicators =
+        [
+            "Application Name",
+            "Data Source",
+            "Database",
+            "Initial Catalog",
+            "Integrated Security",
+            "Server",
+            "User ID",
+            "UID"
+        ];
+        string[] terminators = ["\n", "\r", "\r\n", ";", ",", " "];
+        const string laterCredential = "Password=fixture-incomplete-secret-1234567890";
+
+        foreach (string indicator in indicators)
+        {
+            foreach (char quote in new[] { '\"', '\'' })
+            {
+                foreach (string terminator in terminators)
+                {
+                    string raw = $"{indicator}={quote}unterminated{terminator}{laterCredential}";
+                    AssertIncompleteQuotedRepresentation(raw);
+                    AssertIncompleteQuotedRepresentation(JsonSerializer.Serialize(raw));
+                }
+
+                string doubledQuoteAtBoundary = $"{indicator}={quote}unterminated{quote}{quote}\n{laterCredential}";
+                AssertIncompleteQuotedRepresentation(doubledQuoteAtBoundary);
+                AssertIncompleteQuotedRepresentation(JsonSerializer.Serialize(doubledQuoteAtBoundary));
+            }
         }
     }
 
@@ -2987,6 +3026,92 @@ public sealed class FixtureVaultTests
         Assert.False(apiKeyDetector.IsSensitive(JsonSerializer.Serialize("?api_key=\nordinary output")));
         Assert.True(apiKeyDetector.IsSensitive("?api_key= mode=fixture-value"));
         Assert.True(apiKeyDetector.IsSensitive(JsonSerializer.Serialize("?api_key= mode=fixture-value")));
+    }
+
+    [Fact]
+    public void Query_boundaries_are_raw_before_decode_for_generic_and_api_key_adapters()
+    {
+        var genericDetector = new RedactionSensitiveDataDetector(
+            new RegexReplaceRedactor(GenericCredentialKeyGrammar.FallbackAssignmentPattern, "$1=<redacted>"));
+        var apiKeyDetector = new RedactionSensitiveDataDetector(new ApiKeyRedactor());
+        string[] genericAliases =
+        [
+            "ApiKey",
+            "api_key",
+            "api-key",
+            "ClientSecret",
+            "client_secret",
+            "client-secret",
+            "Password",
+            "Pwd",
+            "Secret",
+            "Token"
+        ];
+        string[] apiKeyAliases = ["api_key", "api-key", "apikey", "x-api-key", "x-api_key"];
+        string[] cleanValues =
+        [
+            "",
+            "   ",
+            "\t",
+            "\r",
+            "\n",
+            "\r\n",
+            "&next=ordinary",
+            "#fragment",
+            "***",
+            "<redacted>",
+            "[redacted]",
+            "redacted",
+            "masked",
+            "removed",
+            "''",
+            "\"\""
+        ];
+        string[] sensitiveValues =
+        [
+            "mode=fixture-value",
+            " mode=fixture-value",
+            "mode%3Dfixture-value",
+            "%20mode%3Dfixture-value",
+            "fixture%26next%3Dvalue",
+            "fixture%23fragment",
+            "'fixture-query-secret-1234567890'",
+            "%27fixture-query-secret-1234567890%27"
+        ];
+
+        foreach (string alias in genericAliases)
+        {
+            foreach (string value in cleanValues)
+            {
+                string query = $"https://example.invalid/?{alias}={value}";
+                Assert.False(genericDetector.IsSensitive(query));
+                Assert.False(genericDetector.IsSensitive(JsonSerializer.Serialize(query)));
+            }
+
+            foreach (string value in sensitiveValues)
+            {
+                string query = $"https://example.invalid/?{alias}={value}";
+                Assert.True(genericDetector.IsSensitive(query));
+                Assert.True(genericDetector.IsSensitive(JsonSerializer.Serialize(query)));
+            }
+        }
+
+        foreach (string alias in apiKeyAliases)
+        {
+            foreach (string value in cleanValues)
+            {
+                string query = $"https://example.invalid/?{alias}={value}";
+                Assert.False(apiKeyDetector.IsSensitive(query));
+                Assert.False(apiKeyDetector.IsSensitive(JsonSerializer.Serialize(query)));
+            }
+
+            foreach (string value in sensitiveValues)
+            {
+                string query = $"https://example.invalid/?{alias}={value}";
+                Assert.True(apiKeyDetector.IsSensitive(query));
+                Assert.True(apiKeyDetector.IsSensitive(JsonSerializer.Serialize(query)));
+            }
+        }
     }
 
     [Theory]
