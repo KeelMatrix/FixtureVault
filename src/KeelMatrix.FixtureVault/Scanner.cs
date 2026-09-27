@@ -5,6 +5,7 @@ using KeelMatrix.Redaction;
 
 namespace KeelMatrix.FixtureVault;
 
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000", Justification = "The scan boundary is disposed in the finally block after the scanner completes.")]
 internal sealed class FixtureScanner
 {
     private const long MaximumTotalBytes = 128 * 1024 * 1024;
@@ -28,6 +29,20 @@ internal sealed class FixtureScanner
         Action? afterFixtureInitialLengthRead = null)
     {
         bool strict = strictOverride || policy.Ci?.Strict == true;
+        SafePathBoundary? ownedBoundary = null;
+        IDisposable? boundaryScope = null;
+        if (SafePathBoundaryContext.Current is null)
+        {
+            if (!SafePathBoundary.TryCreate(repositoryRoot, out ownedBoundary) || ownedBoundary is null)
+            {
+                return CompleteWithErrors(
+                    [new ScanError("FV-E002", "The repository boundary could not be established safely.")],
+                    strict);
+            }
+
+            boundaryScope = SafePathBoundaryContext.Push(ownedBoundary);
+        }
+
         try
         {
             return ScanCore(
@@ -49,6 +64,11 @@ internal sealed class FixtureScanner
                     FixtureVaultContract.DiagnosticBudgetErrorCode,
                     FixtureVaultContract.DiagnosticBudgetErrorMessage)],
                 strict);
+        }
+        finally
+        {
+            boundaryScope?.Dispose();
+            ownedBoundary?.Dispose();
         }
     }
 
@@ -227,7 +247,7 @@ internal sealed class FixtureScanner
 
             SafeFileReadStatus readStatus = SafeFileReader.TryReadBytes(
                 repositoryRoot,
-                file.FullPath,
+                file,
                 policy.MaxFileBytes,
                 MaximumTotalBytes - totalBytesRead,
                 out byte[] bytes,

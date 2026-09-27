@@ -44,6 +44,7 @@ function Invoke-CommandCaptureWithTimeout {
     $process = Start-Process -FilePath $Executable `
         -WorkingDirectory $WorkingDirectory `
         -ArgumentList $Arguments `
+        -WindowStyle Hidden `
         -RedirectStandardOutput $OutputPath `
         -RedirectStandardError $errorPath `
         -PassThru

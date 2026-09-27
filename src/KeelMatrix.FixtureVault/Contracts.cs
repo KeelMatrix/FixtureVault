@@ -379,6 +379,17 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
 
         foreach (string representation in ReadRepresentations(text))
         {
+            if (redactor is AzureKeyLikeRedactor &&
+                TryClassifyAzureAssignments(representation, out bool hasAzureAssignment))
+            {
+                if (hasAzureAssignment)
+                {
+                    return true;
+                }
+
+                continue;
+            }
+
             // Header and cookie grammar remains line-scoped. JSON string values are evaluated
             // after the container has been decoded once.
             foreach (string line in representation.Split('\n'))
@@ -634,45 +645,58 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
                    searchIndex,
                    out GenericCredentialKeyGrammar.AssignmentPrefixMatch prefix))
         {
-            int valueStart = prefix.ValueStart;
-            while (valueStart < text.Length && char.IsWhiteSpace(text[valueStart]))
-            {
-                valueStart++;
-            }
-
             string value;
             int assignmentEnd;
-            if (valueStart > prefix.ValueStart &&
-                valueStart < text.Length &&
-                LooksLikeSiblingAssignment(text, valueStart))
+            bool isQueryAssignment = IsQueryAssignment(text, prefix.Start);
+            if (isQueryAssignment)
             {
-                value = string.Empty;
+                // Query ownership is established from the raw value start. Raw &, #, CR, and LF
+                // are the only boundaries; whitespace and assignment-looking text remain query
+                // data until the bounded value has been selected.
                 assignmentEnd = prefix.ValueStart;
-            }
-            else if (IsQueryAssignment(text, prefix.Start))
-            {
-                assignmentEnd = valueStart;
                 value = ReadQueryValue(text, ref assignmentEnd);
-            }
-            else if (valueStart < text.Length && text[valueStart] is '"' or '\'')
-            {
-                assignmentEnd = valueStart;
-                value = ReadQuotedValue(text, ref assignmentEnd, text[valueStart]);
             }
             else
             {
-                assignmentEnd = valueStart;
-                while (assignmentEnd < text.Length &&
-                       !IsGenericAssignmentBoundary(text[assignmentEnd]))
+                int valueStart = prefix.ValueStart;
+                while (valueStart < text.Length && char.IsWhiteSpace(text[valueStart]))
                 {
-                    assignmentEnd++;
+                    valueStart++;
                 }
 
-                value = text[valueStart..assignmentEnd];
+                if (valueStart > prefix.ValueStart &&
+                    valueStart < text.Length &&
+                    LooksLikeSiblingAssignment(text, valueStart))
+                {
+                    value = string.Empty;
+                    assignmentEnd = prefix.ValueStart;
+                }
+                else if (valueStart < text.Length && text[valueStart] is '"' or '\'')
+                {
+                    assignmentEnd = valueStart;
+                    QuotedValueParseResult quoted = ReadQuotedValue(text, ref assignmentEnd, text[valueStart]);
+                    if (!quoted.Completed)
+                    {
+                        throw new IncompleteCredentialRepresentationException();
+                    }
+
+                    value = quoted.Value;
+                }
+                else
+                {
+                    assignmentEnd = valueStart;
+                    while (assignmentEnd < text.Length &&
+                           !IsGenericAssignmentBoundary(text[assignmentEnd]))
+                    {
+                        assignmentEnd++;
+                    }
+
+                    value = text[valueStart..assignmentEnd];
+                }
             }
 
             classifiedSpans.Add(new ClassifiedSpan(prefix.Start, assignmentEnd - prefix.Start));
-            bool isEmptyOrRedacted = IsQueryAssignment(text, prefix.Start)
+            bool isEmptyOrRedacted = isQueryAssignment
                 ? IsEmptyOrAlreadyRedactedQueryValue(value)
                 : IsEmptyOrAlreadyRedactedSemanticValue(value);
             if (!isEmptyOrRedacted)
@@ -1098,7 +1122,13 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
             }
             else if (index < text.Length && text[index] is '"' or '\'')
             {
-                value = ReadQuotedValue(text, ref index, text[index]);
+                QuotedValueParseResult quoted = ReadQuotedValue(text, ref index, text[index]);
+                if (!quoted.Completed)
+                {
+                    throw new IncompleteCredentialRepresentationException();
+                }
+
+                value = quoted.Value;
             }
             else
             {
@@ -1198,7 +1228,13 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
             }
             else if (index < text.Length && text[index] is '"' or '\'')
             {
-                value = ReadQuotedValue(text, ref index, text[index]);
+                QuotedValueParseResult quoted = ReadQuotedValue(text, ref index, text[index]);
+                if (!quoted.Completed)
+                {
+                    throw new IncompleteCredentialRepresentationException();
+                }
+
+                value = quoted.Value;
             }
             else
             {
@@ -1271,9 +1307,9 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
         return metrics.Operations;
     }
 
-    private static string ReadQuotedValue(string text, ref int index, char quote)
+    private static QuotedValueParseResult ReadQuotedValue(string text, ref int index, char quote)
     {
-        int openingIndex = index++;
+        index++;
         var value = new System.Text.StringBuilder();
         while (index < text.Length)
         {
@@ -1287,16 +1323,14 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
                 }
 
                 index++;
-                return value.ToString();
+                return new QuotedValueParseResult(value.ToString(), Completed: true);
             }
 
             value.Append(text[index]);
             index++;
         }
 
-        // Preserve an unterminated delimiter in malformed input so it cannot become an empty
-        // credential through a partial parse.
-        return text[openingIndex] + value.ToString();
+        return new QuotedValueParseResult(value.ToString(), Completed: false);
     }
 
     private static bool IsEmptyOrAlreadyRedactedValue(string value) =>
@@ -1339,6 +1373,12 @@ internal sealed class RedactionSensitiveDataDetector(ITextRedactor redactor) : I
     private sealed record ParsedAssignment(string Name, string Value);
 
     private sealed record ParsedAssignmentSpan(string Name, string Value, int ValueStart, int End);
+
+    private readonly record struct QuotedValueParseResult(string Value, bool Completed);
+
+    private sealed class IncompleteCredentialRepresentationException : Exception
+    {
+    }
 
     private sealed class AssignmentParserMetrics
     {

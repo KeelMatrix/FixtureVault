@@ -34,6 +34,7 @@ internal sealed class SharedTelemetryReporter : IUsageTelemetry
     }
 }
 
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000", Justification = "The scan boundary is disposed by the surrounding using scope.")]
 internal static class FixtureVaultApplication
 {
     internal static int Run(
@@ -76,43 +77,62 @@ internal static class FixtureVaultApplication
             return RunInit(repositoryRoot, output, errorOutput);
         }
 
-        PolicyLoadResult policyResult = PolicyLoader.Load(repositoryRoot);
-        if (policyResult.Error is not null)
+        if (!SafePathBoundary.TryCreate(repositoryRoot, out SafePathBoundary? boundary) || boundary is null)
         {
             return RenderResult(
-                new ScanResult(new ScanReport { Errors = [policyResult.Error] }, 2, false),
+                new ScanResult(
+                    new ScanReport
+                    {
+                        Errors = [new ScanError("FV-E002", "The repository boundary could not be established safely.")]
+                    },
+                    2,
+                    false),
                 parsed.Options.Format,
                 output,
                 errorOutput);
         }
 
-        ScanResult result;
-        try
+        using (boundary)
+        using (SafePathBoundaryContext.Push(boundary))
         {
-            result = FixtureScanner.Scan(
-                repositoryRoot,
-                policyResult.Policy!,
-                parsed.Options.RootOverrides,
-                parsed.Options.StrictOverride,
-                additionalSensitiveDataDetectors: additionalSensitiveDataDetectors,
-                fileWalk: fileWalk,
-                afterFixtureInitialLengthRead: afterFixtureInitialLengthRead);
-        }
-        catch
-        {
-            result = new ScanResult(
-                new ScanReport { Errors = [new ScanError("FV-E999", "The scan failed before a trustworthy result could be produced.")] },
-                2,
-                false);
-        }
+            PolicyLoadResult policyResult = PolicyLoader.Load(repositoryRoot);
+            if (policyResult.Error is not null)
+            {
+                return RenderResult(
+                    new ScanResult(new ScanReport { Errors = [policyResult.Error] }, 2, false),
+                    parsed.Options.Format,
+                    output,
+                    errorOutput);
+            }
 
-        int exitCode = RenderResult(result, parsed.Options.Format, output, errorOutput);
-        if (result.Completed)
-        {
-            telemetry.RecordSuccessfulScan();
-        }
+            ScanResult result;
+            try
+            {
+                result = FixtureScanner.Scan(
+                    repositoryRoot,
+                    policyResult.Policy!,
+                    parsed.Options.RootOverrides,
+                    parsed.Options.StrictOverride,
+                    additionalSensitiveDataDetectors: additionalSensitiveDataDetectors,
+                    fileWalk: fileWalk,
+                    afterFixtureInitialLengthRead: afterFixtureInitialLengthRead);
+            }
+            catch
+            {
+                result = new ScanResult(
+                    new ScanReport { Errors = [new ScanError("FV-E999", "The scan failed before a trustworthy result could be produced.")] },
+                    2,
+                    false);
+            }
 
-        return exitCode;
+            int exitCode = RenderResult(result, parsed.Options.Format, output, errorOutput);
+            if (result.Completed)
+            {
+                telemetry.RecordSuccessfulScan();
+            }
+
+            return exitCode;
+        }
     }
 
     private static int RunInit(string repositoryRoot, TextWriter output, TextWriter errorOutput)

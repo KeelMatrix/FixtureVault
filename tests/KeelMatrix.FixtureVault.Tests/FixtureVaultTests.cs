@@ -954,6 +954,155 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
+    public void Replacing_an_ancestor_above_the_repository_root_cannot_switch_the_trusted_scan_boundary()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/inside.golden", "clean\n");
+
+        string originalParent = Path.GetDirectoryName(repository.Root)!;
+        string movedParent = originalParent + ".fixturevault-original";
+        string outsideRoot = Path.Combine(Path.GetTempPath(), "fixturevault-root-substitution", Guid.NewGuid().ToString("N"));
+        string outsideRepository = Path.Combine(outsideRoot, Path.GetFileName(repository.Root));
+        Directory.CreateDirectory(Path.Combine(outsideRepository, "tests"));
+        File.WriteAllText(
+            Path.Combine(outsideRepository, "tests", "outside.received.json"),
+            "outside-root-canary\n",
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        bool moved = false;
+        bool replaced = false;
+        FixtureFileWalk replacingWalk = (repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory) =>
+        {
+            if (!replaced)
+            {
+                Directory.Move(originalParent, movedParent);
+                moved = true;
+                CreateSymbolicDirectoryOrSkip(originalParent, outsideRoot);
+                replaced = true;
+            }
+
+            return SafeFileWalker.Walk(repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory);
+        };
+
+        try
+        {
+            int exitCode = repository.Run(
+                ["scan", "--format", "json"],
+                new RecordingTelemetry(),
+                out string output,
+                out string error,
+                fileWalk: replacingWalk);
+
+            Assert.True(replaced);
+            Assert.True(exitCode is 0 or 2);
+            Assert.Empty(error);
+            Assert.DoesNotContain("outside.received.json", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("outside-root-canary", output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (moved)
+            {
+                if (Directory.Exists(originalParent))
+                {
+                    Directory.Delete(originalParent);
+                }
+
+                if (Directory.Exists(movedParent))
+                {
+                    Directory.Move(movedParent, originalParent);
+                }
+            }
+
+            if (Directory.Exists(outsideRoot))
+            {
+                Directory.Delete(outsideRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void Replacement_and_restoration_around_enumeration_cannot_admit_outside_entries()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/inside.golden", "clean\n");
+
+        string fixtureRoot = Path.Combine(repository.Root, "tests");
+        string movedFixtureRoot = fixtureRoot + ".fixturevault-original";
+        string outsideRoot = Path.Combine(Path.GetTempPath(), "fixturevault-enumeration-substitution", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideRoot);
+        File.WriteAllText(
+            Path.Combine(outsideRoot, "outside.received.json"),
+            "outside-enumeration-canary\n",
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+        bool moved = false;
+        bool restored = false;
+        try
+        {
+            SafeFileWalker.BeforeEnumerationForTesting = relativePath =>
+            {
+                if (!moved && relativePath.Equals("tests", StringComparison.Ordinal))
+                {
+                    Directory.Move(fixtureRoot, movedFixtureRoot);
+                    moved = true;
+                    CreateSymbolicDirectoryOrSkip(fixtureRoot, outsideRoot);
+                }
+            };
+            SafeFileWalker.AfterEnumerationOpenedForTesting = relativePath =>
+            {
+                if (moved && !restored && relativePath.Equals("tests", StringComparison.Ordinal))
+                {
+                    Directory.Delete(fixtureRoot);
+                    Directory.Move(movedFixtureRoot, fixtureRoot);
+                    restored = true;
+                }
+            };
+
+            int exitCode = repository.Run(
+                ["scan", "--format", "json"],
+                new RecordingTelemetry(),
+                out string output,
+                out string error);
+
+            Assert.True(moved);
+            Assert.True(restored);
+            Assert.Equal(2, exitCode);
+            Assert.Empty(error);
+            Assert.DoesNotContain("outside.received.json", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("outside-enumeration-canary", output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            SafeFileWalker.BeforeEnumerationForTesting = null;
+            SafeFileWalker.AfterEnumerationOpenedForTesting = null;
+            if (moved && !restored)
+            {
+                if (Directory.Exists(fixtureRoot))
+                {
+                    Directory.Delete(fixtureRoot);
+                }
+
+                if (Directory.Exists(movedFixtureRoot))
+                {
+                    Directory.Move(movedFixtureRoot, fixtureRoot);
+                }
+            }
+
+            if (Directory.Exists(outsideRoot))
+            {
+                Directory.Delete(outsideRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void Fixture_growth_after_the_initial_length_check_is_reported_as_a_changed_read()
     {
         using var repository = new TemporaryRepository();
@@ -2774,6 +2923,70 @@ public sealed class FixtureVaultTests
         Assert.True(genericDetector.IsSensitive(JsonSerializer.Serialize(fixture)));
         Assert.True(connectionStringDetector.IsSensitive(fixture));
         Assert.True(connectionStringDetector.IsSensitive(JsonSerializer.Serialize(fixture)));
+    }
+
+    [Fact]
+    public void Incomplete_quoted_connection_string_values_fail_closed_without_masking_later_credentials()
+    {
+        const string raw = "Server=\"unterminated\nPassword=fixture-incomplete-secret-1234567890";
+        string[] representations =
+        [
+            raw,
+            JsonSerializer.Serialize(raw),
+            JsonSerializer.Serialize(new { message = raw })
+        ];
+
+        foreach (string representation in representations)
+        {
+            AssertIncompleteQuotedRepresentation(repositoryText: representation);
+        }
+    }
+
+    private static void AssertIncompleteQuotedRepresentation(string repositoryText)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/incomplete.golden", repositoryText + "\n");
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(
+            ["scan", "--format", "json"],
+            telemetry,
+            out string output,
+            out string error);
+        using JsonDocument report = JsonDocument.Parse(output);
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(error);
+        Assert.Equal(0, telemetry.SuccessfulScans);
+        Assert.Contains(
+            report.RootElement.GetProperty("errors").EnumerateArray(),
+            item => item.GetProperty("code").GetString() == FixtureVaultContract.SensitiveDataDetectorErrorCode);
+        Assert.DoesNotContain("fixture-incomplete-secret-1234567890", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Generic_query_values_are_bounded_before_whitespace_and_sibling_classification()
+    {
+        var genericDetector = new RedactionSensitiveDataDetector(
+            new RegexReplaceRedactor(GenericCredentialKeyGrammar.FallbackAssignmentPattern, "$1=<redacted>"));
+        var apiKeyDetector = new RedactionSensitiveDataDetector(new ApiKeyRedactor());
+
+        string emptyQuery = "?token=\nordinary output";
+        string assignmentLookingQuery = "?token= mode=fixture-value";
+        string encodedAssignmentLookingQuery = "?token=%20mode%3Dfixture-value";
+
+        Assert.False(genericDetector.IsSensitive(emptyQuery));
+        Assert.False(genericDetector.IsSensitive(JsonSerializer.Serialize(emptyQuery)));
+        Assert.True(genericDetector.IsSensitive(assignmentLookingQuery));
+        Assert.True(genericDetector.IsSensitive(JsonSerializer.Serialize(assignmentLookingQuery)));
+        Assert.True(genericDetector.IsSensitive(encodedAssignmentLookingQuery));
+        Assert.True(genericDetector.IsSensitive(JsonSerializer.Serialize(encodedAssignmentLookingQuery)));
+
+        Assert.False(apiKeyDetector.IsSensitive("?api_key=\nordinary output"));
+        Assert.False(apiKeyDetector.IsSensitive(JsonSerializer.Serialize("?api_key=\nordinary output")));
+        Assert.True(apiKeyDetector.IsSensitive("?api_key= mode=fixture-value"));
+        Assert.True(apiKeyDetector.IsSensitive(JsonSerializer.Serialize("?api_key= mode=fixture-value")));
     }
 
     [Theory]
