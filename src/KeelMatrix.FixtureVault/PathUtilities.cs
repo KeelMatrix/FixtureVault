@@ -192,6 +192,24 @@ internal static class PathUtilities
             || normalizedCandidate.StartsWith(normalizedParent, comparison);
     }
 
+    internal static string ToWindowsHandlePath(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return path;
+        }
+
+        string fullPath = Path.GetFullPath(path);
+        if (fullPath.StartsWith("\\\\?\\", StringComparison.Ordinal))
+        {
+            return fullPath;
+        }
+
+        return fullPath.StartsWith("\\\\", StringComparison.Ordinal)
+            ? "\\\\?\\UNC\\" + fullPath[2..]
+            : "\\\\?\\" + fullPath;
+    }
+
     internal static string NormalizeRelative(string repositoryRoot, string fullPath)
     {
         string relative = Path.GetRelativePath(repositoryRoot, fullPath)
@@ -873,7 +891,7 @@ internal sealed class SafePathBoundary : IDisposable
 
     private static SafeFileHandle CreateWindowsHandle(string path, uint flags) =>
         CreateFile(
-            path,
+            PathUtilities.ToWindowsHandlePath(path),
             GenericRead,
             FileShareRead | FileShareWrite | FileShareDelete,
             IntPtr.Zero,
@@ -1272,7 +1290,7 @@ internal static class SafeFileReader
         try
         {
             handle = File.OpenHandle(
-                fullPath,
+                PathUtilities.ToWindowsHandlePath(fullPath),
                 FileMode.Open,
                 FileAccess.Read,
                 FileShare.ReadWrite,
