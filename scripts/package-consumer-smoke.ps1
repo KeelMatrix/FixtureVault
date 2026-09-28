@@ -76,27 +76,41 @@ function Invoke-CommandCaptureWithTimeout {
 
     Assert-TelemetrySuppressed
     $errorPath = $OutputPath + ".stderr"
-    $startProcessParameters = @{
-        FilePath               = $Executable
-        WorkingDirectory       = $WorkingDirectory
-        ArgumentList           = $Arguments
-        RedirectStandardOutput = $OutputPath
-        RedirectStandardError  = $errorPath
-        PassThru                = $true
-    }
-    if ($IsWindows)
-    {
-        $startProcessParameters.WindowStyle = "Hidden"
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $Executable
+    $startInfo.WorkingDirectory = $WorkingDirectory
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    foreach ($argument in $Arguments) {
+        [void]$startInfo.ArgumentList.Add($argument)
     }
 
-    $process = Start-Process @startProcessParameters
-    if (-not $process.WaitForExit($TimeoutMilliseconds)) {
-        $process.Kill()
-        $process.WaitForExit()
-        throw "Command exceeded the ${TimeoutMilliseconds}ms package-smoke timeout: $Executable $($Arguments -join ' ')"
-    }
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) {
+            throw "Could not start child command '$Executable'."
+        }
 
-    return $process.ExitCode
+        $standardOutputTask = $process.StandardOutput.ReadToEndAsync()
+        $standardErrorTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+            $process.Kill()
+            $process.WaitForExit()
+            throw "Command exceeded the ${TimeoutMilliseconds}ms package-smoke timeout: $Executable $($Arguments -join ' ')"
+        }
+
+        $standardOutput = $standardOutputTask.GetAwaiter().GetResult()
+        $standardError = $standardErrorTask.GetAwaiter().GetResult()
+        [IO.File]::WriteAllText($OutputPath, $standardOutput, [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($errorPath, $standardError, [Text.UTF8Encoding]::new($false))
+        return $process.ExitCode
+    }
+    finally {
+        $process.Dispose()
+    }
 }
 
 $resolvedPackage = (Resolve-Path -LiteralPath $PackagePath).Path
