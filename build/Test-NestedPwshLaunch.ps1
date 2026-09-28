@@ -45,7 +45,7 @@ function Get-LaunchViolations([string]$Path) {
         }
 
         if ($commandName -eq 'Start-Process' -and
-            $source -notmatch '(?i)(?:-WindowStyle\s+[''"]?Hidden|CreateNoWindow|NoNewWindow)') {
+            $source -notmatch '(?i)(?:-WindowStyle\s+[''"]?Hidden|(?:\.)?WindowStyle\s*=\s*[''"]?Hidden|CreateNoWindow|NoNewWindow)') {
             [void]$violations.Add("${Path}:$($command.Extent.StartLineNumber): Start-Process lacks hidden-window containment")
         }
     }
