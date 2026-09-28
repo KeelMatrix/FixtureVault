@@ -907,8 +907,13 @@ public sealed class FixtureVaultTests
         using var repository = new TemporaryRepository();
         repository.WritePolicy();
         string fixturePath = Path.Combine(repository.Root, "tests", "replacement.golden");
+        string ordinaryReplacementPath = Path.Combine(repository.Root, "ordinary-replacement.tmp");
         string ordinaryCanary = "ordinary-file-replacement-canary";
         repository.WriteText("tests/replacement.golden", "clean\n");
+        File.WriteAllText(
+            ordinaryReplacementPath,
+            ordinaryCanary,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         bool replaced = false;
 
         FixtureFileWalk replacingWalk = (repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory) =>
@@ -918,10 +923,7 @@ public sealed class FixtureVaultTests
             {
                 replaced = true;
                 File.Delete(fixturePath);
-                File.WriteAllText(
-                    fixturePath,
-                    ordinaryCanary,
-                    new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+                File.Move(ordinaryReplacementPath, fixturePath);
             }
 
             return result;
