@@ -142,14 +142,18 @@ internal static class CommandLineParser
               logical path-work units shared by all active roots and repository-wide path-policy
               discovery. Every directory entry and every path component/ancestor validation uses
               the same charge on every supported operating system.
-              Exhaustion returns exit code 2; active-root exhaustion reports FV-E003 and
-              repository-wide exhaustion reports FV-E015.
+              Exhaustion is distinct from an outside-path result and returns exit code 2;
+              active-root exhaustion reports FV-E003, while repository-wide exhaustion or
+              manifest containment exhaustion reports FV-E015. Exhaustion never becomes
+              FV008 or malformed-manifest FV-E011, and it never records successful telemetry.
 
             Classification:
               Physical identity may deduplicate traversal roots, but classification is complete
               for every distinct eligible repository-relative path alias, including hard links.
-              Manifest activeBaselines entries use exact repository-relative spelling; portability
-              normalization is used only to group FV003 collisions.
+              Manifest activeBaselines entries use exact repository-relative spelling after
+              separator canonicalization only (backslash becomes slash). Dot segments,
+              duplicate/trailing separators, leading ./, case, and Unicode normalization
+              remain distinct. Portability normalization is used only to group FV003 collisions.
 
             Exit codes:
               0  Scan completed without policy-blocking findings.

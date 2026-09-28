@@ -1,4 +1,4 @@
-﻿# FixtureVault Development
+# FixtureVault Development
 
 This guide covers repository-local validation and package-consumer checks for FixtureVault contributors and maintainers. Consumer installation and tool usage are documented in the [README](https://github.com/KeelMatrix/FixtureVault#readme). For vulnerability reporting, see [SECURITY.md](../SECURITY.md).
 
@@ -26,8 +26,9 @@ History validation is fail-closed and uses the same `.githooks/check-history` po
 pwsh -NoProfile -File ./scripts/test-history-gate.ps1
 ```
 
-The safety regressions cover trusted-boundary replacement during active-root and repository-wide discovery, hard-linked
-fixture aliases, exact manifest spelling, POSIX directory-stream errors at first/middle/final positions for active-root and
+The safety regressions cover trusted-boundary identity replacement during active-root and repository-wide discovery,
+including ordinary same-name directories, hard-linked fixture aliases, separator-only manifest spelling, and rejection of
+dot/duplicate/trailing-separator variants. POSIX directory-stream errors at first/middle/final positions for active-root and
 repository-wide walks, 64/65 policy and CLI root counts, nested/overlapping roots, and the aggregate diagnostic and
 filesystem traversal bounds. The filesystem budget is one 100,000-entry plus 1,000,000-logical-path-work limit across all walks; every
 directory entry and every path component/ancestor validation uses the same charge on every supported operating system. Active-root

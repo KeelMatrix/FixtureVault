@@ -676,6 +676,38 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
+    public void Manifest_membership_canonicalizes_separator_spelling_only()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Conventions = ["generic", "fixturevault-manifest"]);
+        repository.WriteText("tests/active.golden", "clean\n");
+
+        foreach (string spelling in new[] {
+                     "tests/./active.golden",
+                     "tests/sub/../active.golden",
+                     "tests//active.golden",
+                     "tests/active.golden/" })
+        {
+            repository.WriteText(
+                FixtureVaultContract.ManifestFileName,
+                $"{{\"version\":1,\"activeBaselines\":[\"{spelling}\"]}}\n");
+
+            ScanResult result = repository.Scan();
+
+            Assert.Equal(1, result.ExitCode);
+            Assert.Contains(result.Report.Findings, item =>
+                item.RuleId == "FV002" && item.Path == "tests/active.golden");
+        }
+
+        repository.WriteText(
+            FixtureVaultContract.ManifestFileName,
+            "{\"version\":1,\"activeBaselines\":[\"tests\\\\active.golden\"]}\n");
+        ScanResult separatorEquivalent = repository.Scan();
+
+        Assert.DoesNotContain(separatorEquivalent.Report.Findings, item => item.RuleId == "FV002");
+    }
+
+    [Fact]
     public void Enabled_manifest_without_file_fails_closed()
     {
         using var repository = new TemporaryRepository();
@@ -870,6 +902,50 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
+    public void Replacing_a_discovered_fixture_with_an_ordinary_file_fails_at_the_read_boundary()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        string fixturePath = Path.Combine(repository.Root, "tests", "replacement.golden");
+        string ordinaryCanary = "ordinary-file-replacement-canary";
+        repository.WriteText("tests/replacement.golden", "clean\n");
+        bool replaced = false;
+
+        FixtureFileWalk replacingWalk = (repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory) =>
+        {
+            WalkResult result = SafeFileWalker.Walk(repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory);
+            if (!replaced && Path.GetFullPath(root).Equals(Path.Combine(repository.Root, "tests"), StringComparison.Ordinal))
+            {
+                replaced = true;
+                File.Delete(fixturePath);
+                File.WriteAllText(
+                    fixturePath,
+                    ordinaryCanary,
+                    new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            }
+
+            return result;
+        };
+
+        var telemetry = new RecordingTelemetry();
+        int exitCode = repository.Run(
+            ["scan", "--format", "json"],
+            telemetry,
+            out string output,
+            out string error,
+            fileWalk: replacingWalk);
+        ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
+
+        Assert.True(replaced);
+        Assert.Equal(2, exitCode);
+        Assert.Empty(error);
+        Assert.False(report.Completed);
+        Assert.Contains(report.Errors, item => item.Code == "FV-E009");
+        Assert.Equal(0, telemetry.SuccessfulScans);
+        Assert.DoesNotContain(ordinaryCanary, output, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Replacing_a_discovered_parent_directory_with_a_link_fails_at_the_read_boundary()
     {
         using var repository = new TemporaryRepository();
@@ -994,6 +1070,70 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
+    public void Replacing_a_pending_directory_with_an_ordinary_same_name_directory_fails_closed()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        string pendingPath = Path.Combine(repository.Root, "misc", "pending");
+        Directory.CreateDirectory(pendingPath);
+        string outsideCanary = "ordinary-same-name-pending-canary";
+        bool replaced = false;
+
+        FixtureFileWalk replacingWalk = (repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory) =>
+            SafeFileWalker.Walk(
+                repositoryRoot,
+                root,
+                failOnAccessErrors,
+                relativePath =>
+                {
+                    if (!replaced &&
+                        Path.GetFullPath(root).Equals(repository.Root, StringComparison.Ordinal) &&
+                        relativePath.Equals("misc/pending", StringComparison.Ordinal))
+                    {
+                        replaced = true;
+                        Directory.Delete(pendingPath, recursive: true);
+                        Directory.CreateDirectory(pendingPath);
+                        File.WriteAllText(
+                            Path.Combine(pendingPath, "outside.received.json"),
+                            outsideCanary,
+                            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+                    }
+
+                    return shouldPruneDirectory?.Invoke(relativePath) ?? GlobMatchStatus.NoMatch;
+                });
+
+        try
+        {
+            var telemetry = new RecordingTelemetry();
+            int exitCode = repository.Run(
+                ["scan", "--format", "json"],
+                telemetry,
+                out string output,
+                out string error,
+                fileWalk: replacingWalk);
+            ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
+
+            Assert.True(replaced);
+            Assert.Equal(2, exitCode);
+            Assert.Empty(error);
+            Assert.False(report.Completed);
+            Assert.Contains(report.Errors, item => item.Code == FixtureVaultContract.PathPolicyTraversalErrorCode);
+            Assert.Equal(0, telemetry.SuccessfulScans);
+            Assert.DoesNotContain(outsideCanary, output, StringComparison.Ordinal);
+            Assert.DoesNotContain("outside.received.json", output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(pendingPath))
+            {
+                Directory.Delete(pendingPath, recursive: true);
+            }
+
+            Directory.CreateDirectory(pendingPath);
+        }
+    }
+
+    [Fact]
     public void Replacing_an_ancestor_of_a_pending_directory_fails_closed_without_disclosing_outside_paths()
     {
         using var repository = new TemporaryRepository();
@@ -1074,11 +1214,6 @@ public sealed class FixtureVaultTests
     [Fact]
     public void Replacing_an_ancestor_above_the_repository_root_cannot_switch_the_trusted_scan_boundary()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return;
-        }
-
         using var repository = new TemporaryRepository();
         repository.WritePolicy();
         repository.WriteText("tests/inside.golden", "clean\n");
@@ -1098,9 +1233,20 @@ public sealed class FixtureVaultTests
         {
             if (!replaced)
             {
-                Directory.Move(originalParent, movedParent);
-                moved = true;
-                CreateSymbolicDirectoryOrSkip(originalParent, outsideRoot);
+                if (OperatingSystem.IsWindows())
+                {
+                    // Windows keeps an open directory handle on the repository while the
+                    // walk is authorized. This deterministic seam models the same
+                    // ancestor-identity mismatch without depending on rename semantics.
+                    SafePathBoundary.BoundaryMatchOverrideForTesting = _ => false;
+                }
+                else
+                {
+                    Directory.Move(originalParent, movedParent);
+                    moved = true;
+                    CreateSymbolicDirectoryOrSkip(originalParent, outsideRoot);
+                }
+
                 replaced = true;
             }
 
@@ -1109,21 +1255,25 @@ public sealed class FixtureVaultTests
 
         try
         {
+            var telemetry = new RecordingTelemetry();
             int exitCode = repository.Run(
                 ["scan", "--format", "json"],
-                new RecordingTelemetry(),
+                telemetry,
                 out string output,
                 out string error,
                 fileWalk: replacingWalk);
 
             Assert.True(replaced);
-            Assert.True(exitCode is 0 or 2);
+            Assert.Equal(2, exitCode);
+            Assert.Equal(0, telemetry.SuccessfulScans);
             Assert.Empty(error);
+            Assert.Contains("FV-E002", output, StringComparison.Ordinal);
             Assert.DoesNotContain("outside.received.json", output, StringComparison.Ordinal);
             Assert.DoesNotContain("outside-root-canary", output, StringComparison.Ordinal);
         }
         finally
         {
+            SafePathBoundary.BoundaryMatchOverrideForTesting = null;
             if (moved)
             {
                 if (Directory.Exists(originalParent))
@@ -1140,6 +1290,74 @@ public sealed class FixtureVaultTests
             if (Directory.Exists(outsideRoot))
             {
                 Directory.Delete(outsideRoot, recursive: true);
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Replacing_the_repository_root_with_an_ordinary_same_name_directory_fails_closed(bool repositoryWide)
+    {
+        using var repository = new GitBoundaryRepository(gitMarkerIsFile: true);
+        repository.WritePolicyInRepository();
+        repository.WriteRepositoryText("tests/inside.golden", "clean\n");
+
+        string originalRoot = repository.RepositoryRoot;
+        string movedRoot = originalRoot + ".fixturevault-original";
+        string outsideCanary = "ordinary-same-name-ancestor-canary";
+        bool replaced = false;
+        FixtureFileWalk replacingWalk = (repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory) =>
+        {
+            bool isTrigger = repositoryWide
+                ? Path.GetFullPath(root).Equals(repository.RepositoryRoot, StringComparison.Ordinal)
+                : Path.GetFullPath(root).Equals(Path.Combine(repository.RepositoryRoot, "tests"), StringComparison.Ordinal);
+            if (!replaced && isTrigger)
+            {
+                Directory.Move(originalRoot, movedRoot);
+                Directory.CreateDirectory(Path.Combine(originalRoot, "tests"));
+                File.WriteAllText(
+                    Path.Combine(originalRoot, "tests", "outside.received.json"),
+                    outsideCanary,
+                    new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+                replaced = true;
+            }
+
+            return SafeFileWalker.Walk(repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory);
+        };
+
+        try
+        {
+            var telemetry = new RecordingTelemetry();
+            using var output = new StringWriter();
+            using var error = new StringWriter();
+            int exitCode = FixtureVaultApplication.Run(
+                ["scan", "--format", "json"],
+                repository.RepositoryRoot,
+                telemetry,
+                output,
+                error,
+                fileWalk: replacingWalk);
+            ScanReport report = JsonSerializer.Deserialize<ScanReport>(output.ToString(), FixtureVaultContract.JsonOptions)!;
+
+            Assert.True(replaced, $"Repository root: {repository.RepositoryRoot}; output: {output.ToString()}");
+            Assert.Equal(2, exitCode);
+            Assert.False(report.Completed);
+            Assert.Equal(repositoryWide ? FixtureVaultContract.PathPolicyTraversalErrorCode : "FV-E002", Assert.Single(report.Errors).Code);
+            Assert.Equal(0, telemetry.SuccessfulScans);
+            Assert.DoesNotContain(outsideCanary, output.ToString(), StringComparison.Ordinal);
+            Assert.DoesNotContain("outside.received.json", output.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(originalRoot))
+            {
+                Directory.Delete(originalRoot, recursive: true);
+            }
+
+            if (Directory.Exists(movedRoot))
+            {
+                Directory.Move(movedRoot, originalRoot);
             }
         }
     }
@@ -1183,16 +1401,21 @@ public sealed class FixtureVaultTests
                 }
             };
 
+            var telemetry = new RecordingTelemetry();
             int exitCode = repository.Run(
                 ["scan", "--format", "json"],
-                new RecordingTelemetry(),
+                telemetry,
                 out string output,
                 out string error);
+            ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
 
             Assert.True(moved);
             Assert.True(restored);
             Assert.Equal(2, exitCode);
             Assert.Empty(error);
+            Assert.False(report.Completed);
+            Assert.Contains(report.Errors, item => item.Code == "FV-E002");
+            Assert.Equal(0, telemetry.SuccessfulScans);
             Assert.DoesNotContain("outside.received.json", output, StringComparison.Ordinal);
             Assert.DoesNotContain("outside-enumeration-canary", output, StringComparison.Ordinal);
         }
@@ -1579,7 +1802,7 @@ public sealed class FixtureVaultTests
         Assert.True(SafePathBoundary.TryGetPathIdentity(configuredRoot, out FileSystemIdentity configuredIdentity));
         Assert.True(SafePathBoundary.TryGetPathIdentity(Path.Combine(repository.Root, "tests", "case"), out FileSystemIdentity siblingIdentity));
         Assert.NotEqual(configuredIdentity, siblingIdentity);
-        Assert.False(PathUtilities.IsWithin(configuredRoot, siblingFile));
+        Assert.Equal(PathContainmentResult.Outside, PathUtilities.IsWithin(configuredRoot, siblingFile));
         ScanResult result = repository.Scan();
 
         Assert.Equal(1, result.Report.FilesInspected);
@@ -5288,6 +5511,146 @@ public sealed class FixtureVaultTests
         Assert.Equal(0, telemetry.SuccessfulScans);
     }
 
+    [Fact]
+    public void Filesystem_path_budget_exhaustion_inside_repository_containment_fails_closed()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("outside.golden", "outside\n");
+        var budget = new FilesystemTraversalBudget(
+            maximumEntries: 100_000,
+            maximumPathOperations: 10_000);
+        FixtureFileWalk exhaustionWalk = (repositoryRoot, root, _, _) =>
+        {
+            if (Path.GetFullPath(root).Equals(repository.Root, StringComparison.Ordinal))
+            {
+                long remaining = budget.MaximumPathOperations - budget.PathOperationsConsumed;
+                if (remaining > 0)
+                {
+                    Assert.True(budget.TryConsumePathOperations(remaining));
+                }
+
+                return new WalkResult(
+                    [new SafeFileEntry(Path.Combine(repository.Root, "outside.golden"), "outside.golden")],
+                    [],
+                    null);
+            }
+
+            return new WalkResult([], [], null);
+        };
+
+        var telemetry = new RecordingTelemetry();
+        int exitCode = repository.Run(
+            ["scan", "--format", "json"],
+            telemetry,
+            out string output,
+            out string error,
+            fileWalk: exhaustionWalk,
+            traversalBudget: budget);
+        ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(error);
+        Assert.False(report.Completed);
+        Assert.Equal(FixtureVaultContract.PathPolicyTraversalErrorCode, Assert.Single(report.Errors).Code);
+        Assert.DoesNotContain(report.Findings, item => item.RuleId == "FV008");
+        Assert.Equal(0, telemetry.SuccessfulScans);
+    }
+
+    [Fact]
+    public void Filesystem_path_budget_exhaustion_inside_active_file_containment_fails_closed()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/active.golden", "active\n");
+        var budget = new FilesystemTraversalBudget(
+            maximumEntries: 100_000,
+            maximumPathOperations: 10_000);
+        FixtureFileWalk exhaustionWalk = (repositoryRoot, root, _, _) =>
+        {
+            if (!Path.GetFullPath(root).Equals(Path.Combine(repository.Root, "tests"), StringComparison.Ordinal))
+            {
+                return new WalkResult([], [], null);
+            }
+
+            string path = Path.Combine(repository.Root, "tests", "active.golden");
+            Assert.True(SafePathBoundary.TryGetPathIdentityWithoutBudget(path, out FileSystemIdentity identity));
+            long remaining = budget.MaximumPathOperations - budget.PathOperationsConsumed;
+            if (remaining > 0)
+            {
+                Assert.True(budget.TryConsumePathOperations(remaining));
+            }
+
+            return new WalkResult(
+                [new SafeFileEntry(path, "tests/active.golden", identity)],
+                [],
+                null);
+        };
+
+        var telemetry = new RecordingTelemetry();
+        int exitCode = repository.Run(
+            ["scan", "--format", "json"],
+            telemetry,
+            out string output,
+            out string error,
+            fileWalk: exhaustionWalk,
+            traversalBudget: budget);
+        ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(error);
+        Assert.False(report.Completed);
+        Assert.Equal(FixtureVaultContract.FilesystemTraversalErrorCode, Assert.Single(report.Errors).Code);
+        Assert.Empty(report.Findings);
+        Assert.Equal(0, telemetry.SuccessfulScans);
+    }
+
+    [Fact]
+    public void Filesystem_path_budget_exhaustion_inside_manifest_containment_fails_closed()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Conventions = ["generic", "fixturevault-manifest"]);
+        repository.WriteText("tests/active.golden", "active\n");
+        repository.WriteText(
+            FixtureVaultContract.ManifestFileName,
+            "{\"version\":1,\"activeBaselines\":[\"tests/active.golden\"]}\n");
+        var budget = new FilesystemTraversalBudget(
+            maximumEntries: 100_000,
+            maximumPathOperations: 10_000);
+        FixtureFileWalk walk = (repositoryRoot, root, _, _) =>
+            Path.GetFullPath(root).Equals(Path.Combine(repository.Root, "tests"), StringComparison.Ordinal)
+                ? new WalkResult(
+                    [new SafeFileEntry(Path.Combine(repository.Root, "tests", "active.golden"), "tests/active.golden")],
+                    [],
+                    null)
+                : new WalkResult([], [], null);
+
+        var telemetry = new RecordingTelemetry();
+        int exitCode = repository.Run(
+            ["scan", "--format", "json"],
+            telemetry,
+            out string output,
+            out string error,
+            fileWalk: walk,
+            traversalBudget: budget,
+            afterManifestInitialLengthRead: () =>
+            {
+                long remaining = budget.MaximumPathOperations - budget.PathOperationsConsumed;
+                if (remaining > 0)
+                {
+                    Assert.True(budget.TryConsumePathOperations(remaining));
+                }
+            });
+        ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(error);
+        Assert.False(report.Completed);
+        Assert.Equal(FixtureVaultContract.PathPolicyTraversalErrorCode, Assert.Single(report.Errors).Code);
+        Assert.DoesNotContain(report.Errors, item => item.Code == "FV-E011");
+        Assert.Equal(0, telemetry.SuccessfulScans);
+    }
+
     private sealed class RecordingTelemetry : IUsageTelemetry
     {
         internal int SuccessfulScans { get; private set; }
@@ -5407,6 +5770,7 @@ public sealed class FixtureVaultTests
             out string error,
             IReadOnlyList<ISensitiveDataDetector>? additionalSensitiveDataDetectors = null,
             FixtureFileWalk? fileWalk = null,
+            Action? afterManifestInitialLengthRead = null,
             Action? afterFixtureInitialLengthRead = null,
             FilesystemTraversalBudget? traversalBudget = null,
             Func<string, int, DirectoryEntryReadResult, DirectoryEntryReadResult?>? directoryEntryReadHook = null)
@@ -5419,11 +5783,12 @@ public sealed class FixtureVaultTests
                 telemetry,
                 stdout,
                 stderr,
-                additionalSensitiveDataDetectors,
-                fileWalk,
-                afterFixtureInitialLengthRead,
-                traversalBudget,
-                directoryEntryReadHook);
+                additionalSensitiveDataDetectors: additionalSensitiveDataDetectors,
+                fileWalk: fileWalk,
+                afterManifestInitialLengthRead: afterManifestInitialLengthRead,
+                afterFixtureInitialLengthRead: afterFixtureInitialLengthRead,
+                traversalBudget: traversalBudget,
+                directoryEntryReadHook: directoryEntryReadHook);
             output = stdout.ToString();
             error = stderr.ToString();
             return exitCode;

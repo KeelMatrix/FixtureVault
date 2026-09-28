@@ -168,6 +168,14 @@ internal sealed class FixtureScanner
                 return CompleteWithErrors(errors, strict);
             }
 
+            if (!boundary.TryAuthorizeDirectory(relativePath, identity))
+            {
+                errors.Add(new ScanError(
+                    "FV-E008",
+                    "A configured fixture root could not be resolved safely."));
+                return CompleteWithErrors(errors, strict);
+            }
+
             if (seenRoots.Add(identity))
             {
                 activeRoots.Add(new ResolvedRoot(fullPath, relativePath));
@@ -479,8 +487,30 @@ internal sealed class FixtureScanner
             }
 
             if (ignoredStatus == GlobMatchStatus.Match ||
-                !IsFixtureCandidate(file.RelativePath, policy, insideActiveRoot: false) ||
-                activeRoots.Any(root => PathUtilities.IsWithin(root.FullPath, file.FullPath)))
+                !IsFixtureCandidate(file.RelativePath, policy, insideActiveRoot: false))
+            {
+                continue;
+            }
+
+            PathContainmentResult containment = PathContainmentResult.Outside;
+            foreach (ResolvedRoot root in activeRoots)
+            {
+                containment = PathUtilities.IsWithin(root.FullPath, file.FullPath);
+                if (containment == PathContainmentResult.BudgetExhausted)
+                {
+                    errors.Add(new ScanError(
+                        FixtureVaultContract.PathPolicyTraversalErrorCode,
+                        FixtureVaultContract.PathPolicyTraversalErrorMessage));
+                    return;
+                }
+
+                if (containment == PathContainmentResult.Within)
+                {
+                    break;
+                }
+            }
+
+            if (containment == PathContainmentResult.Within)
             {
                 continue;
             }
@@ -583,6 +613,13 @@ internal sealed class FixtureScanner
                 afterInitialLengthRead);
             if (readStatus != SafeFileReadStatus.Success)
             {
+                if (FilesystemTraversalBudgetContext.Current?.IsExhausted == true)
+                {
+                    return new ManifestLoadResult(null, new ScanError(
+                        FixtureVaultContract.PathPolicyTraversalErrorCode,
+                        FixtureVaultContract.PathPolicyTraversalErrorMessage));
+                }
+
                 return new ManifestLoadResult(null, new ScanError(
                     "FV-E011",
                     "The configured FixtureVault manifest is malformed."));
@@ -607,9 +644,12 @@ internal sealed class FixtureScanner
                         "The configured FixtureVault manifest is malformed."));
                 }
 
-                // Manifest membership uses the exact repository-relative spelling. The
-                // portability key is reserved for FV003 collision grouping and must not
-                // authorize a relationship between differently spelled paths.
+                // Manifest membership uses the exact repository-relative spelling after
+                // separator canonicalization only. Replacing backslash with slash is the
+                // sole equivalence; dot segments, duplicate/trailing separators, case,
+                // and Unicode normalization remain distinct. The portability key is
+                // reserved for FV003 collision grouping and must not authorize a
+                // relationship between differently spelled paths.
                 string normalized = baseline.Replace('\\', '/');
                 string fullBaselinePath;
                 try
@@ -623,14 +663,22 @@ internal sealed class FixtureScanner
                         "The configured FixtureVault manifest is malformed."));
                 }
 
-                if (!PathUtilities.IsWithin(repositoryRoot, fullBaselinePath))
+                PathContainmentResult containment = PathUtilities.IsWithin(repositoryRoot, fullBaselinePath);
+                if (containment == PathContainmentResult.BudgetExhausted)
+                {
+                    return new ManifestLoadResult(null, new ScanError(
+                        FixtureVaultContract.PathPolicyTraversalErrorCode,
+                        FixtureVaultContract.PathPolicyTraversalErrorMessage));
+                }
+
+                if (containment != PathContainmentResult.Within)
                 {
                     return new ManifestLoadResult(null, new ScanError(
                         "FV-E011",
                         "The configured FixtureVault manifest is malformed."));
                 }
 
-                paths.Add(PathUtilities.NormalizeRelative(repositoryRoot, fullBaselinePath));
+                paths.Add(normalized);
             }
 
             return new ManifestLoadResult(paths, null);

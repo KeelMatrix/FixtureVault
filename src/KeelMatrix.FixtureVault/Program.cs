@@ -45,6 +45,7 @@ internal static class FixtureVaultApplication
         TextWriter errorOutput,
         IReadOnlyList<ISensitiveDataDetector>? additionalSensitiveDataDetectors = null,
         FixtureFileWalk? fileWalk = null,
+        Action? afterManifestInitialLengthRead = null,
         Action? afterFixtureInitialLengthRead = null,
         FilesystemTraversalBudget? traversalBudget = null,
         Func<string, int, DirectoryEntryReadResult, DirectoryEntryReadResult?>? directoryEntryReadHook = null)
@@ -117,6 +118,7 @@ internal static class FixtureVaultApplication
                     parsed.Options.StrictOverride,
                     additionalSensitiveDataDetectors: additionalSensitiveDataDetectors,
                     fileWalk: fileWalk,
+                    afterManifestInitialLengthRead: afterManifestInitialLengthRead,
                     afterFixtureInitialLengthRead: afterFixtureInitialLengthRead,
                     traversalBudget: traversalBudget,
                     directoryEntryReadHook: directoryEntryReadHook);
