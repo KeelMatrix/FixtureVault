@@ -622,15 +622,15 @@ public sealed class FixtureVaultTests
         using var repository = new TemporaryRepository();
         repository.WritePolicy(policy => policy.Conventions = ["generic", "fixturevault-manifest"]);
         repository.WriteText("tests/Case.golden", "clean\n");
-        repository.WriteText(
-            FixtureVaultContract.ManifestFileName,
-            "{\"version\":1,\"activeBaselines\":[\"tests/case.golden\"]}\n");
-
-        if (File.ReadAllText(Path.Combine(repository.Root, "tests", "Case.golden")) ==
-            File.ReadAllText(Path.Combine(repository.Root, "tests", "case.golden")))
+        string mismatchedPath = Path.Combine(repository.Root, "tests", "case.golden");
+        if (File.Exists(mismatchedPath))
         {
             return;
         }
+
+        repository.WriteText(
+            FixtureVaultContract.ManifestFileName,
+            "{\"version\":1,\"activeBaselines\":[\"tests/case.golden\"]}\n");
 
         ScanResult mismatched = repository.Scan();
         Assert.Contains(mismatched.Report.Findings, item =>
