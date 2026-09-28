@@ -176,7 +176,8 @@ public sealed class FixtureVaultTests
         Assert.Contains("4,096-record / 1 MiB report-field budget", output, StringComparison.Ordinal);
         Assert.Contains("filesDiscovered", output, StringComparison.Ordinal);
         Assert.Contains("FV-E018", output, StringComparison.Ordinal);
-        Assert.Contains("100,000-entry budget", output, StringComparison.Ordinal);
+        Assert.Contains("100,000 entries", output, StringComparison.Ordinal);
+        Assert.Contains("1,000,000", output, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1476,6 +1477,55 @@ public sealed class FixtureVaultTests
         Assert.All(
             result.Report.Findings.Where(item => item.RuleId == "FV003"),
             finding => Assert.DoesNotContain("Case.snap", finding.Message, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Case_variant_sibling_is_outside_a_case_sensitive_configured_root()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Roots = ["tests/Case"]);
+        repository.WriteText("tests/Case/inside.golden", "inside\n");
+        repository.WriteText("tests/case/outside.golden", "outside\n");
+        repository.WriteText("tests/Case/identity-probe", "upper\n");
+        repository.WriteText("tests/case/identity-probe", "lower\n");
+        string configuredRoot = Path.Combine(repository.Root, "tests", "Case");
+        string siblingFile = Path.Combine(repository.Root, "tests", "case", "outside.golden");
+
+        if (!Directory.Exists(Path.Combine(repository.Root, "tests", "case")) ||
+            File.ReadAllText(Path.Combine(repository.Root, "tests", "Case", "identity-probe")) ==
+            File.ReadAllText(Path.Combine(repository.Root, "tests", "case", "identity-probe")))
+        {
+            return;
+        }
+
+        Assert.True(SafePathBoundary.TryGetPathIdentity(configuredRoot, out FileSystemIdentity configuredIdentity));
+        Assert.True(SafePathBoundary.TryGetPathIdentity(Path.Combine(repository.Root, "tests", "case"), out FileSystemIdentity siblingIdentity));
+        Assert.NotEqual(configuredIdentity, siblingIdentity);
+        Assert.False(PathUtilities.IsWithin(configuredRoot, siblingFile));
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(1, result.Report.FilesInspected);
+        Assert.Contains(result.Report.Findings, finding =>
+            finding.RuleId == "FV008" && finding.Path == "tests/case/outside.golden");
+    }
+
+    [Fact]
+    public void Case_variant_configured_roots_deduplicate_the_same_filesystem_root()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WriteText("tests/fixture.golden", "fixture\n");
+        string upperSpelling = Path.Combine(repository.Root, "TESTS");
+        if (!Directory.Exists(upperSpelling))
+        {
+            return;
+        }
+
+        repository.WritePolicy(policy => policy.Roots = ["tests", "TESTS"]);
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(1, result.Report.FilesInspected);
+        Assert.DoesNotContain(result.Report.Findings, finding => finding.RuleId == "FV008");
+        Assert.DoesNotContain(result.Report.Errors, error => error.Code == FixtureVaultContract.PathPolicyTraversalErrorCode);
     }
 
     [Fact]
@@ -5010,6 +5060,145 @@ public sealed class FixtureVaultTests
         Assert.False(report.Completed);
         Assert.Equal(FixtureVaultContract.FilesystemTraversalErrorCode, Assert.Single(report.Errors).Code);
         Assert.Equal(budget.MaximumEntries, budget.EntriesConsumed);
+        Assert.Equal(0, telemetry.SuccessfulScans);
+    }
+
+    [Fact]
+    public void Filesystem_path_operation_budget_has_an_exact_limit()
+    {
+        var budget = new FilesystemTraversalBudget(maximumEntries: 100, maximumPathOperations: 2);
+
+        Assert.True(budget.TryConsumePathOperations(2));
+        Assert.False(budget.TryConsumePathOperations(1));
+        Assert.Equal(2, budget.PathOperationsConsumed);
+        Assert.True(budget.IsExhausted);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Filesystem_path_work_budget_fails_closed_with_default_or_empty_ignored_paths(bool emptyIgnoredPaths)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy =>
+        {
+            if (emptyIgnoredPaths)
+            {
+                policy.IgnoredPaths = [];
+            }
+        });
+        repository.WriteText("tests/fixture.golden", "fixture\n");
+        var telemetry = new RecordingTelemetry();
+        var budget = new FilesystemTraversalBudget(
+            maximumEntries: 100_000,
+            maximumPathOperations: 1);
+
+        int exitCode = repository.Run(
+            ["scan", "--format", "json"],
+            telemetry,
+            out string output,
+            out string error,
+            traversalBudget: budget);
+        ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(error);
+        Assert.False(report.Completed);
+        Assert.Contains(report.Errors, item => item.Code == FixtureVaultContract.FilesystemTraversalErrorCode);
+        Assert.Equal(budget.MaximumPathOperations, budget.PathOperationsConsumed);
+        Assert.Equal(0, telemetry.SuccessfulScans);
+    }
+
+    [Fact]
+    public void Increasing_unix_path_depth_consumes_bounded_validation_work()
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+        {
+            return;
+        }
+
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.IgnoredPaths = []);
+        string relativeDirectory = "tests";
+        for (int index = 0; index < 48; index++)
+        {
+            relativeDirectory += $"/d{index:D2}";
+        }
+
+        repository.WriteText($"{relativeDirectory}/fixture.golden", "fixture\n");
+        var telemetry = new RecordingTelemetry();
+        var budget = new FilesystemTraversalBudget(
+            maximumEntries: 100_000,
+            maximumPathOperations: 2_000);
+
+        int exitCode = repository.Run(
+            ["scan", "--format", "json"],
+            telemetry,
+            out string output,
+            out string error,
+            traversalBudget: budget);
+        ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(error);
+        Assert.False(report.Completed);
+        Assert.Contains(report.Errors, item => item.Code == FixtureVaultContract.FilesystemTraversalErrorCode);
+        Assert.True(budget.PathOperationsConsumed > 100);
+        Assert.Equal(0, telemetry.SuccessfulScans);
+    }
+
+    [Fact]
+    public void Filesystem_path_work_budget_is_shared_by_active_and_repository_policy_walks()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.IgnoredPaths = []);
+        repository.WriteText("tests/fixture.golden", "fixture\n");
+        var measurementBudget = new FilesystemTraversalBudget(
+            maximumEntries: 100_000,
+            maximumPathOperations: 1_000_000);
+        int walkCalls = 0;
+        long activeWalkStartOperations = 0;
+        long activeWalkOperations = 0;
+        FixtureFileWalk measurementWalk = (repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory) =>
+        {
+            long before = measurementBudget.PathOperationsConsumed;
+            WalkResult result = SafeFileWalker.Walk(repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory);
+            if (walkCalls++ == 0)
+            {
+                activeWalkStartOperations = before;
+                activeWalkOperations = measurementBudget.PathOperationsConsumed - before;
+            }
+
+            return result;
+        };
+
+        ScanResult measured = repository.Scan(
+            fileWalk: measurementWalk,
+            traversalBudget: measurementBudget);
+
+        Assert.True(measured.Completed);
+        Assert.Equal(2, walkCalls);
+        Assert.True(activeWalkOperations > 0);
+        Assert.True(measurementBudget.PathOperationsConsumed > activeWalkOperations);
+        Assert.True(measurementBudget.PathOperationsConsumed > 1);
+
+        var telemetry = new RecordingTelemetry();
+        var repositoryBudget = new FilesystemTraversalBudget(
+            maximumEntries: 100_000,
+            maximumPathOperations: activeWalkStartOperations + activeWalkOperations + 128);
+        int exitCode = repository.Run(
+            ["scan", "--format", "json"],
+            telemetry,
+            out string output,
+            out string error,
+            traversalBudget: repositoryBudget);
+        ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(error);
+        Assert.False(report.Completed);
+        Assert.Contains(report.Errors, item => item.Code == FixtureVaultContract.PathPolicyTraversalErrorCode);
+        Assert.Equal(repositoryBudget.MaximumPathOperations, repositoryBudget.PathOperationsConsumed);
         Assert.Equal(0, telemetry.SuccessfulScans);
     }
 

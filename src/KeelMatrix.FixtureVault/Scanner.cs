@@ -133,18 +133,42 @@ internal sealed class FixtureScanner
         }
 
         var activeRoots = new List<ResolvedRoot>();
-        var seenRoots = new HashSet<string>(
-            OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+        SafePathBoundary? boundary = SafePathBoundaryContext.Current;
+        if (boundary is null)
+        {
+            return CompleteWithErrors(
+                [new ScanError("FV-E002", "The repository boundary could not be established safely.")],
+                strict);
+        }
+
+        var seenRoots = new HashSet<FileSystemIdentity>();
         foreach (string configuredRoot in configuredRoots)
         {
             if (!PathUtilities.TryResolveRoot(repositoryRoot, configuredRoot, out string fullPath, out string relativePath, out string error))
             {
-                errors.Add(new ScanError("FV-E008", error));
+                errors.Add(new ScanError(
+                    traversalBudget.IsExhausted
+                        ? FixtureVaultContract.FilesystemTraversalErrorCode
+                        : "FV-E008",
+                    traversalBudget.IsExhausted
+                        ? FixtureVaultContract.FilesystemTraversalErrorMessage
+                        : error));
                 return CompleteWithErrors(errors, strict);
             }
 
-            string key = fullPath;
-            if (seenRoots.Add(key))
+            if (!SafePathBoundary.TryGetPathIdentity(fullPath, out FileSystemIdentity identity))
+            {
+                errors.Add(new ScanError(
+                    traversalBudget.IsExhausted
+                        ? FixtureVaultContract.FilesystemTraversalErrorCode
+                        : "FV-E008",
+                    traversalBudget.IsExhausted
+                        ? FixtureVaultContract.FilesystemTraversalErrorMessage
+                        : "A configured fixture root could not be resolved safely."));
+                return CompleteWithErrors(errors, strict);
+            }
+
+            if (seenRoots.Add(identity))
             {
                 activeRoots.Add(new ResolvedRoot(fullPath, relativePath));
             }
@@ -153,8 +177,8 @@ internal sealed class FixtureScanner
         AddConventionSkips(policy, skipped, diagnosticBudget);
         List<SafeFileEntry> fixtureFiles = [];
         int filesInspected = 0;
-        var seenFiles = new HashSet<string>(
-            OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+        var seenFiles = new HashSet<FileSystemIdentity>();
+        var syntheticSeenFiles = new HashSet<string>(StringComparer.Ordinal);
         foreach (ResolvedRoot root in activeRoots)
         {
             WalkResult walk = walkFunction(
@@ -202,7 +226,9 @@ internal sealed class FixtureScanner
                         policy,
                         insideActiveRoot: true,
                         isRepositoryRoot: root.RelativePath.Length == 0) &&
-                    seenFiles.Add(Path.GetFullPath(file.FullPath)))
+                    (file.ExpectedIdentity is FileSystemIdentity identity
+                        ? seenFiles.Add(identity)
+                        : syntheticSeenFiles.Add(Path.GetFullPath(file.FullPath))))
                 {
                     fixtureFiles.Add(file);
                 }
@@ -342,7 +368,11 @@ internal sealed class FixtureScanner
 
             if (readStatus != SafeFileReadStatus.Success)
             {
-                errors.Add(new ScanError("FV-E009", "A fixture file could not be inspected safely."));
+                errors.Add(traversalBudget.IsExhausted
+                    ? new ScanError(
+                        FixtureVaultContract.FilesystemTraversalErrorCode,
+                        FixtureVaultContract.FilesystemTraversalErrorMessage)
+                    : new ScanError("FV-E009", "A fixture file could not be inspected safely."));
                 return CompleteWithErrors(
                     errors,
                     strict,

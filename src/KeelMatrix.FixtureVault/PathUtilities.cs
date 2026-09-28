@@ -184,14 +184,7 @@ internal static class PathUtilities
 
     internal static bool IsWithin(string parent, string candidate)
     {
-        string normalizedParent = EnsureTrailingSeparator(Path.GetFullPath(parent));
-        string normalizedCandidate = Path.GetFullPath(candidate);
-        StringComparison comparison = OperatingSystem.IsWindows()
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
-
-        return normalizedCandidate.Equals(normalizedParent.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), comparison)
-            || normalizedCandidate.StartsWith(normalizedParent, comparison);
+        return SafePathBoundary.TryIsWithin(parent, candidate);
     }
 
     internal static string ToWindowsHandlePath(string path)
@@ -292,15 +285,14 @@ internal static class PathUtilities
         return escaped.ToString();
     }
 
-    private static string EnsureTrailingSeparator(string path)
-    {
-        return path.EndsWith(Path.DirectorySeparatorChar) || path.EndsWith(Path.AltDirectorySeparatorChar)
-            ? path
-            : path + Path.DirectorySeparatorChar;
-    }
 }
 
 internal readonly record struct UnixFileIdentity(long Device, long Inode);
+
+// File identity is intentionally separate from NormalizeComparisonPath. The latter is
+// a portability-collision key; this identity is obtained from the filesystem and is
+// the only key used for security-sensitive containment and deduplication.
+internal readonly record struct FileSystemIdentity(ulong VolumeOrDevice, ulong FileOrInode);
 
 internal readonly record struct DirectoryEntryReadResult(IntPtr Entry, int ErrorNumber);
 
@@ -394,19 +386,19 @@ internal sealed class SafePathBoundary : IDisposable
 
     private readonly SafeFileHandle? unixRootHandle;
     private readonly SafeFileHandle? windowsRootHandle;
-    private readonly string? trustedWindowsRootPath;
+    private readonly FileSystemIdentity rootIdentity;
     private static readonly AsyncLocal<Func<string, int, DirectoryEntryReadResult, DirectoryEntryReadResult?>?> DirectoryEntryReadHook = new();
 
     private SafePathBoundary(
         string rootPath,
         SafeFileHandle? unixRootHandle,
         SafeFileHandle? windowsRootHandle,
-        string? trustedWindowsRootPath)
+        FileSystemIdentity rootIdentity)
     {
         RootPath = rootPath;
         this.unixRootHandle = unixRootHandle;
         this.windowsRootHandle = windowsRootHandle;
-        this.trustedWindowsRootPath = trustedWindowsRootPath;
+        this.rootIdentity = rootIdentity;
     }
 
     internal string RootPath { get; }
@@ -427,8 +419,8 @@ internal sealed class SafePathBoundary : IDisposable
         if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
         {
             int descriptor = UnixOpen(fullRoot, GetDirectoryFlags());
-            if (descriptor < 0 || !TryGetUnixIdentity(descriptor, out UnixFileIdentity identity) ||
-                !IsUnixDirectory(identity, descriptor))
+            if (descriptor < 0 || !TryGetUnixIdentity(descriptor, out UnixFileIdentity unixIdentity) ||
+                !IsUnixDirectory(unixIdentity, descriptor))
             {
                 if (descriptor >= 0)
                 {
@@ -442,7 +434,7 @@ internal sealed class SafePathBoundary : IDisposable
                 fullRoot,
                 new SafeFileHandle((IntPtr)descriptor, ownsHandle: true),
                 null,
-                null);
+                ToFileSystemIdentity(unixIdentity));
             return true;
         }
 
@@ -452,21 +444,18 @@ internal sealed class SafePathBoundary : IDisposable
         }
 
         SafeFileHandle rootHandle = CreateWindowsHandle(fullRoot, FileFlagBackupSemantics | FileFlagOpenReparsePoint);
-        if (rootHandle.IsInvalid || !WindowsPathResolver.TryGetFinalPath(rootHandle, out string trustedRootPath))
+        if (rootHandle.IsInvalid || !TryGetWindowsIdentity(rootHandle, out FileSystemIdentity identity))
         {
             rootHandle.Dispose();
             return false;
         }
 
-        boundary = new SafePathBoundary(fullRoot, null, rootHandle, trustedRootPath);
+        boundary = new SafePathBoundary(fullRoot, null, rootHandle, identity);
         return true;
     }
 
     internal bool Matches(string repositoryRoot) =>
-        string.Equals(
-            RootPath,
-            Path.GetFullPath(repositoryRoot),
-            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+        TryGetPathIdentity(repositoryRoot, out FileSystemIdentity identity) && identity == rootIdentity;
 
     internal bool TryOpenDirectory(string relativePath, out SafeFileHandle? handle)
     {
@@ -488,10 +477,20 @@ internal sealed class SafePathBoundary : IDisposable
         }
 
         string path = CombineRelative(relativePath);
+        if (!TryIsWithin(RootPath, path))
+        {
+            return false;
+        }
+
+        if (!TryConsumePathOperation())
+        {
+            return false;
+        }
+
         SafeFileHandle candidate = CreateWindowsHandle(path, FileFlagBackupSemantics | FileFlagOpenReparsePoint);
         if (candidate.IsInvalid ||
             !WindowsPathResolver.TryGetFinalPath(candidate, out string resolvedPath) ||
-            !IsTrustedWindowsPath(resolvedPath) ||
+            !TryIsWithin(RootPath, resolvedPath) ||
             !TryGetWindowsFileAttributes(candidate, out FileAttributes attributes) ||
             (attributes & FileAttributes.ReparsePoint) != 0 ||
             (attributes & FileAttributes.Directory) == 0)
@@ -506,7 +505,7 @@ internal sealed class SafePathBoundary : IDisposable
 
     internal bool TryOpenRegularFile(
         string relativePath,
-        UnixFileIdentity? expectedIdentity,
+        FileSystemIdentity? expectedIdentity,
         out FileStream? stream,
         out SafeFileReadStatus status)
     {
@@ -523,6 +522,11 @@ internal sealed class SafePathBoundary : IDisposable
             try
             {
                 SafeFileHandle parent = parents[^1];
+                if (!TryConsumePathOperation())
+                {
+                    return false;
+                }
+
                 int descriptor = UnixOpenAt(parent.DangerousGetHandle().ToInt32(), components[^1], GetFileFlags());
                 if (descriptor < 0)
                 {
@@ -533,9 +537,9 @@ internal sealed class SafePathBoundary : IDisposable
                 SafeFileHandle fileHandle = new((IntPtr)descriptor, ownsHandle: true);
                 try
                 {
-                    if (!TryGetUnixIdentity(descriptor, out UnixFileIdentity identity) ||
-                        !IsUnixRegular(identity, descriptor) ||
-                        expectedIdentity is not null && expectedIdentity.Value != identity)
+                    if (!TryGetUnixIdentity(descriptor, out UnixFileIdentity unixIdentity) ||
+                        !IsUnixRegular(unixIdentity, descriptor) ||
+                        expectedIdentity is not null && expectedIdentity.Value != ToFileSystemIdentity(unixIdentity))
                     {
                         status = SafeFileReadStatus.Unsafe;
                         return false;
@@ -565,11 +569,20 @@ internal sealed class SafePathBoundary : IDisposable
             return false;
         }
 
-        SafeFileHandle candidate = CreateWindowsHandle(CombineRelative(relativePath), FileFlagOpenReparsePoint);
+        string path = CombineRelative(relativePath);
+        if (!TryIsWithin(RootPath, path) || !TryConsumePathOperation())
+        {
+            return false;
+        }
+
+        SafeFileHandle candidate = CreateWindowsHandle(path, FileFlagOpenReparsePoint);
+
         if (candidate.IsInvalid ||
             !WindowsPathResolver.TryGetFinalPath(candidate, out string resolvedPath) ||
-            !IsTrustedWindowsPath(resolvedPath) ||
+            !TryIsWithin(RootPath, resolvedPath) ||
             !TryGetWindowsFileAttributes(candidate, out FileAttributes attributes) ||
+            !TryGetWindowsIdentity(candidate, out FileSystemIdentity identity) ||
+            (expectedIdentity is not null && expectedIdentity.Value != identity) ||
             (attributes & FileAttributes.ReparsePoint) != 0 ||
             (attributes & FileAttributes.Directory) != 0)
         {
@@ -603,6 +616,11 @@ internal sealed class SafePathBoundary : IDisposable
 
             try
             {
+                if (!TryConsumePathOperation())
+                {
+                    return false;
+                }
+
                 int descriptor = UnixOpenAt(parents[^1].DangerousGetHandle().ToInt32(), components[^1], GetFileFlags());
                 if (descriptor >= 0)
                 {
@@ -626,14 +644,28 @@ internal sealed class SafePathBoundary : IDisposable
             return false;
         }
 
-        SafeFileHandle candidate = CreateWindowsHandle(CombineRelative(relativePath), FileFlagOpenReparsePoint | FileFlagBackupSemantics);
+        string path = CombineRelative(relativePath);
+        if (!TryIsWithin(RootPath, path))
+        {
+            return false;
+        }
+
+        if (!TryConsumePathOperation())
+        {
+            return false;
+        }
+
+        SafeFileHandle candidate = CreateWindowsHandle(path, FileFlagOpenReparsePoint | FileFlagBackupSemantics);
         if (candidate.IsInvalid)
         {
             candidate.Dispose();
             return false;
         }
 
-        bool trusted = WindowsPathResolver.TryGetFinalPath(candidate, out string resolvedPath) && IsTrustedWindowsPath(resolvedPath);
+        bool trusted =
+            WindowsPathResolver.TryGetFinalPath(candidate, out string resolvedPath) &&
+            TryIsWithin(RootPath, resolvedPath) &&
+            TryGetWindowsIdentity(candidate, out _);
         candidate.Dispose();
         return trusted;
     }
@@ -667,13 +699,19 @@ internal sealed class SafePathBoundary : IDisposable
         int parentDescriptor,
         string name,
         out int descriptor,
-        out UnixFileIdentity identity,
+        out FileSystemIdentity identity,
         out bool isDirectory)
     {
-        descriptor = UnixOpenAt(parentDescriptor, name, GetFileFlags());
         identity = default;
         isDirectory = false;
-        if (descriptor < 0 || !TryGetUnixIdentity(descriptor, out identity))
+        descriptor = -1;
+        if (!TryConsumePathOperation())
+        {
+            return false;
+        }
+
+        descriptor = UnixOpenAt(parentDescriptor, name, GetFileFlags());
+        if (descriptor < 0 || !TryGetUnixIdentity(descriptor, out UnixFileIdentity unixIdentity))
         {
             if (descriptor >= 0)
             {
@@ -683,7 +721,8 @@ internal sealed class SafePathBoundary : IDisposable
             return false;
         }
 
-        isDirectory = IsUnixDirectory(identity, descriptor);
+        identity = ToFileSystemIdentity(unixIdentity);
+        isDirectory = IsUnixDirectory(unixIdentity, descriptor);
         return true;
     }
 
@@ -761,14 +800,119 @@ internal sealed class SafePathBoundary : IDisposable
         windowsRootHandle?.Dispose();
     }
 
-    private bool IsTrustedWindowsPath(string path) =>
-        trustedWindowsRootPath is not null &&
-        (path.Equals(trustedWindowsRootPath, StringComparison.OrdinalIgnoreCase) ||
-         path.StartsWith(
-             trustedWindowsRootPath.EndsWith('\\') || trustedWindowsRootPath.EndsWith('/')
-                 ? trustedWindowsRootPath
-                 : trustedWindowsRootPath + '\\',
-             StringComparison.OrdinalIgnoreCase));
+    internal static bool TryIsWithin(string parent, string candidate)
+    {
+        string fullParent;
+        string current;
+        try
+        {
+            fullParent = Path.GetFullPath(parent);
+            current = Path.GetFullPath(candidate);
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException)
+        {
+            return false;
+        }
+
+        if (!TryGetPathIdentity(fullParent, out FileSystemIdentity parentIdentity))
+        {
+            return false;
+        }
+
+        while (true)
+        {
+            if (TryGetPathIdentity(current, out FileSystemIdentity currentIdentity) &&
+                currentIdentity == parentIdentity)
+            {
+                return true;
+            }
+
+            string? parentDirectory;
+            try
+            {
+                parentDirectory = Directory.GetParent(current)?.FullName;
+            }
+            catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException)
+            {
+                return false;
+            }
+
+            if (string.IsNullOrEmpty(parentDirectory) ||
+                string.Equals(parentDirectory, current, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            current = parentDirectory;
+        }
+    }
+
+    internal static bool TryGetPathIdentity(string path, out FileSystemIdentity identity)
+    {
+        identity = default;
+        string fullPath;
+        try
+        {
+            fullPath = Path.GetFullPath(path);
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException)
+        {
+            return false;
+        }
+
+        if (!TryConsumePathOperation(CountPathComponents(fullPath) + 1L))
+        {
+            return false;
+        }
+
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            int descriptor = UnixOpen(fullPath, GetFileFlags());
+            if (descriptor < 0)
+            {
+                return false;
+            }
+
+            try
+            {
+                if (!TryGetUnixIdentity(descriptor, out UnixFileIdentity unixIdentity))
+                {
+                    return false;
+                }
+
+                identity = ToFileSystemIdentity(unixIdentity);
+                return true;
+            }
+            finally
+            {
+                _ = UnixClose(descriptor);
+            }
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            return false;
+        }
+
+        SafeFileHandle handle = CreateWindowsHandle(fullPath, FileFlagBackupSemantics | FileFlagOpenReparsePoint);
+        try
+        {
+            return !handle.IsInvalid && TryGetWindowsIdentity(handle, out identity);
+        }
+        finally
+        {
+            handle.Dispose();
+        }
+    }
+
+    private static bool TryConsumePathOperation(long count = 1) =>
+        FilesystemTraversalBudgetContext.Current?.TryConsumePathOperations(count) ?? true;
+
+    private static long CountPathComponents(string path) =>
+        path.Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries).LongLength;
+
+    private static FileSystemIdentity ToFileSystemIdentity(UnixFileIdentity identity) =>
+        new(unchecked((ulong)identity.Device), unchecked((ulong)identity.Inode));
 
     private string CombineRelative(string relativePath) =>
         string.IsNullOrEmpty(relativePath) ? RootPath : Path.Combine(RootPath, relativePath.Replace('/', Path.DirectorySeparatorChar));
@@ -788,6 +932,11 @@ internal sealed class SafePathBoundary : IDisposable
         try
         {
             string[] components = SplitRelativePath(relativePath);
+            if (!TryConsumePathOperation(components.Length + 1L))
+            {
+                return false;
+            }
+
             SafeFileHandle current = new SafeFileHandle((IntPtr)UnixOpenAt(unixRootHandle.DangerousGetHandle().ToInt32(), ".", GetDirectoryFlags()), ownsHandle: true);
             if (current.IsInvalid)
             {
@@ -832,6 +981,11 @@ internal sealed class SafePathBoundary : IDisposable
         var opened = new List<SafeFileHandle>();
         try
         {
+            if (!TryConsumePathOperation(components.Length))
+            {
+                return false;
+            }
+
             int rootDescriptor = UnixOpenAt(unixRootHandle.DangerousGetHandle().ToInt32(), ".", GetDirectoryFlags());
             if (rootDescriptor < 0)
             {
@@ -1005,13 +1159,28 @@ internal sealed class SafePathBoundary : IDisposable
         return true;
     }
 
+    private static bool TryGetWindowsIdentity(SafeFileHandle handle, out FileSystemIdentity identity)
+    {
+        identity = default;
+        if (!GetFileInformationByHandle(handle, out ByHandleFileInformation information) ||
+            (information.FileIndexHigh == 0 && information.FileIndexLow == 0))
+        {
+            return false;
+        }
+
+        identity = new FileSystemIdentity(
+            information.VolumeSerialNumber,
+            ((ulong)information.FileIndexHigh << 32) | information.FileIndexLow);
+        return true;
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     private struct ByHandleFileInformation
     {
         internal uint FileAttributes;
-        internal SystemTime CreationTime;
-        internal SystemTime LastAccessTime;
-        internal SystemTime LastWriteTime;
+        internal FileTime CreationTime;
+        internal FileTime LastAccessTime;
+        internal FileTime LastWriteTime;
         internal uint VolumeSerialNumber;
         internal uint FileSizeHigh;
         internal uint FileSizeLow;
@@ -1021,16 +1190,10 @@ internal sealed class SafePathBoundary : IDisposable
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct SystemTime
+    private struct FileTime
     {
-        internal ushort Year;
-        internal ushort Month;
-        internal ushort DayOfWeek;
-        internal ushort Day;
-        internal ushort Hour;
-        internal ushort Minute;
-        internal ushort Second;
-        internal ushort Milliseconds;
+        internal uint LowDateTime;
+        internal uint HighDateTime;
     }
 
     [DllImport("libc", EntryPoint = "open", CharSet = CharSet.Ansi, SetLastError = true)]
@@ -1194,7 +1357,7 @@ internal static class SafeFileReader
         string path,
         long maximumBytes,
         long? remainingTotalBytes,
-        UnixFileIdentity? expectedIdentity,
+        FileSystemIdentity? expectedIdentity,
         out byte[] bytes,
         out long bytesRead,
         Action? afterInitialLengthRead)
@@ -1304,7 +1467,7 @@ internal static class SafeFileReader
     private static bool TryOpenRegularFile(
         string repositoryRoot,
         string path,
-        UnixFileIdentity? expectedIdentity,
+        FileSystemIdentity? expectedIdentity,
         out FileStream? stream,
         out SafeFileReadStatus status)
     {
@@ -1318,8 +1481,7 @@ internal static class SafeFileReader
         {
             fullRoot = Path.GetFullPath(repositoryRoot);
             fullPath = Path.GetFullPath(path);
-            if (!PathUtilities.IsWithin(fullRoot, fullPath) ||
-                fullPath.Equals(fullRoot, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+            if (!PathUtilities.IsWithin(fullRoot, fullPath))
             {
                 return false;
             }
@@ -1683,7 +1845,7 @@ internal static class SafeFileReader
 internal sealed record SafeFileEntry(
     string FullPath,
     string RelativePath,
-    UnixFileIdentity? ExpectedIdentity = null);
+    FileSystemIdentity? ExpectedIdentity = null);
 
 internal sealed record WalkResult(
     IReadOnlyList<SafeFileEntry> Files,
@@ -1754,11 +1916,26 @@ internal static class SafeFileWalker
         SafePathBoundary? ownedBoundary = null;
         IDisposable? boundaryScope = null;
         SafePathBoundary? boundary = SafePathBoundaryContext.Current;
+        FilesystemTraversalBudget budget =
+            FilesystemTraversalBudgetContext.Current ?? new FilesystemTraversalBudget();
         if (boundary is null || !boundary.Matches(repositoryRoot))
         {
+            if (budget.IsExhausted)
+            {
+                return new WalkResult([], [], new ScanError(
+                    FixtureVaultContract.FilesystemTraversalErrorCode,
+                    FixtureVaultContract.FilesystemTraversalErrorMessage));
+            }
+
             if (!SafePathBoundary.TryCreate(repositoryRoot, out ownedBoundary) || ownedBoundary is null)
             {
-                return new WalkResult([], [], new ScanError("FV-E002", "A configured fixture root could not be inspected completely."));
+                return new WalkResult([], [], new ScanError(
+                    budget.IsExhausted
+                        ? FixtureVaultContract.FilesystemTraversalErrorCode
+                        : "FV-E002",
+                    budget.IsExhausted
+                        ? FixtureVaultContract.FilesystemTraversalErrorMessage
+                        : "A configured fixture root could not be inspected completely."));
             }
 
             boundary = ownedBoundary;
@@ -1767,8 +1944,6 @@ internal static class SafeFileWalker
 
         try
         {
-            FilesystemTraversalBudget budget =
-                FilesystemTraversalBudgetContext.Current ?? new FilesystemTraversalBudget();
             string relativeRoot = PathUtilities.NormalizeRelative(repositoryRoot, root);
             if (relativeRoot == ".")
             {
@@ -1812,8 +1987,12 @@ internal static class SafeFileWalker
         if (!boundary.TryDuplicateDirectory(relativeRoot, out int startingDescriptor))
         {
             return new WalkResult(files, reparsePaths, new ScanError(
-                "FV-E002",
-                "A configured fixture root could not be inspected completely."));
+                budget.IsExhausted
+                    ? FixtureVaultContract.FilesystemTraversalErrorCode
+                    : "FV-E002",
+                budget.IsExhausted
+                    ? FixtureVaultContract.FilesystemTraversalErrorMessage
+                    : "A configured fixture root could not be inspected completely."));
         }
 
         var pending = new Stack<UnixPendingDirectory>();
@@ -1848,8 +2027,12 @@ internal static class SafeFileWalker
                     if (!trustedPathAfterEnumerationHook)
                     {
                         return new WalkResult(files, reparsePaths, new ScanError(
-                            "FV-E002",
-                            "A configured fixture root could not be inspected completely."));
+                            budget.IsExhausted
+                                ? FixtureVaultContract.FilesystemTraversalErrorCode
+                                : "FV-E002",
+                            budget.IsExhausted
+                                ? FixtureVaultContract.FilesystemTraversalErrorMessage
+                                : "A configured fixture root could not be inspected completely."));
                     }
 
                     int readIndex = 0;
@@ -1904,12 +2087,16 @@ internal static class SafeFileWalker
                                 directory.Descriptor,
                                 name,
                                 out int childDescriptor,
-                                out UnixFileIdentity identity,
+                                out FileSystemIdentity identity,
                                 out bool isDirectory))
                         {
                             return new WalkResult(files, reparsePaths, new ScanError(
-                                "FV-E002",
-                                "A configured fixture root could not be inspected completely."));
+                                budget.IsExhausted
+                                    ? FixtureVaultContract.FilesystemTraversalErrorCode
+                                    : "FV-E002",
+                                budget.IsExhausted
+                                    ? FixtureVaultContract.FilesystemTraversalErrorMessage
+                                    : "A configured fixture root could not be inspected completely."));
                         }
 
                         if (isDirectory)
@@ -1934,8 +2121,12 @@ internal static class SafeFileWalker
                             {
                                 SafePathBoundary.CloseDescriptor(childDescriptor);
                                 return new WalkResult(files, reparsePaths, new ScanError(
-                                    "FV-E002",
-                                    "A configured fixture root could not be inspected completely."));
+                                    budget.IsExhausted
+                                        ? FixtureVaultContract.FilesystemTraversalErrorCode
+                                        : "FV-E002",
+                                    budget.IsExhausted
+                                        ? FixtureVaultContract.FilesystemTraversalErrorMessage
+                                        : "A configured fixture root could not be inspected completely."));
                             }
 
                             if (directoryStatus == GlobMatchStatus.Match)
@@ -1990,8 +2181,12 @@ internal static class SafeFileWalker
         if (!boundary.TryOpenDirectory(relativeRoot, out SafeFileHandle? startingHandle) || startingHandle is null)
         {
             return new WalkResult(files, reparsePaths, new ScanError(
-                "FV-E002",
-                "A configured fixture root could not be inspected completely."));
+                budget.IsExhausted
+                    ? FixtureVaultContract.FilesystemTraversalErrorCode
+                    : "FV-E002",
+                budget.IsExhausted
+                    ? FixtureVaultContract.FilesystemTraversalErrorMessage
+                    : "A configured fixture root could not be inspected completely."));
         }
 
         startingHandle.Dispose();
@@ -2018,8 +2213,12 @@ internal static class SafeFileWalker
             if (!IsSafeDirectoryForEnumeration(repositoryRoot, directory, boundary))
             {
                 return new WalkResult(files, reparsePaths, new ScanError(
-                    "FV-E002",
-                    "A configured fixture root could not be inspected completely."));
+                    budget.IsExhausted
+                        ? FixtureVaultContract.FilesystemTraversalErrorCode
+                        : "FV-E002",
+                    budget.IsExhausted
+                        ? FixtureVaultContract.FilesystemTraversalErrorMessage
+                        : "A configured fixture root could not be inspected completely."));
             }
 
             try
@@ -2038,8 +2237,12 @@ internal static class SafeFileWalker
                     if (!IsSafeDirectoryForEnumeration(repositoryRoot, directory, boundary))
                     {
                         return new WalkResult(files, reparsePaths, new ScanError(
-                            "FV-E002",
-                            "A configured fixture root could not be inspected completely."));
+                            budget.IsExhausted
+                                ? FixtureVaultContract.FilesystemTraversalErrorCode
+                                : "FV-E002",
+                            budget.IsExhausted
+                                ? FixtureVaultContract.FilesystemTraversalErrorMessage
+                                : "A configured fixture root could not be inspected completely."));
                     }
 
                     if (!budget.TryConsumeEntry())
@@ -2071,8 +2274,12 @@ internal static class SafeFileWalker
                     if (!boundary.TryPathExists(relativePath))
                     {
                         return new WalkResult(files, reparsePaths, new ScanError(
-                            "FV-E002",
-                            "A configured fixture root could not be inspected completely."));
+                            budget.IsExhausted
+                                ? FixtureVaultContract.FilesystemTraversalErrorCode
+                                : "FV-E002",
+                            budget.IsExhausted
+                                ? FixtureVaultContract.FilesystemTraversalErrorMessage
+                                : "A configured fixture root could not be inspected completely."));
                     }
 
                     if ((attributes & FileAttributes.ReparsePoint) != 0)
@@ -2098,8 +2305,12 @@ internal static class SafeFileWalker
                             if (!boundary.TryOpenDirectory(relativePath, out SafeFileHandle? childHandle) || childHandle is null)
                             {
                                 return new WalkResult(files, reparsePaths, new ScanError(
-                                    "FV-E002",
-                                    "A configured fixture root could not be inspected completely."));
+                                    budget.IsExhausted
+                                        ? FixtureVaultContract.FilesystemTraversalErrorCode
+                                        : "FV-E002",
+                                    budget.IsExhausted
+                                        ? FixtureVaultContract.FilesystemTraversalErrorMessage
+                                        : "A configured fixture root could not be inspected completely."));
                             }
 
                             childHandle.Dispose();
@@ -2111,11 +2322,26 @@ internal static class SafeFileWalker
                         if (!IsSafeDirectoryForEnumeration(repositoryRoot, directory, boundary))
                         {
                             return new WalkResult(files, reparsePaths, new ScanError(
-                                "FV-E002",
-                                "A configured fixture root could not be inspected completely."));
+                                budget.IsExhausted
+                                    ? FixtureVaultContract.FilesystemTraversalErrorCode
+                                    : "FV-E002",
+                                budget.IsExhausted
+                                    ? FixtureVaultContract.FilesystemTraversalErrorMessage
+                                    : "A configured fixture root could not be inspected completely."));
                         }
 
-                        files.Add(new SafeFileEntry(entry.FullName, relativePath));
+                        if (!SafePathBoundary.TryGetPathIdentity(entry.FullName, out FileSystemIdentity identity))
+                        {
+                            return new WalkResult(files, reparsePaths, new ScanError(
+                                budget.IsExhausted
+                                    ? FixtureVaultContract.FilesystemTraversalErrorCode
+                                    : "FV-E002",
+                                budget.IsExhausted
+                                    ? FixtureVaultContract.FilesystemTraversalErrorMessage
+                                    : "A configured fixture root could not be inspected completely."));
+                        }
+
+                        files.Add(new SafeFileEntry(entry.FullName, relativePath, identity));
                     }
 
                     hasEntry = enumerator.MoveNext();

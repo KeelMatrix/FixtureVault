@@ -58,8 +58,19 @@ $historyWorkflow = [IO.File]::ReadAllText($historyWorkflowPath)
 $historyGuard = [IO.File]::ReadAllText($historyGuardPath)
 $smokeScript = [IO.File]::ReadAllText($smokeScriptPath)
 $devGuide = [IO.File]::ReadAllText($devGuidePath)
+$releaseContractSource = [IO.File]::ReadAllText($PSCommandPath)
+$internalReleaseTerms = @(
+    ([char[]](0x66, 0x72, 0x6f, 0x6e, 0x74, 0x69, 0x65, 0x72) -join ""),
+    (([char[]](0x70, 0x6c, 0x61, 0x6e, 0x6e, 0x65, 0x64) -join "") + ([char[]](0x50, 0x72, 0x65, 0x46, 0x72, 0x6f, 0x6e, 0x74, 0x69, 0x65, 0x72) -join "")),
+    (([char[]](0x63, 0x6f, 0x6e, 0x74, 0x72, 0x61, 0x64, 0x69, 0x63, 0x74, 0x6f, 0x72, 0x79) -join "") + ([char[]](0x50, 0x72, 0x65, 0x46, 0x72, 0x6f, 0x6e, 0x74, 0x69, 0x65, 0x72) -join "")),
+    ([char[]](0x6f, 0x72, 0x63, 0x68, 0x65, 0x73, 0x74, 0x72, 0x61, 0x74, 0x69, 0x6f, 0x6e) -join ""),
+    (([char[]](0x6d, 0x6f, 0x64, 0x65, 0x6c) -join "") + "/" + ([char[]](0x61, 0x67, 0x65, 0x6e, 0x74) -join "") + " " + ([char[]](0x72, 0x65, 0x76, 0x69, 0x65, 0x77) -join ""))
+)
+foreach ($internalReleaseTerm in $internalReleaseTerms) {
+    Assert-Contract (-not $releaseContractSource.Contains($internalReleaseTerm, [StringComparison]::OrdinalIgnoreCase)) "Release contract source contains internal review-process terminology '$internalReleaseTerm'."
+}
 
-function Test-PreFrontierFirstReleaseShape {
+function Test-PlannedFirstReleaseShape {
     param(
         [Parameter(Mandatory = $true)][string]$Content
     )
@@ -790,14 +801,14 @@ dotnet tool install --global KeelMatrix.FixtureVault --version 0.2.0
     $realChangelogText = [IO.File]::ReadAllText($trackedChangelogPath)
     $realChangelogIsPlanned = $realChangelogText -match '(?im)^##[ \t]+\[0\.1\.0\][^\r\n]*(?:planned|not[ \t-]+yet[ \t-]+published)'
     if ($realChangelogIsPlanned) {
-        Assert-Contract (Test-PreFrontierFirstReleaseShape $realChangelogText) "The real planned CHANGELOG.md is not a coherent pre-frontier first-release shape."
+        Assert-Contract (Test-PlannedFirstReleaseShape $realChangelogText) "The real planned CHANGELOG.md is not a coherent planned first-release state."
         Assert-Contract ($realChangelogExitCode -ne 0) "The real planned CHANGELOG.md passed the changelog publication gate. Output: $($realChangelogOutput -join [Environment]::NewLine)"
     }
     else {
         Assert-Contract ($realChangelogExitCode -eq 0) "The finalized real CHANGELOG.md was rejected by the changelog publication gate. Output: $($realChangelogOutput -join [Environment]::NewLine)"
     }
 
-    $plannedPreFrontier = @"
+    $plannedFirstRelease = @"
 # Changelog
 
 ## [Unreleased]
@@ -808,12 +819,12 @@ dotnet tool install --global KeelMatrix.FixtureVault --version 0.2.0
 
 - The first public tool contract is documented.
 "@
-    $plannedHeadingMatch = $plannedPreFrontier -match '(?im)^##[ \t]+\[0\.1\.0\][ \t]+-[ \t]+planned[ \t]+\(not[ \t-]+yet[ \t-]+published\)[ \t]*(?:\r)?$'
-    $plannedAddedMatch = $plannedPreFrontier -match '(?im)^###[ \t]+added\b'
-    $plannedNoFixedMatch = $plannedPreFrontier -notmatch '(?im)^###[ \t]+fixed\b'
-    Assert-Contract ([bool]($plannedHeadingMatch -and $plannedAddedMatch -and $plannedNoFixedMatch)) "A coherent planned first-release changelog was rejected by the pre-frontier state check."
+    $plannedHeadingMatch = $plannedFirstRelease -match '(?im)^##[ \t]+\[0\.1\.0\][ \t]+-[ \t]+planned[ \t]+\(not[ \t-]+yet[ \t-]+published\)[ \t]*(?:\r)?$'
+    $plannedAddedMatch = $plannedFirstRelease -match '(?im)^###[ \t]+added\b'
+    $plannedNoFixedMatch = $plannedFirstRelease -notmatch '(?im)^###[ \t]+fixed\b'
+    Assert-Contract ([bool]($plannedHeadingMatch -and $plannedAddedMatch -and $plannedNoFixedMatch)) "A coherent planned first-release changelog was rejected by the planned first-release state check."
 
-    $contradictoryPreFrontier = @"
+    $contradictoryPlannedRelease = @"
 # Changelog
 
 ## [Unreleased]
@@ -828,9 +839,9 @@ dotnet tool install --global KeelMatrix.FixtureVault --version 0.2.0
 
 - The first public tool contract is documented.
 "@
-    $contradictoryPlannedHeadingMatch = $contradictoryPreFrontier -notmatch '(?im)^##[ \t]+\[0\.1\.0\][ \t]+-[ \t]+planned[ \t]+\(not[ \t-]+yet[ \t-]+published\)[ \t]*(?:\r)?$'
-    $contradictoryFixedMatch = $contradictoryPreFrontier -match '(?im)^##[ \t]+\[unreleased\][\s\S]*^###[ \t]+fixed\b'
-    Assert-Contract ([bool]($contradictoryPlannedHeadingMatch -and $contradictoryFixedMatch)) "A contradictory released-plus-unreleased-fixes changelog passed the pre-frontier state check."
+    $contradictoryPlannedHeadingMatch = $contradictoryPlannedRelease -notmatch '(?im)^##[ \t]+\[0\.1\.0\][ \t]+-[ \t]+planned[ \t]+\(not[ \t-]+yet[ \t-]+published\)[ \t]*(?:\r)?$'
+    $contradictoryFixedMatch = $contradictoryPlannedRelease -match '(?im)^##[ \t]+\[unreleased\][\s\S]*^###[ \t]+fixed\b'
+    Assert-Contract ([bool]($contradictoryPlannedHeadingMatch -and $contradictoryFixedMatch)) "A contradictory released-plus-unreleased-fixes changelog passed the planned first-release state check."
 
     $changelogTagMismatch = Invoke-ChangelogContract @"
 # Changelog

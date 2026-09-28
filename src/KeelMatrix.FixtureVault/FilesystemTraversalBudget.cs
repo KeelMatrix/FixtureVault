@@ -5,26 +5,52 @@
 internal sealed class FilesystemTraversalBudget
 {
     internal const int DefaultMaximumEntries = 100_000;
+    internal const long DefaultMaximumPathOperations = 1_000_000;
 
-    internal FilesystemTraversalBudget(int maximumEntries = DefaultMaximumEntries)
+    internal FilesystemTraversalBudget(
+        int maximumEntries = DefaultMaximumEntries,
+        long maximumPathOperations = DefaultMaximumPathOperations)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumEntries);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumPathOperations);
 
         MaximumEntries = maximumEntries;
+        MaximumPathOperations = maximumPathOperations;
     }
 
     internal int MaximumEntries { get; }
 
+    internal long MaximumPathOperations { get; }
+
     internal int EntriesConsumed { get; private set; }
+
+    internal long PathOperationsConsumed { get; private set; }
+
+    internal bool IsExhausted { get; private set; }
 
     internal bool TryConsumeEntry()
     {
         if (EntriesConsumed >= MaximumEntries)
         {
+            IsExhausted = true;
             return false;
         }
 
         EntriesConsumed++;
+        return true;
+    }
+
+    internal bool TryConsumePathOperations(long operationCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(operationCount);
+        if (PathOperationsConsumed > MaximumPathOperations - operationCount)
+        {
+            PathOperationsConsumed = MaximumPathOperations;
+            IsExhausted = true;
+            return false;
+        }
+
+        PathOperationsConsumed += operationCount;
         return true;
     }
 }

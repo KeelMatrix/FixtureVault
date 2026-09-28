@@ -138,9 +138,10 @@ internal static class CommandLineParser
             Root safety:
               Policy roots and --root overrides are limited to 64 entries. Exceeding the limit
               returns FV-E018, exit code 2, and no successful-scan telemetry.
-              Filesystem traversal has one 100,000-entry budget shared by all active roots and
-              repository-wide path-policy discovery. Exhaustion returns exit code 2; active-root
-              exhaustion reports FV-E003 and repository-wide exhaustion reports FV-E015.
+              Filesystem traversal has one scan-wide budget of 100,000 entries and 1,000,000
+              path operations shared by all active roots and repository-wide path-policy discovery.
+              Exhaustion returns exit code 2; active-root exhaustion reports FV-E003 and
+              repository-wide exhaustion reports FV-E015.
 
             Exit codes:
               0  Scan completed without policy-blocking findings.

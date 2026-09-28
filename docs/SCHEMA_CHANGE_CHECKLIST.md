@@ -11,7 +11,7 @@ Use this checklist before changing a FixtureVault contract. Treat the current be
 - JSON report `schemaVersion`, fields, finding shape, skipped diagnostics, errors, and exit-code mapping.
 - Stable rule IDs `FV001` through `FV008` and the meaning of each finding.
 - Stable `FV-SKIP-*` skipped-diagnostic codes, including the per-file diagnostic recorded when content inspection cannot run: no supported encoding decodes the bytes, or the decoded text contains `U+0000` whatever the declared encoding. The reported reason states the observed condition and names the declared encoding when a byte-order mark declared one, and stable `FV-E0xx` error codes keep their exit-code mapping. `FV-E017` is the fail-closed resource/diagnostic-budget error; it never represents a silently truncated report.
-- Root selection and traversal safety contracts: policy and repeated `--root` selections are capped at 64 (`FV-E018`), and one 100,000-entry filesystem budget is shared across active-root and repository-wide discovery (`FV-E003` for active-root exhaustion and `FV-E015` for repository-wide exhaustion). POSIX directory-stream errors are incomplete scans, not clean end-of-directory.
+- Root selection and traversal safety contracts: policy and repeated `--root` selections are capped at 64 (`FV-E018`), and one scan-wide filesystem budget of 100,000 entries plus 1,000,000 path operations is shared across active-root and repository-wide discovery (`FV-E003` for active-root exhaustion and `FV-E015` for repository-wide exhaustion). POSIX directory-stream errors are incomplete scans, not clean end-of-directory.
 
 ## Compatibility Decision
 
@@ -33,7 +33,7 @@ Use this checklist before changing a FixtureVault contract. Treat the current be
 - Shared assignment-parser regressions must count operations across increasing whitespace runs and prove monotonic/linear growth for non-assignment suffixes, end-of-input, and real siblings without lowering the fixture-size limit.
 - Test human-readable escaping for control-character paths while asserting that JSON round-trips the actual path value.
 - Test open-boundary replacement, regular-file checks, bounded growth and shrinkage, incremental entry limits, and the aggregate 4,096-record / 1 MiB JSON-field diagnostic budget across findings, skipped diagnostics, and collision diagnostics; incomplete scans must not activate successful-scan telemetry.
-- Test 64/65 policy roots and CLI roots, nested/overlapping roots at the shared traversal boundary, active-root plus repository-wide budget totals, and POSIX directory-stream errors at first, middle, and final stream positions for both traversal modes. Assert the documented error mapping, `Completed=false`, exit `2`, and no successful-scan telemetry.
+- Test 64/65 policy roots and CLI roots, nested/overlapping roots at the shared traversal boundary, exact-limit and beyond-limit entry/path-operation budgets, increasing-depth path validation, active-root plus repository-wide budget totals, and POSIX directory-stream errors at first, middle, and final stream positions for both traversal modes. Assert the documented error mapping, `Completed=false`, exit `2`, and no successful-scan telemetry.
 - Run the affected tests, full test project, format verification, and package inspection.
 
 ## Documentation and Release Notes
