@@ -185,12 +185,31 @@ try {
         $helpPath = Join-Path $workRoot "help.txt"
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("--help") $helpPath) -eq 0) "fixturevault --help failed."
         $help = [IO.File]::ReadAllText($helpPath)
-        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault" -and $help -match "filesDiscovered" -and $help -match "FV007 detects high-confidence structured credentials without disclosing" -and $help -match "DETECTION_GRAMMAR.md") "fixturevault --help did not print the expected usage text."
+        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault" -and $help -match "filesDiscovered" -and $help -match "FV007 detects high-confidence structured credentials without disclosing" -and $help -match "DETECTION_GRAMMAR.md" -and $help -match "FV-E018" -and $help -match "100,000-entry budget") "fixturevault --help did not print the expected usage text."
 
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "init.txt")) -eq 0) "fixturevault init failed."
         Assert-Contract (Test-Path -LiteralPath (Join-Path $consumerRoot ".fixturevault.json")) "fixturevault init did not create .fixturevault.json."
         $cleanScanPath = Join-Path $workRoot "clean-scan.txt"
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("scan") $cleanScanPath) -eq 0) "Clean fixturevault scan failed."
+
+        $rootBoundaryArguments = @("scan", "--format", "json")
+        for ($rootIndex = 0; $rootIndex -lt 64; $rootIndex++) {
+            $rootBoundaryArguments += @("--root", ".")
+        }
+        $rootBoundaryPath = Join-Path $workRoot "root-boundary.json"
+        $rootBoundaryCode = Invoke-CommandCapture $fixtureVault $rootBoundaryArguments $rootBoundaryPath
+        $rootBoundaryReport = [IO.File]::ReadAllText($rootBoundaryPath) | ConvertFrom-Json
+        Assert-Contract ($rootBoundaryCode -eq 0 -and $rootBoundaryReport.completed -and @($rootBoundaryReport.errors).Count -eq 0) "The installed package rejected 64 --root overrides or returned an incomplete scan."
+
+        $rootOverflowArguments = @("scan", "--format", "json")
+        for ($rootIndex = 0; $rootIndex -lt 65; $rootIndex++) {
+            $rootOverflowArguments += @("--root", ".")
+        }
+        $rootOverflowPath = Join-Path $workRoot "root-overflow.txt"
+        $rootOverflowCode = Invoke-CommandCapture $fixtureVault $rootOverflowArguments $rootOverflowPath
+        $rootOverflowText = [IO.File]::ReadAllText($rootOverflowPath)
+        Assert-Contract ($rootOverflowCode -eq 2 -and $rootOverflowText.Contains("FV-E018", [StringComparison]::Ordinal) -and $rootOverflowText.Contains("64 configured roots", [StringComparison]::Ordinal)) "The installed package did not fail closed for 65 --root overrides."
+        Write-Host "Installed package root-boundary smoke: 64 --root overrides completed and 65 returned FV-E018 with exit 2."
 
         $testsRoot = Join-Path $consumerRoot "tests"
         New-Item -ItemType Directory -Force -Path $testsRoot | Out-Null

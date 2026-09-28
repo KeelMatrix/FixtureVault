@@ -26,6 +26,11 @@ internal static class FixtureVaultContract
     internal const string UninspectableContentErrorMessage = "Content inspection could not be completed because no encoding suitable for inspection could be established.";
     internal const string DiagnosticBudgetErrorCode = "FV-E017";
     internal const string DiagnosticBudgetErrorMessage = "The scan exceeded its diagnostic safety limit before a trustworthy report could be produced.";
+    internal const string RootCountErrorCode = "FV-E018";
+    internal const string RootCountErrorMessage = "The scan cannot use more than 64 configured roots.";
+    internal const string FilesystemTraversalErrorCode = "FV-E003";
+    internal const string FilesystemTraversalErrorMessage = "The scan exceeded its scan-wide filesystem entry safety limit.";
+    internal const int MaximumConfiguredRoots = 64;
     internal const int MaximumDiagnosticCount = DiagnosticBudget.MaximumDiagnosticCount;
     internal const long MaximumDiagnosticBytes = DiagnosticBudget.MaximumEstimatedBytes;
     internal const string UninspectableContentSkippedCode = "FV-SKIP-ENCODING";

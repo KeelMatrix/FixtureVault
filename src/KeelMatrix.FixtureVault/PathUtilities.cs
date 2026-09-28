@@ -302,6 +302,8 @@ internal static class PathUtilities
 
 internal readonly record struct UnixFileIdentity(long Device, long Inode);
 
+internal readonly record struct DirectoryEntryReadResult(IntPtr Entry, int ErrorNumber);
+
 internal static class WindowsPathResolver
 {
     private const int InitialBufferLength = 512;
@@ -393,6 +395,7 @@ internal sealed class SafePathBoundary : IDisposable
     private readonly SafeFileHandle? unixRootHandle;
     private readonly SafeFileHandle? windowsRootHandle;
     private readonly string? trustedWindowsRootPath;
+    private static readonly AsyncLocal<Func<string, int, DirectoryEntryReadResult, DirectoryEntryReadResult?>?> DirectoryEntryReadHook = new();
 
     private SafePathBoundary(
         string rootPath,
@@ -697,7 +700,26 @@ internal sealed class SafePathBoundary : IDisposable
 
     internal static IntPtr OpenDirectoryStream(int descriptor) => UnixFdOpenDirectory(descriptor);
 
-    internal static IntPtr ReadDirectoryEntry(IntPtr directoryStream) => UnixReadDirectory(directoryStream);
+    internal static DirectoryEntryReadResult ReadDirectoryEntry(
+        string relativeDirectory,
+        IntPtr directoryStream,
+        int readIndex)
+    {
+        Marshal.SetLastPInvokeError(0);
+        IntPtr entry = UnixReadDirectory(directoryStream);
+        var nativeResult = new DirectoryEntryReadResult(
+            entry,
+            entry == IntPtr.Zero ? Marshal.GetLastPInvokeError() : 0);
+        return DirectoryEntryReadHook.Value?.Invoke(relativeDirectory, readIndex, nativeResult) ?? nativeResult;
+    }
+
+    internal static IDisposable PushDirectoryEntryReadHook(
+        Func<string, int, DirectoryEntryReadResult, DirectoryEntryReadResult?> hook)
+    {
+        Func<string, int, DirectoryEntryReadResult, DirectoryEntryReadResult?>? previous = DirectoryEntryReadHook.Value;
+        DirectoryEntryReadHook.Value = hook;
+        return new DirectoryEntryReadHookScope(previous);
+    }
 
     internal static string? ReadDirectoryEntryName(IntPtr entry)
     {
@@ -725,6 +747,12 @@ internal sealed class SafePathBoundary : IDisposable
     internal static void CloseDirectoryStream(IntPtr directoryStream)
     {
         _ = UnixCloseDirectory(directoryStream);
+    }
+
+    private sealed class DirectoryEntryReadHookScope(
+        Func<string, int, DirectoryEntryReadResult, DirectoryEntryReadResult?>? previous) : IDisposable
+    {
+        public void Dispose() => DirectoryEntryReadHook.Value = previous;
     }
 
     public void Dispose()
@@ -1712,7 +1740,6 @@ internal sealed class GlobMatchBudget
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000", Justification = "Directory handles are closed on every success and failure path; descriptor ownership is transferred to the traversal stack where required.")]
 internal static class SafeFileWalker
 {
-    private const int MaximumEntries = 100_000;
     internal static Action<string>? BeforeEnumerationForTesting { get; set; }
     internal static Action<string>? AfterEnumerationOpenedForTesting { get; set; }
 
@@ -1740,6 +1767,8 @@ internal static class SafeFileWalker
 
         try
         {
+            FilesystemTraversalBudget budget =
+                FilesystemTraversalBudgetContext.Current ?? new FilesystemTraversalBudget();
             string relativeRoot = PathUtilities.NormalizeRelative(repositoryRoot, root);
             if (relativeRoot == ".")
             {
@@ -1747,8 +1776,8 @@ internal static class SafeFileWalker
             }
 
             return OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()
-                ? WalkUnix(repositoryRoot, relativeRoot, failOnAccessErrors, shouldPruneDirectory, boundary)
-                : WalkPath(repositoryRoot, root, relativeRoot, failOnAccessErrors, shouldPruneDirectory, boundary);
+                ? WalkUnix(repositoryRoot, relativeRoot, failOnAccessErrors, shouldPruneDirectory, boundary, budget)
+                : WalkPath(repositoryRoot, root, relativeRoot, failOnAccessErrors, shouldPruneDirectory, boundary, budget);
         }
         finally
         {
@@ -1762,7 +1791,8 @@ internal static class SafeFileWalker
         string relativeRoot,
         bool failOnAccessErrors,
         Func<string, GlobMatchStatus>? shouldPruneDirectory,
-        SafePathBoundary boundary)
+        SafePathBoundary boundary,
+        FilesystemTraversalBudget budget)
     {
         var files = new List<SafeFileEntry>();
         var reparsePaths = new List<string>();
@@ -1788,7 +1818,6 @@ internal static class SafeFileWalker
 
         var pending = new Stack<UnixPendingDirectory>();
         pending.Push(new UnixPendingDirectory(startingDescriptor, relativeRoot));
-        int entriesSeen = 0;
 
         try
         {
@@ -1823,13 +1852,31 @@ internal static class SafeFileWalker
                             "A configured fixture root could not be inspected completely."));
                     }
 
+                    int readIndex = 0;
                     while (true)
                     {
-                        IntPtr entry = SafePathBoundary.ReadDirectoryEntry(directoryStream);
-                        string? name = SafePathBoundary.ReadDirectoryEntryName(entry);
+                        DirectoryEntryReadResult readResult = SafePathBoundary.ReadDirectoryEntry(
+                            directory.RelativePath,
+                            directoryStream,
+                            readIndex++);
+                        if (readResult.Entry == IntPtr.Zero)
+                        {
+                            if (readResult.ErrorNumber != 0)
+                            {
+                                return new WalkResult(files, reparsePaths, new ScanError(
+                                    "FV-E002",
+                                    "A configured fixture root could not be inspected completely."));
+                            }
+
+                            break;
+                        }
+
+                        string? name = SafePathBoundary.ReadDirectoryEntryName(readResult.Entry);
                         if (name is null)
                         {
-                            break;
+                            return new WalkResult(files, reparsePaths, new ScanError(
+                                "FV-E002",
+                                "A configured fixture root could not be inspected completely."));
                         }
 
                         if (name is "." or "..")
@@ -1837,11 +1884,11 @@ internal static class SafeFileWalker
                             continue;
                         }
 
-                        if (++entriesSeen > MaximumEntries)
+                        if (!budget.TryConsumeEntry())
                         {
                             return new WalkResult(files, reparsePaths, new ScanError(
-                                "FV-E003",
-                                "The scan exceeded its filesystem entry safety limit."));
+                                FixtureVaultContract.FilesystemTraversalErrorCode,
+                                FixtureVaultContract.FilesystemTraversalErrorMessage));
                         }
 
                         string relativePath = string.IsNullOrEmpty(directory.RelativePath)
@@ -1933,7 +1980,8 @@ internal static class SafeFileWalker
         string relativeRoot,
         bool failOnAccessErrors,
         Func<string, GlobMatchStatus>? shouldPruneDirectory,
-        SafePathBoundary boundary)
+        SafePathBoundary boundary,
+        FilesystemTraversalBudget budget)
     {
         var files = new List<SafeFileEntry>();
         var reparsePaths = new List<string>();
@@ -1963,7 +2011,6 @@ internal static class SafeFileWalker
         }
 
         pending.Push(startingDirectory);
-        int entriesSeen = 0;
 
         while (pending.Count > 0)
         {
@@ -1995,11 +2042,11 @@ internal static class SafeFileWalker
                             "A configured fixture root could not be inspected completely."));
                     }
 
-                    if (!IsWithinEntryLimit(ref entriesSeen))
+                    if (!budget.TryConsumeEntry())
                     {
                         return new WalkResult(files, reparsePaths, new ScanError(
-                            "FV-E003",
-                            "The scan exceeded its filesystem entry safety limit."));
+                            FixtureVaultContract.FilesystemTraversalErrorCode,
+                            FixtureVaultContract.FilesystemTraversalErrorMessage));
                     }
 
                     FileAttributes attributes;
@@ -2141,7 +2188,6 @@ internal static class SafeFileWalker
                directory.LinkTarget is null;
     }
 
-    private static bool IsWithinEntryLimit(ref int entriesSeen) => ++entriesSeen <= MaximumEntries;
 }
 
 internal sealed class GlobMatcher

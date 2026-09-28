@@ -26,7 +26,9 @@ internal sealed class FixtureScanner
         FixtureFileWalk? fileWalk = null,
         Func<byte[], ContentClassification>? contentClassifier = null,
         Action? afterManifestInitialLengthRead = null,
-        Action? afterFixtureInitialLengthRead = null)
+        Action? afterFixtureInitialLengthRead = null,
+        FilesystemTraversalBudget? traversalBudget = null,
+        Func<string, int, DirectoryEntryReadResult, DirectoryEntryReadResult?>? directoryEntryReadHook = null)
     {
         bool strict = strictOverride || policy.Ci?.Strict == true;
         SafePathBoundary? ownedBoundary = null;
@@ -55,7 +57,9 @@ internal sealed class FixtureScanner
                 fileWalk,
                 contentClassifier,
                 afterManifestInitialLengthRead,
-                afterFixtureInitialLengthRead);
+                afterFixtureInitialLengthRead,
+                traversalBudget,
+                directoryEntryReadHook);
         }
         catch (DiagnosticBudgetExceededException)
         {
@@ -82,7 +86,9 @@ internal sealed class FixtureScanner
         FixtureFileWalk? fileWalk,
         Func<byte[], ContentClassification>? contentClassifier,
         Action? afterManifestInitialLengthRead,
-        Action? afterFixtureInitialLengthRead)
+        Action? afterFixtureInitialLengthRead,
+        FilesystemTraversalBudget? traversalBudgetOverride,
+        Func<string, int, DirectoryEntryReadResult, DirectoryEntryReadResult?>? directoryEntryReadHook)
     {
         var findings = new List<Finding>();
         var skipped = new List<SkippedDiagnostic>();
@@ -93,6 +99,21 @@ internal sealed class FixtureScanner
         bool strict = strictOverride || policy.Ci?.Strict == true;
         GlobMatchBudget ignoreBudget = matcherBudget ?? new GlobMatchBudget();
         FixtureFileWalk walkFunction = fileWalk ?? SafeFileWalker.Walk;
+        IReadOnlyList<string> configuredRoots = rootOverrides.Count > 0 ? rootOverrides : policy.Roots!;
+        if (configuredRoots.Count > FixtureVaultContract.MaximumConfiguredRoots)
+        {
+            return CompleteWithErrors(
+                [new ScanError(
+                    FixtureVaultContract.RootCountErrorCode,
+                    FixtureVaultContract.RootCountErrorMessage)],
+                strict);
+        }
+
+        FilesystemTraversalBudget traversalBudget = traversalBudgetOverride ?? new FilesystemTraversalBudget();
+        using IDisposable traversalBudgetScope = FilesystemTraversalBudgetContext.Push(traversalBudget);
+        using IDisposable? directoryEntryReadHookScope = directoryEntryReadHook is null
+            ? null
+            : SafePathBoundary.PushDirectoryEntryReadHook(directoryEntryReadHook);
         IReadOnlyList<ISensitiveDataDetector> detectors = CreateDefaultSensitiveDataDetectors();
         if (additionalSensitiveDataDetectors is not null)
         {
@@ -112,7 +133,6 @@ internal sealed class FixtureScanner
         }
 
         var activeRoots = new List<ResolvedRoot>();
-        IReadOnlyList<string> configuredRoots = rootOverrides.Count > 0 ? rootOverrides : policy.Roots!;
         var seenRoots = new HashSet<string>(
             OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
         foreach (string configuredRoot in configuredRoots)
@@ -409,7 +429,7 @@ internal sealed class FixtureScanner
         AddReparseSkips(walk, skipped, diagnosticBudget);
         if (walk.Error is not null)
         {
-            errors.Add(walk.Error.Code == "FV-E002"
+            errors.Add(walk.Error.Code is "FV-E002" or FixtureVaultContract.FilesystemTraversalErrorCode
                 ? new ScanError(
                     FixtureVaultContract.PathPolicyTraversalErrorCode,
                     FixtureVaultContract.PathPolicyTraversalErrorMessage)

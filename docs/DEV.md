@@ -27,9 +27,12 @@ pwsh -NoProfile -File ./scripts/test-history-gate.ps1
 ```
 
 The safety regressions cover ancestor-link replacement during repository-wide path-policy discovery, both directions of
-a read-boundary change, and the aggregate diagnostic bound. The
-aggregate bound applies to ordinary findings and skipped diagnostics as well as collision findings; exhaustion is
-`FV-E017`, exit code `2`, `Completed=false`, and no successful-scan telemetry.
+a read-boundary change, POSIX directory-stream errors at first/middle/final positions for active-root and
+repository-wide walks, 64/65 policy and CLI root counts, nested/overlapping roots, and the aggregate diagnostic and
+filesystem traversal bounds. The filesystem budget is one 100,000-entry limit across all walks; active-root
+exhaustion is `FV-E003`, repository-wide exhaustion is `FV-E015`, and root-count exhaustion is `FV-E018`. Every
+exhaustion path is exit code `2`, `Completed=false`, and no successful-scan telemetry. The aggregate diagnostic bound
+applies to ordinary findings and skipped diagnostics as well as collision findings; its exhaustion is `FV-E017`.
 
 The CI matrix runs the packed-tool consumer smoke on Windows, macOS, Linux x64, and `ubuntu-24.04-arm`; each leg
 exercises `init`, a clean scan, isolated FV007 structured-value cases in both console and JSON formats, strict and

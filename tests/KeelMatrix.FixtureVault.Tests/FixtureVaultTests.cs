@@ -175,6 +175,8 @@ public sealed class FixtureVaultTests
         Assert.Contains("DETECTION_GRAMMAR.md", output, StringComparison.Ordinal);
         Assert.Contains("4,096-record / 1 MiB report-field budget", output, StringComparison.Ordinal);
         Assert.Contains("filesDiscovered", output, StringComparison.Ordinal);
+        Assert.Contains("FV-E018", output, StringComparison.Ordinal);
+        Assert.Contains("100,000-entry budget", output, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -4427,7 +4429,7 @@ public sealed class FixtureVaultTests
         ScanResult unignored = repository.Scan();
 
         Assert.Equal(2, unignored.ExitCode);
-        Assert.Contains(unignored.Report.Errors, item => item.Code == "FV-E003");
+        Assert.Contains(unignored.Report.Errors, item => item.Code == FixtureVaultContract.PathPolicyTraversalErrorCode);
     }
 
     [Fact]
@@ -4812,6 +4814,205 @@ public sealed class FixtureVaultTests
         Assert.Equal(serialized, roundTripped.ToJson());
     }
 
+    [Theory]
+    [InlineData(false, "first")]
+    [InlineData(false, "middle")]
+    [InlineData(false, "final")]
+    [InlineData(true, "first")]
+    [InlineData(true, "middle")]
+    [InlineData(true, "final")]
+    public void Unix_directory_stream_errors_fail_closed_at_every_stream_position(
+        bool repositoryWideWalk,
+        string failurePosition)
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+        {
+            return;
+        }
+
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        if (repositoryWideWalk)
+        {
+            repository.WriteText("outside.received.json", "outside\n");
+        }
+        else
+        {
+            repository.WriteText("tests/first.received.json", "first\n");
+            repository.WriteText("tests/middle.received.json", "middle\n");
+            repository.WriteText("tests/final.received.json", "final\n");
+        }
+
+        bool injected = false;
+        int nonDotEntriesSeen = 0;
+        string targetDirectory = repositoryWideWalk ? string.Empty : "tests";
+        Func<string, int, DirectoryEntryReadResult, DirectoryEntryReadResult?> readHook =
+            (relativeDirectory, _, nativeResult) =>
+            {
+                if (injected || !relativeDirectory.Equals(targetDirectory, StringComparison.Ordinal))
+                {
+                    return null;
+                }
+
+                string? name = nativeResult.Entry == IntPtr.Zero
+                    ? null
+                    : SafePathBoundary.ReadDirectoryEntryName(nativeResult.Entry);
+                bool targetReached = failurePosition switch
+                {
+                    "first" => name is not null and not "." and not ".." && nonDotEntriesSeen == 0,
+                    "middle" => name is not null and not "." and not ".." && nonDotEntriesSeen == 1,
+                    "final" => nativeResult.Entry == IntPtr.Zero,
+                    _ => false
+                };
+
+                if (!targetReached)
+                {
+                    if (name is not null and not "." and not "..")
+                    {
+                        nonDotEntriesSeen++;
+                    }
+
+                    return null;
+                }
+
+                injected = true;
+                return new DirectoryEntryReadResult(IntPtr.Zero, 5);
+            };
+
+        var telemetry = new RecordingTelemetry();
+        int exitCode = repository.Run(
+            ["scan", "--format", "json"],
+            telemetry,
+            out string output,
+            out string error,
+            directoryEntryReadHook: readHook);
+        ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
+
+        Assert.True(injected);
+        Assert.Equal(2, exitCode);
+        Assert.Empty(error);
+        Assert.False(report.Completed);
+        Assert.Equal(repositoryWideWalk ? "FV-E015" : "FV-E002", Assert.Single(report.Errors).Code);
+        Assert.Equal(0, telemetry.SuccessfulScans);
+    }
+
+    [Theory]
+    [InlineData(64, true)]
+    [InlineData(65, false)]
+    public void Policy_root_count_boundary_is_deterministic(int rootCount, bool completes)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Roots = Enumerable.Repeat("tests", rootCount).ToList());
+        var telemetry = new RecordingTelemetry();
+
+        int exitCode = repository.Run(
+            ["scan", "--format", "json"],
+            telemetry,
+            out string output,
+            out string error);
+
+        Assert.Empty(error);
+        ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
+        Assert.Equal(completes ? 0 : 2, exitCode);
+        Assert.Equal(completes, report.Completed);
+        if (completes)
+        {
+            Assert.Empty(report.Errors);
+            Assert.Equal(1, telemetry.SuccessfulScans);
+        }
+        else
+        {
+            Assert.Equal(FixtureVaultContract.RootCountErrorCode, Assert.Single(report.Errors).Code);
+            Assert.Equal(0, telemetry.SuccessfulScans);
+        }
+    }
+
+    [Theory]
+    [InlineData(64, true)]
+    [InlineData(65, false)]
+    public void Cli_root_count_boundary_is_deterministic(int rootCount, bool completes)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        var args = new List<string> { "scan", "--format", "json" };
+        for (int index = 0; index < rootCount; index++)
+        {
+            args.Add("--root");
+            args.Add("tests");
+        }
+
+        var telemetry = new RecordingTelemetry();
+        int exitCode = repository.Run(args.ToArray(), telemetry, out string output, out string error);
+
+        Assert.Equal(completes ? 0 : 2, exitCode);
+        if (completes)
+        {
+            Assert.Empty(error);
+            ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
+            Assert.True(report.Completed);
+            Assert.Empty(report.Errors);
+            Assert.Equal(1, telemetry.SuccessfulScans);
+        }
+        else
+        {
+            Assert.Empty(output);
+            Assert.Contains(FixtureVaultContract.RootCountErrorCode, error, StringComparison.Ordinal);
+            Assert.Contains(FixtureVaultContract.RootCountErrorMessage, error, StringComparison.Ordinal);
+            Assert.Equal(0, telemetry.SuccessfulScans);
+        }
+    }
+
+    [Fact]
+    public void Filesystem_entry_budget_is_shared_by_active_and_repository_policy_walks()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/fixture.golden", "fixture\n");
+        var telemetry = new RecordingTelemetry();
+        var budget = new FilesystemTraversalBudget(3);
+
+        int exitCode = repository.Run(
+            ["scan", "--format", "json"],
+            telemetry,
+            out string output,
+            out string error,
+            traversalBudget: budget);
+        ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(error);
+        Assert.False(report.Completed);
+        Assert.Equal(FixtureVaultContract.PathPolicyTraversalErrorCode, Assert.Single(report.Errors).Code);
+        Assert.Equal(budget.MaximumEntries, budget.EntriesConsumed);
+        Assert.Equal(0, telemetry.SuccessfulScans);
+    }
+
+    [Fact]
+    public void Overlapping_roots_share_the_entry_budget_at_the_boundary()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Roots = ["tests", "tests/nested"]);
+        repository.WriteText("tests/root.golden", "root\n");
+        repository.WriteText("tests/nested/child.golden", "child\n");
+        var telemetry = new RecordingTelemetry();
+        var budget = new FilesystemTraversalBudget(3);
+
+        int exitCode = repository.Run(
+            ["scan", "--format", "json"],
+            telemetry,
+            out string output,
+            out string error,
+            traversalBudget: budget);
+        ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(error);
+        Assert.False(report.Completed);
+        Assert.Equal(FixtureVaultContract.FilesystemTraversalErrorCode, Assert.Single(report.Errors).Code);
+        Assert.Equal(budget.MaximumEntries, budget.EntriesConsumed);
+        Assert.Equal(0, telemetry.SuccessfulScans);
+    }
+
     private sealed class RecordingTelemetry : IUsageTelemetry
     {
         internal int SuccessfulScans { get; private set; }
@@ -4896,7 +5097,9 @@ public sealed class FixtureVaultTests
             GlobMatchBudget? matcherBudget = null,
             IReadOnlyList<ISensitiveDataDetector>? additionalSensitiveDataDetectors = null,
             FixtureFileWalk? fileWalk = null,
-            Action? afterFixtureInitialLengthRead = null)
+            Action? afterFixtureInitialLengthRead = null,
+            FilesystemTraversalBudget? traversalBudget = null,
+            Func<string, int, DirectoryEntryReadResult, DirectoryEntryReadResult?>? directoryEntryReadHook = null)
         {
             PolicyLoadResult policy = PolicyLoader.Load(Root);
             Assert.Null(policy.Error);
@@ -4917,7 +5120,9 @@ public sealed class FixtureVaultTests
                 matcherBudget: matcherBudget,
                 additionalSensitiveDataDetectors: additionalSensitiveDataDetectors,
                 fileWalk: fileWalk,
-                afterFixtureInitialLengthRead: afterFixtureInitialLengthRead);
+                afterFixtureInitialLengthRead: afterFixtureInitialLengthRead,
+                traversalBudget: traversalBudget,
+                directoryEntryReadHook: directoryEntryReadHook);
         }
 
         internal int Run(
@@ -4927,7 +5132,9 @@ public sealed class FixtureVaultTests
             out string error,
             IReadOnlyList<ISensitiveDataDetector>? additionalSensitiveDataDetectors = null,
             FixtureFileWalk? fileWalk = null,
-            Action? afterFixtureInitialLengthRead = null)
+            Action? afterFixtureInitialLengthRead = null,
+            FilesystemTraversalBudget? traversalBudget = null,
+            Func<string, int, DirectoryEntryReadResult, DirectoryEntryReadResult?>? directoryEntryReadHook = null)
         {
             using var stdout = new StringWriter();
             using var stderr = new StringWriter();
@@ -4939,7 +5146,9 @@ public sealed class FixtureVaultTests
                 stderr,
                 additionalSensitiveDataDetectors,
                 fileWalk,
-                afterFixtureInitialLengthRead);
+                afterFixtureInitialLengthRead,
+                traversalBudget,
+                directoryEntryReadHook);
             output = stdout.ToString();
             error = stderr.ToString();
             return exitCode;

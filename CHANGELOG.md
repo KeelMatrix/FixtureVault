@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Bounds one scan to 64 configured or CLI-selected roots and one 100,000-entry filesystem traversal budget shared across active-root and repository-wide discovery.
+- Treats POSIX directory-stream errors as incomplete scans with exit code `2` instead of accepting an uncertain end-of-directory.
+
 ## [0.1.0] - Planned (not yet published)
 
 ### Added

@@ -49,7 +49,19 @@ internal static class PolicyLoader
 
             var policy = FixtureVaultContract.DeserializeStrict<FixtureVaultPolicy>(policyBytes);
             string? validationError = null;
-            if (policy is null || !TryValidate(policy, out validationError))
+            if (policy is null)
+            {
+                return InvalidPolicy(validationError);
+            }
+
+            if (policy.Roots is not null && policy.Roots.Count > FixtureVaultContract.MaximumConfiguredRoots)
+            {
+                return new PolicyLoadResult(null, new ScanError(
+                    FixtureVaultContract.RootCountErrorCode,
+                    FixtureVaultContract.RootCountErrorMessage));
+            }
+
+            if (!TryValidate(policy, out validationError))
             {
                 return InvalidPolicy(validationError);
             }
@@ -81,7 +93,7 @@ internal static class PolicyLoader
     {
         validationError = null;
         if (policy.Version != FixtureVaultContract.PolicySchemaVersion ||
-            policy.Roots is null || policy.Roots.Count == 0 || policy.Roots.Count > 64 ||
+            policy.Roots is null || policy.Roots.Count == 0 || policy.Roots.Count > FixtureVaultContract.MaximumConfiguredRoots ||
             policy.AllowedExtensions is null || policy.AllowedExtensions.Count == 0 || policy.AllowedExtensions.Count > 128 ||
             policy.Conventions is null || policy.Conventions.Count == 0 || policy.Conventions.Count > 32 ||
             policy.SensitiveDataRules is null || policy.SensitiveDataRules.Count == 0 || policy.SensitiveDataRules.Count > 32 ||
