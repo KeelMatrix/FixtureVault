@@ -33,6 +33,14 @@ jobs:
         with:
           dotnet-version: "8.0.424"
 
+      - name: Verify hidden child PowerShell launch guard
+        shell: pwsh
+        run: ./build/Test-NestedPwshLaunch.ps1 -SelfTest
+
+      - name: Scan repository child PowerShell launches
+        shell: pwsh
+        run: ./build/Test-NestedPwshLaunch.ps1
+
       - name: Restore dependencies
         run: dotnet restore KeelMatrix.FixtureVault.sln
 

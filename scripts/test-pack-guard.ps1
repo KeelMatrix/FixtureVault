@@ -3,6 +3,13 @@ param()
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot '../build/Invoke-NestedPwsh.ps1')
+$repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+$launchGuard = Join-Path $repositoryRoot 'build/Test-NestedPwshLaunch.ps1'
+& $launchGuard -SelfTest
+if ($LASTEXITCODE -ne 0) { throw 'Nested PowerShell launch guard self-test failed.' }
+& $launchGuard
+if ($LASTEXITCODE -ne 0) { throw 'Nested PowerShell launch guard failed.' }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 function Assert-Contract {
@@ -291,14 +298,13 @@ function Invoke-PackageInspection {
     if (-not [string]::IsNullOrWhiteSpace($SymbolsPackagePath)) {
         $arguments += @("-SymbolsPackagePath", $SymbolsPackagePath)
     }
-    $output = @(& pwsh @arguments 2>&1)
+    $output = @(Invoke-NestedPwsh -ArgumentList $arguments 2>&1)
     [PSCustomObject]@{
         ExitCode = $LASTEXITCODE
         Output = ($output -join [Environment]::NewLine)
     }
 }
 
-$repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $repositoryCommit = (& git -C $repositoryRoot rev-parse HEAD 2>&1 | Out-String).Trim()
 Assert-Contract ($LASTEXITCODE -eq 0 -and $repositoryCommit -match '^[0-9a-fA-F]{40}$') "Could not resolve the repository commit for package provenance tests."
 $projectPath = Join-Path $repositoryRoot "src/KeelMatrix.FixtureVault/KeelMatrix.FixtureVault.csproj"
@@ -397,7 +403,7 @@ try {
     Assert-Contract (Test-Path -LiteralPath $normalSymbolsPackagePath) "Normal pack did not produce the expected symbols package."
 
     $inspectionScriptPath = Join-Path $repositoryRoot "scripts/inspect-package.ps1"
-    & pwsh -NoProfile -File $inspectionScriptPath -PackagePath $normalPackagePath -SymbolsPackagePath $normalSymbolsPackagePath -ExpectedVersion "0.1.0" -ExpectedCommit $repositoryCommit
+    Invoke-NestedPwsh -NoProfile -File $inspectionScriptPath -PackagePath $normalPackagePath -SymbolsPackagePath $normalSymbolsPackagePath -ExpectedVersion "0.1.0" -ExpectedCommit $repositoryCommit
     Assert-Contract ($LASTEXITCODE -eq 0) "Normal pack archives failed package-content inspection."
 
     $symbolRequiredEntries = @(
