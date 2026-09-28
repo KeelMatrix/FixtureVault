@@ -132,6 +132,7 @@ internal sealed class FixtureScanner
 
         AddConventionSkips(policy, skipped, diagnosticBudget);
         List<SafeFileEntry> fixtureFiles = [];
+        int filesInspected = 0;
         var seenFiles = new HashSet<string>(
             OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
         foreach (ResolvedRoot root in activeRoots)
@@ -145,7 +146,13 @@ internal sealed class FixtureScanner
             if (walk.Error is not null)
             {
                 errors.Add(walk.Error);
-                return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
+                return CompleteWithErrors(
+                    errors,
+                    strict,
+                    filesDiscovered: fixtureFiles.Count,
+                    filesInspected: filesInspected,
+                    findings: findings,
+                    skipped: skipped);
             }
 
             foreach (SafeFileEntry file in walk.Files)
@@ -156,7 +163,13 @@ internal sealed class FixtureScanner
                     errors.Add(new ScanError(
                         FixtureVaultContract.IgnoredPathMatchingErrorCode,
                         "Ignored path matching could not be completed safely."));
-                    return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
+                    return CompleteWithErrors(
+                        errors,
+                        strict,
+                        filesDiscovered: fixtureFiles.Count,
+                        filesInspected: filesInspected,
+                        findings: findings,
+                        skipped: skipped);
                 }
 
                 if (ignoredStatus == GlobMatchStatus.Match)
@@ -189,21 +202,39 @@ internal sealed class FixtureScanner
             diagnosticBudget);
         if (errors.Count > 0)
         {
-            return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
+            return CompleteWithErrors(
+                errors,
+                strict,
+                filesDiscovered: fixtureFiles.Count,
+                filesInspected: filesInspected,
+                findings: findings,
+                skipped: skipped);
         }
 
         ScanError? collisionError = AddCaseCollisionFindings(fixtureFiles, policy, findings, diagnosticBudget);
         if (collisionError is not null)
         {
             errors.Add(collisionError);
-            return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
+            return CompleteWithErrors(
+                errors,
+                strict,
+                filesDiscovered: fixtureFiles.Count,
+                filesInspected: filesInspected,
+                findings: findings,
+                skipped: skipped);
         }
 
         ManifestLoadResult manifest = LoadManifest(repositoryRoot, policy, afterManifestInitialLengthRead);
         if (manifest.Error is not null)
         {
             errors.Add(manifest.Error);
-            return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
+            return CompleteWithErrors(
+                errors,
+                strict,
+                filesDiscovered: fixtureFiles.Count,
+                filesInspected: filesInspected,
+                findings: findings,
+                skipped: skipped);
         }
 
         if (manifest.ActiveBaselines is not null)
@@ -280,13 +311,25 @@ internal sealed class FixtureScanner
             if (readStatus == SafeFileReadStatus.TotalLimitExceeded)
             {
                 errors.Add(new ScanError("FV-E010", "The scan exceeded its total byte safety limit."));
-                return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
+                return CompleteWithErrors(
+                    errors,
+                    strict,
+                    filesDiscovered: fixtureFiles.Count,
+                    filesInspected: filesInspected,
+                    findings: findings,
+                    skipped: skipped);
             }
 
             if (readStatus != SafeFileReadStatus.Success)
             {
                 errors.Add(new ScanError("FV-E009", "A fixture file could not be inspected safely."));
-                return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
+                return CompleteWithErrors(
+                    errors,
+                    strict,
+                    filesDiscovered: fixtureFiles.Count,
+                    filesInspected: filesInspected,
+                    findings: findings,
+                    skipped: skipped);
             }
 
             ScanError? contentError = InspectContent(
@@ -301,13 +344,27 @@ internal sealed class FixtureScanner
             if (contentError is not null)
             {
                 errors.Add(contentError);
-                return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
+                return CompleteWithErrors(
+                    errors,
+                    strict,
+                    filesDiscovered: fixtureFiles.Count,
+                    filesInspected: filesInspected,
+                    findings: findings,
+                    skipped: skipped);
             }
+
+            filesInspected++;
         }
 
         if (errors.Count > 0)
         {
-            return CompleteWithErrors(errors, strict, fixtureFiles.Count, findings, skipped);
+            return CompleteWithErrors(
+                errors,
+                strict,
+                filesDiscovered: fixtureFiles.Count,
+                filesInspected: filesInspected,
+                findings: findings,
+                skipped: skipped);
         }
 
         if (!strict)
@@ -319,7 +376,9 @@ internal sealed class FixtureScanner
 
         var report = new ScanReport
         {
-            FilesInspected = fixtureFiles.Count,
+            FilesDiscovered = fixtureFiles.Count,
+            FilesInspected = filesInspected,
+            Completed = true,
             Findings = findings.OrderBy(finding => finding.Path, StringComparer.Ordinal)
                 .ThenBy(finding => finding.RuleId, StringComparer.Ordinal)
                 .ToList(),
@@ -479,9 +538,7 @@ internal sealed class FixtureScanner
                     "The configured FixtureVault manifest is malformed."));
             }
 
-            var manifest = JsonSerializer.Deserialize<FixtureVaultManifest>(
-                manifestBytes,
-                FixtureVaultContract.JsonOptions);
+            var manifest = FixtureVaultContract.DeserializeStrict<FixtureVaultManifest>(manifestBytes);
             if (manifest is null || manifest.Version != FixtureVaultContract.PolicySchemaVersion ||
                 manifest.ActiveBaselines is null || manifest.ActiveBaselines.Count > 100_000)
             {
@@ -935,6 +992,7 @@ internal sealed class FixtureScanner
     private static ScanResult CompleteWithErrors(
         IReadOnlyList<ScanError> errors,
         bool strict,
+        int filesDiscovered = 0,
         int filesInspected = 0,
         IReadOnlyList<Finding>? findings = null,
         IReadOnlyList<SkippedDiagnostic>? skipped = null)
@@ -946,7 +1004,9 @@ internal sealed class FixtureScanner
                 .ToList();
         var report = new ScanReport
         {
+            FilesDiscovered = filesDiscovered,
             FilesInspected = filesInspected,
+            Completed = false,
             Findings = reportedFindings,
             Skipped = skipped ?? [],
             Errors = errors

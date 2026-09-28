@@ -1,4 +1,4 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to this project will be documented in this file.
 
@@ -6,24 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-### Fixed
-
-- FV007 now scopes connection-string masking to owned value spans, so unrelated context cannot suppress credentials while quoted non-secret values remain clean. The complete grammar is maintained in [DETECTION_GRAMMAR.md](docs/DETECTION_GRAMMAR.md).
-- Hardened FV007 parser boundaries so quoted non-secret values cannot consume whitespace-separated credentials, valid JSON deeper than the supported 64-container depth fails closed with `FV-E014`, and unquoted whitespace lookahead advances linearly instead of rescanning the same run.
-
-- History validation now accepts approved KeelMatrix, Dependabot, and GitHub web-flow identity combinations while remaining fail-closed for unauthorized attribution.
-
-- Package inspection now requires complete primary and symbol archive contents, matching symbol provenance, and byte-identical primary and symbol PDB data before publication.
-
-- Rejects directories replaced by links before enumeration, including links introduced in any current ancestor of a queued directory, and reports repository-wide traversal failure as `FV-E015` without disclosing outside filenames. It uses platform-correct Linux filesystem ABI checks including ARM64, and treats fixture growth during bounded reads as an incomplete scan while accounting every byte read toward the aggregate limit.
-- Hardened fixture, policy, and manifest reads at the open boundary, including bounded growth/shrinkage detection and rejection of special files.
-- Added an aggregate 4,096-record / 1 MiB JSON-field budget for findings and skipped diagnostics, with explicit `FV-E017` incomplete-scan results instead of unbounded report construction or silent truncation.
-- FV007 classification and ownership details are maintained in the [canonical detection grammar](docs/DETECTION_GRAMMAR.md).
-- Embedded Basic/Bearer headers now classify marker versus genuine values at supported log-prefix locations, Azure prefix ownership remains bounded to the recognized key, and sibling lookahead is local to the current cursor for linear repeated-field work.
-- Guides non-Verify `FV006` remediation to valid UTF-8 without NUL characters so the documented repair clears the UTF-8 policy finding as well as any uninspectable-content error.
-- Escaped control characters in human-readable paths without changing JSON path values.
-
-## [0.1.0] - 2026-09-15
+## [0.1.0] - Planned (not yet published)
 
 ### Added
 
@@ -33,3 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Requires `ci.strict` to be an explicit Boolean: `true` blocks findings, `false` reports warnings, and missing or invalid values fail with exit code `2`.
 - Classifies accepted Verify binary baselines and configured binary extensions before text decoding, while reporting received or unexpected binary assets according to the fixture policy.
 - Uses fail-closed sensitive-data configuration and limits repository-root fallback scans to supported fixture-shaped files; ordinary repository binaries remain outside the governed fixture set.
+- Reports eligible files discovered, files whose bounded content checks completed, and whether the scan completed, so an incomplete result cannot present unchecked files as inspected.
+- Rejects ambiguous policy and manifest JSON, preserves the repository boundary established by the Git worktree, and avoids following links or reparse points during bounded filesystem inspection.
+- Provides terminal-safe human diagnostics with injective path escaping, bounded report diagnostics, conservative convention handling, and no matched sensitive values or fixture contents in reports.
+- Supports long Windows paths through bounded dynamic final-path resolution and provides best-effort telemetry only after completed scans, with an explicit local opt-out.

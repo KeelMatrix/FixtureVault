@@ -58,8 +58,46 @@ internal static class FixtureVaultContract
         PropertyNameCaseInsensitive = false,
         ReadCommentHandling = JsonCommentHandling.Disallow,
         AllowTrailingCommas = false,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
         WriteIndented = true
     };
+
+    internal static T? DeserializeStrict<T>(byte[] bytes)
+    {
+        using JsonDocument document = JsonDocument.Parse(
+            bytes,
+            new JsonDocumentOptions
+            {
+                CommentHandling = JsonCommentHandling.Disallow,
+                MaxDepth = MaximumSupportedJsonDepth
+            });
+        RejectDuplicateProperties(document.RootElement);
+        return JsonSerializer.Deserialize<T>(bytes, JsonOptions);
+    }
+
+    private static void RejectDuplicateProperties(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (JsonProperty property in element.EnumerateObject())
+            {
+                if (!names.Add(property.Name))
+                {
+                    throw new JsonException("Duplicate or ambiguously cased JSON properties are not allowed.");
+                }
+
+                RejectDuplicateProperties(property.Value);
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement item in element.EnumerateArray())
+            {
+                RejectDuplicateProperties(item);
+            }
+        }
+    }
 
     internal static string SerializePolicy(FixtureVaultPolicy policy) =>
         JsonSerializer.Serialize(policy, JsonOptions).Replace("\r\n", "\n", StringComparison.Ordinal) + "\n";
@@ -142,8 +180,14 @@ internal sealed class ScanReport
     [JsonPropertyName("toolVersion")]
     public string ToolVersion { get; init; } = FixtureVaultContract.ToolVersion;
 
+    [JsonPropertyName("filesDiscovered")]
+    public int FilesDiscovered { get; init; }
+
     [JsonPropertyName("filesInspected")]
     public int FilesInspected { get; init; }
+
+    [JsonPropertyName("completed")]
+    public bool Completed { get; init; }
 
     [JsonPropertyName("findings")]
     public IReadOnlyList<Finding> Findings { get; init; } = [];

@@ -171,6 +171,8 @@ internal static class FixtureVaultApplication
         if (result.Report.Errors.Count > 0)
         {
             errorOutput.WriteLine("FixtureVault scan failed.");
+            errorOutput.WriteLine($"{result.Report.FilesDiscovered} fixture file(s) discovered.");
+            errorOutput.WriteLine($"{result.Report.FilesInspected} fixture file(s) inspected.");
             foreach (ScanError scanError in result.Report.Errors)
             {
                 errorOutput.WriteLine($"{scanError.Code}: {scanError.Message}");
@@ -187,6 +189,7 @@ internal static class FixtureVaultApplication
         }
 
         output.WriteLine("FixtureVault scan complete.");
+        output.WriteLine($"{result.Report.FilesDiscovered} fixture file(s) discovered.");
         output.WriteLine($"{result.Report.FilesInspected} fixture file(s) inspected.");
         WriteFindings(result.Report.Findings, output);
 

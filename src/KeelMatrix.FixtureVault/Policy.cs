@@ -47,7 +47,7 @@ internal static class PolicyLoader
                     "The policy file could not be read safely."));
             }
 
-            var policy = JsonSerializer.Deserialize<FixtureVaultPolicy>(policyBytes, FixtureVaultContract.JsonOptions);
+            var policy = FixtureVaultContract.DeserializeStrict<FixtureVaultPolicy>(policyBytes);
             string? validationError = null;
             if (policy is null || !TryValidate(policy, out validationError))
             {

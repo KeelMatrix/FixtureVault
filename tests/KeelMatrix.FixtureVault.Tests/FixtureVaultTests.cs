@@ -123,6 +123,42 @@ public sealed class FixtureVaultTests
         Assert.DoesNotContain("fixture-test-secret-1234567890", error, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Repository_policy_discovery_ignores_a_descendant_policy_below_the_nearest_git_root(bool gitMarkerIsFile)
+    {
+        using var repository = new GitBoundaryRepository(gitMarkerIsFile);
+        repository.WritePolicyInRepository(policy => policy.IgnoredPaths = ["sub/**"]);
+        repository.WriteDescendantPolicy();
+        repository.WriteRepositoryText("tests/root.golden", "root\n");
+        repository.WriteRepositoryText("sub/inner/shadow.golden", "shadow\n");
+
+        int exitCode = repository.RunFromNestedDirectory(["scan"], out string output, out string error);
+
+        Assert.True(exitCode == 0, $"exit={exitCode}; output={output}; error={error}");
+        Assert.Empty(error);
+        Assert.Contains("1 fixture file(s) inspected", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("shadow", output, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Repository_policy_discovery_rejects_a_descendant_policy_when_the_git_root_has_no_policy(bool gitMarkerIsFile)
+    {
+        using var repository = new GitBoundaryRepository(gitMarkerIsFile);
+        repository.WriteDescendantPolicy();
+        repository.WriteRepositoryText("sub/inner/shadow.golden", "shadow\n");
+
+        int exitCode = repository.RunFromNestedDirectory(["scan"], out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(output);
+        Assert.Contains("FV-E001", error, StringComparison.Ordinal);
+        Assert.DoesNotContain("shadow", error, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Help_is_available_without_a_policy_file()
     {
@@ -138,6 +174,7 @@ public sealed class FixtureVaultTests
         Assert.Contains("Connection-string masking is limited to syntactically owned value spans", output, StringComparison.Ordinal);
         Assert.Contains("DETECTION_GRAMMAR.md", output, StringComparison.Ordinal);
         Assert.Contains("4,096-record / 1 MiB report-field budget", output, StringComparison.Ordinal);
+        Assert.Contains("filesDiscovered", output, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1152,6 +1189,36 @@ public sealed class FixtureVaultTests
         Assert.DoesNotContain("FixtureVault scan complete.", output, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(1, 2)]
+    [InlineData(2, 2)]
+    [InlineData(3, 2)]
+    public void Incomplete_scans_report_discovered_files_and_actual_content_inspections(int failurePosition, int expectedInspected)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.MaxFileBytes = 1);
+        repository.WriteText("tests/a.golden", "a");
+        repository.WriteText("tests/b.golden", "b");
+        repository.WriteText("tests/c.golden", "c");
+        string[] paths = ["a.golden", "b.golden", "c.golden"];
+        int callbackCount = 0;
+
+        ScanResult result = repository.Scan(afterFixtureInitialLengthRead: () =>
+        {
+            callbackCount++;
+            if (callbackCount == failurePosition)
+            {
+                File.AppendAllText(Path.Combine(repository.Root, "tests", paths[failurePosition - 1]), "x");
+            }
+        });
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.False(result.Completed);
+        Assert.Equal(3, result.Report.FilesDiscovered);
+        Assert.Equal(expectedInspected, result.Report.FilesInspected);
+        Assert.Contains(result.Report.Errors, item => item.Code == "FV-E009");
+    }
+
     [Fact]
     public void Rejected_growing_fixture_reads_count_toward_the_aggregate_byte_budget()
     {
@@ -1778,7 +1845,7 @@ public sealed class FixtureVaultTests
         Assert.Equal(2, exitCode);
         Assert.Empty(error);
         Assert.Equal(0, telemetry.SuccessfulScans);
-        Assert.Equal(1, report.RootElement.GetProperty("filesInspected").GetInt32());
+        Assert.Equal(0, report.RootElement.GetProperty("filesInspected").GetInt32());
         Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
         JsonElement skip = Assert.Single(report.RootElement.GetProperty("skipped").EnumerateArray(), item =>
             item.GetProperty("code").GetString() == FixtureVaultContract.UninspectableContentSkippedCode);
@@ -1810,7 +1877,7 @@ public sealed class FixtureVaultTests
         Assert.Equal(2, exitCode);
         Assert.Empty(error);
         Assert.Equal(0, telemetry.SuccessfulScans);
-        Assert.Equal(1, report.RootElement.GetProperty("filesInspected").GetInt32());
+        Assert.Equal(0, report.RootElement.GetProperty("filesInspected").GetInt32());
         Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
         JsonElement skip = Assert.Single(report.RootElement.GetProperty("skipped").EnumerateArray(), item =>
             item.GetProperty("code").GetString() == FixtureVaultContract.UninspectableContentSkippedCode);
@@ -1833,7 +1900,7 @@ public sealed class FixtureVaultTests
 
         Assert.Equal(2, result.ExitCode);
         Assert.Empty(result.Report.Findings);
-        Assert.Equal(1, result.Report.FilesInspected);
+        Assert.Equal(0, result.Report.FilesInspected);
         SkippedDiagnostic skip = Assert.Single(result.Report.Skipped, item =>
             item.Code == FixtureVaultContract.UninspectableContentSkippedCode);
         Assert.Equal("tests/Payments/Create.verified/Order.json", skip.Path);
@@ -1852,7 +1919,7 @@ public sealed class FixtureVaultTests
 
         Assert.Equal(2, result.ExitCode);
         Assert.Empty(result.Report.Findings);
-        Assert.Equal(1, result.Report.FilesInspected);
+        Assert.Equal(0, result.Report.FilesInspected);
         SkippedDiagnostic skip = Assert.Single(result.Report.Skipped, item =>
             item.Code == FixtureVaultContract.UninspectableContentSkippedCode);
         Assert.Equal("tests/Payments/Create.verified.json", skip.Path);
@@ -2034,7 +2101,7 @@ public sealed class FixtureVaultTests
         JsonElement[] skipped = [.. root.GetProperty("skipped").EnumerateArray()];
         JsonElement[] errors = [.. root.GetProperty("errors").EnumerateArray()];
 
-        Assert.Equal(1, root.GetProperty("filesInspected").GetInt32());
+        Assert.Equal(contentShape is "nul" or "undecodable" ? 0 : 1, root.GetProperty("filesInspected").GetInt32());
 
         if (contentShape is "nul" or "undecodable")
         {
@@ -3563,7 +3630,9 @@ public sealed class FixtureVaultTests
         {
             Assert.DoesNotContain(
                 canary,
-                jsonOutput.Replace(relativePath, string.Empty, StringComparison.Ordinal),
+                jsonOutput
+                    .Replace(relativePath, string.Empty, StringComparison.Ordinal)
+                    .Replace("\"completed\": true", "\"completed\": <completed>", StringComparison.Ordinal),
                 StringComparison.Ordinal);
         }
 
@@ -4461,6 +4530,76 @@ public sealed class FixtureVaultTests
         Assert.Equal(0, telemetry.SuccessfulScans);
     }
 
+    [Fact]
+    public void Policy_documents_reject_duplicate_unknown_casing_null_and_wrong_type_members()
+    {
+        string[] malformedPolicies =
+        [
+            "{\"version\":1,\"version\":1,\"roots\":[\"tests\"],\"allowedExtensions\":[\".golden\"],\"maxFileBytes\":1048576,\"conventions\":[\"generic\"],\"sensitiveDataRules\":[\"high-confidence\"],\"ignoredPaths\":[],\"ci\":{\"strict\":true}}",
+            "{\"version\":1,\"Version\":1,\"roots\":[\"tests\"],\"allowedExtensions\":[\".golden\"],\"maxFileBytes\":1048576,\"conventions\":[\"generic\"],\"sensitiveDataRules\":[\"high-confidence\"],\"ignoredPaths\":[],\"ci\":{\"strict\":true}}",
+            "{\"version\":1,\"roots\":[\"tests\"],\"roots\":[\"tests\"],\"allowedExtensions\":[\".golden\"],\"maxFileBytes\":1048576,\"conventions\":[\"generic\"],\"sensitiveDataRules\":[\"high-confidence\"],\"ignoredPaths\":[],\"ci\":{\"strict\":true}}",
+            "{\"version\":1,\"roots\":[\"tests\"],\"allowedExtensions\":[\".golden\"],\"allowedExtensions\":[\".golden\"],\"maxFileBytes\":1048576,\"conventions\":[\"generic\"],\"sensitiveDataRules\":[\"high-confidence\"],\"ignoredPaths\":[],\"ci\":{\"strict\":true}}",
+            "{\"version\":1,\"roots\":[\"tests\"],\"allowedExtensions\":[\".golden\"],\"maxFileBytes\":1048576,\"conventions\":[\"generic\"],\"conventions\":[\"generic\"],\"sensitiveDataRules\":[\"high-confidence\"],\"ignoredPaths\":[],\"ci\":{\"strict\":true}}",
+            "{\"version\":1,\"roots\":[\"tests\"],\"allowedExtensions\":[\".golden\"],\"maxFileBytes\":1048576,\"conventions\":[\"generic\"],\"sensitiveDataRules\":[\"high-confidence\"],\"sensitiveDataRules\":[\"high-confidence\"],\"ignoredPaths\":[],\"ci\":{\"strict\":true}}",
+            "{\"version\":1,\"roots\":[\"tests\"],\"allowedExtensions\":[\".golden\"],\"maxFileBytes\":1048576,\"conventions\":[\"generic\"],\"sensitiveDataRules\":[\"high-confidence\"],\"ignoredPaths\":[],\"ignoredPaths\":[],\"ci\":{\"strict\":true}}",
+            "{\"version\":1,\"roots\":[\"tests\"],\"allowedExtensions\":[\".golden\"],\"maxFileBytes\":1048576,\"conventions\":[\"generic\"],\"sensitiveDataRules\":[\"high-confidence\"],\"ignoredPaths\":[],\"ci\":{\"strict\":true,\"strict\":true}}",
+            "{\"version\":1,\"roots\":[\"tests\"],\"allowedExtensions\":[\".golden\"],\"maxFileBytes\":1048576,\"conventions\":[\"generic\"],\"sensitiveDataRules\":[\"high-confidence\"],\"ignoredPaths\":[],\"ci\":{\"strict\":true},\"unknown\":true}",
+            "{\"version\":1,\"roots\":null,\"allowedExtensions\":[\".golden\"],\"maxFileBytes\":1048576,\"conventions\":[\"generic\"],\"sensitiveDataRules\":[\"high-confidence\"],\"ignoredPaths\":[],\"ci\":{\"strict\":true}}",
+            "{\"version\":1,\"roots\":\"tests\",\"allowedExtensions\":[\".golden\"],\"maxFileBytes\":1048576,\"conventions\":[\"generic\"],\"sensitiveDataRules\":[\"high-confidence\"],\"ignoredPaths\":[],\"ci\":{\"strict\":true}}",
+            "{\"version\":1,\"roots\":[\"tests\"],\"allowedExtensions\":[\".golden\"],\"maxFileBytes\":1048576,\"conventions\":[\"generic\"],\"sensitiveDataRules\":[\"high-confidence\"],\"ignoredPaths\":[],\"ci\":{\"strict\":null}}",
+            "{\"version\":1,\"roots\":[\"tests\"],\"allowedExtensions\":[\".golden\"],\"maxFileBytes\":1048576,\"conventions\":[\"generic\"],\"sensitiveDataRules\":[\"high-confidence\"],\"ignoredPaths\":[],\"ci\":{\"strict\":\"true\"}}"
+        ];
+
+        foreach (string malformedPolicy in malformedPolicies)
+        {
+            AssertMalformedPolicyRejected(malformedPolicy);
+        }
+    }
+
+    private static void AssertMalformedPolicyRejected(string malformedPolicy)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WriteText(FixtureVaultContract.PolicyFileName, malformedPolicy);
+
+        int exitCode = repository.Run(["scan", "--format", "json"], new RecordingTelemetry(), out string output, out string error);
+
+        Assert.Equal(2, exitCode);
+        Assert.Empty(error);
+        using JsonDocument report = JsonDocument.Parse(output);
+        Assert.Contains(report.RootElement.GetProperty("errors").EnumerateArray(), item => item.GetProperty("code").GetString() == "FV-E005");
+        Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
+    }
+
+    [Fact]
+    public void Manifest_documents_reject_duplicate_unknown_casing_null_and_wrong_type_members()
+    {
+        string[] malformedManifests =
+        [
+            "{\"version\":1,\"version\":1,\"activeBaselines\":[]}",
+            "{\"version\":1,\"Version\":1,\"activeBaselines\":[]}",
+            "{\"version\":1,\"activeBaselines\":[],\"activeBaselines\":[]}",
+            "{\"version\":1,\"activeBaselines\":[],\"unknown\":true}",
+            "{\"version\":1,\"activeBaselines\":null}",
+            "{\"version\":1,\"activeBaselines\":\"tests/clean.golden\"}"
+        ];
+
+        foreach (string malformedManifest in malformedManifests)
+        {
+            using var repository = new TemporaryRepository();
+            repository.WritePolicy(policy => policy.Conventions = ["generic", "fixturevault-manifest"]);
+            repository.WriteText(FixtureVaultContract.ManifestFileName, malformedManifest);
+            repository.WriteText("tests/clean.golden", "clean\n");
+
+            ScanResult result = repository.Scan();
+
+            Assert.Equal(2, result.ExitCode);
+            Assert.Contains(result.Report.Errors, item => item.Code == "FV-E011");
+            Assert.Equal(1, result.Report.FilesDiscovered);
+            Assert.Equal(0, result.Report.FilesInspected);
+            Assert.False(result.Completed);
+        }
+    }
+
     [Theory]
     [InlineData("null", "")]
     [InlineData("{}", "")]
@@ -4480,7 +4619,10 @@ public sealed class FixtureVaultTests
         Assert.Equal(2, exitCode);
         Assert.Contains(report.RootElement.GetProperty("errors").EnumerateArray(), item =>
             item.GetProperty("code").GetString() == "FV-E005");
-        Assert.Contains("ci.strict", output, StringComparison.Ordinal);
+        if (rawMemberName is "" or "yes")
+        {
+            Assert.Contains("ci.strict", output, StringComparison.Ordinal);
+        }
         Assert.Empty(report.RootElement.GetProperty("findings").EnumerateArray());
         Assert.Empty(error);
         Assert.Equal(0, telemetry.SuccessfulScans);
@@ -4664,6 +4806,9 @@ public sealed class FixtureVaultTests
 
         Assert.Equal(1, report.SchemaVersion);
         Assert.Equal("0.1.0", report.ToolVersion);
+        Assert.Equal(1, report.FilesDiscovered);
+        Assert.Equal(1, report.FilesInspected);
+        Assert.True(report.Completed);
         Assert.Equal(serialized, roundTripped.ToJson());
     }
 
@@ -4852,10 +4997,19 @@ public sealed class FixtureVaultTests
             WriteText(ParentRoot, FixtureVaultContract.PolicyFileName, FixtureVaultContract.SerializePolicy(policy));
         }
 
-        internal void WritePolicyInRepository()
+        internal void WritePolicyInRepository(Action<FixtureVaultPolicy>? configure = null)
         {
             FixtureVaultPolicy policy = FixtureVaultPolicy.CreateDefault(testsDirectoryExists: true);
+            configure?.Invoke(policy);
             WriteText(RepositoryRoot, FixtureVaultContract.PolicyFileName, FixtureVaultContract.SerializePolicy(policy));
+        }
+
+        internal void WriteDescendantPolicy()
+        {
+            FixtureVaultPolicy policy = FixtureVaultPolicy.CreateDefault(testsDirectoryExists: false);
+            policy.Roots = ["inner"];
+            WriteText(RepositoryRoot, "sub/.fixturevault.json", FixtureVaultContract.SerializePolicy(policy));
+            WriteText(RepositoryRoot, "sub/deeper/.keep", string.Empty);
         }
 
         internal void WriteParentText(string relativePath, string content) => WriteText(ParentRoot, relativePath, content);
@@ -5015,6 +5169,35 @@ public sealed class FixtureVaultTests
                 Directory.Delete(Path.GetDirectoryName(outside)!, recursive: true);
             }
         }
+    }
+
+    [Fact]
+    public void Diagnostic_path_escaping_is_injective_and_terminal_safe_for_equivalent_spellings()
+    {
+        string actualNewline = "tests/name\n.golden";
+        string literalNewline = @"tests/name\n.golden";
+        string actualEscape = "tests/name\u001b.golden";
+        string literalEscape = @"tests/name\x1B.golden";
+        string presentationControls = "tests/\u2028\u2029\u202E\u2066\u2069\u200B.golden";
+        string nfc = "tests/caf\u00E9.golden";
+        string nfd = "tests/cafe\u0301.golden";
+
+        Assert.NotEqual(
+            PathUtilities.EscapeDiagnosticPath(actualNewline),
+            PathUtilities.EscapeDiagnosticPath(literalNewline));
+        Assert.NotEqual(
+            PathUtilities.EscapeDiagnosticPath(actualEscape),
+            PathUtilities.EscapeDiagnosticPath(literalEscape));
+        Assert.Contains("tests/name\\n.golden", PathUtilities.EscapeDiagnosticPath(actualNewline), StringComparison.Ordinal);
+        Assert.Contains("tests/name\\\\n.golden", PathUtilities.EscapeDiagnosticPath(literalNewline), StringComparison.Ordinal);
+        Assert.Contains("\\u2028", PathUtilities.EscapeDiagnosticPath(presentationControls), StringComparison.Ordinal);
+        Assert.Contains("\\u2029", PathUtilities.EscapeDiagnosticPath(presentationControls), StringComparison.Ordinal);
+        Assert.Contains("\\u202E", PathUtilities.EscapeDiagnosticPath(presentationControls), StringComparison.Ordinal);
+        Assert.Contains("\\u2066", PathUtilities.EscapeDiagnosticPath(presentationControls), StringComparison.Ordinal);
+        Assert.Contains("\\u2069", PathUtilities.EscapeDiagnosticPath(presentationControls), StringComparison.Ordinal);
+        Assert.Contains("\\u200B", PathUtilities.EscapeDiagnosticPath(presentationControls), StringComparison.Ordinal);
+        Assert.NotEqual(PathUtilities.EscapeDiagnosticPath(nfc), PathUtilities.EscapeDiagnosticPath(nfd));
+        Assert.Equal("tests/café.golden", PathUtilities.EscapeDiagnosticPath(nfc));
     }
 
     private static void CreateSymbolicDirectoryOrSkip(string linkPath, string targetPath)

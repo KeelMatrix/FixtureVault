@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 Set-StrictMode -Version Latest
@@ -49,10 +49,38 @@ $historyWorkflowPath = Join-Path $repositoryRoot ".github/workflows/history-hygi
 $historyGuardPath = Join-Path $repositoryRoot ".githooks/check-history"
 $tagScriptPath = Join-Path $repositoryRoot "scripts/validate-release-tag.ps1"
 $changelogScriptPath = Join-Path $repositoryRoot "scripts/test-changelog-contract.ps1"
+$smokeScriptPath = Join-Path $repositoryRoot "scripts/package-consumer-smoke.ps1"
+$devGuidePath = Join-Path $repositoryRoot "docs/DEV.md"
 $workflow = [IO.File]::ReadAllText($workflowPath)
 $ciWorkflow = [IO.File]::ReadAllText($ciWorkflowPath)
 $historyWorkflow = [IO.File]::ReadAllText($historyWorkflowPath)
 $historyGuard = [IO.File]::ReadAllText($historyGuardPath)
+$smokeScript = [IO.File]::ReadAllText($smokeScriptPath)
+$devGuide = [IO.File]::ReadAllText($devGuidePath)
+
+function Test-PreFrontierFirstReleaseShape {
+    param(
+        [Parameter(Mandatory = $true)][string]$Content
+    )
+
+    $plannedHeading = [Text.RegularExpressions.Regex]::Match(
+        $Content,
+        '(?im)^##[ \t]+\[0\.1\.0\][ \t]+-[ \t]+planned[ \t]+\(not[ \t-]+yet[ \t-]+published\)[ \t]*(?:\r)?$')
+    if (-not $plannedHeading.Success) {
+        return $false
+    }
+
+    $unreleasedSection = [Text.RegularExpressions.Regex]::Match(
+        $Content,
+        '(?ims)^##[ \t]+\[unreleased\](?<body>.*?)(?=^##[ \t]+\[0\.1\.0\])')
+    if (-not $unreleasedSection.Success -or $unreleasedSection.Groups["body"].Value -match '(?im)^###[ \t]+fixed\b') {
+        return $false
+    }
+
+    $plannedSection = $Content.Substring($plannedHeading.Index)
+    return ($plannedSection -match '(?im)^###[ \t]+added\b') -and
+        ($plannedSection -notmatch '(?im)^###[ \t]+fixed\b')
+}
 
 $validationMatch = [Text.RegularExpressions.Regex]::Match(
     $workflow,
@@ -112,6 +140,12 @@ Assert-Contract ($publication.Contains("--no-symbols", [StringComparison]::Ordin
 Assert-Contract ($publication.Contains(".snupkg", [StringComparison]::Ordinal)) "Publication must push the symbols package explicitly."
 Assert-Contract ($ciWorkflow.Contains("audit-vulnerabilities.ps1", [StringComparison]::Ordinal)) "Normal CI must run the repository vulnerability audit."
 Assert-Contract (Test-Path -LiteralPath $changelogScriptPath -PathType Leaf) "The changelog/version contract script is missing."
+Assert-Contract (Test-Path -LiteralPath $smokeScriptPath -PathType Leaf) "The package consumer smoke script is missing."
+Assert-Contract ($smokeScript.Contains("Assert-TelemetrySuppressed", [StringComparison]::Ordinal)) "Package consumer smoke must guard every child tool invocation with telemetry suppression."
+Assert-Contract ($smokeScript.Contains('[Environment]::SetEnvironmentVariable("KEELMATRIX_NO_TELEMETRY", "1", "Process")', [StringComparison]::Ordinal)) "Package consumer smoke must establish process telemetry suppression itself."
+Assert-Contract ($smokeScript.Contains('$originalTelemetryOptOut', [StringComparison]::Ordinal)) "Package consumer smoke must restore the caller telemetry setting."
+Assert-Contract ($devGuide.Contains('$env:KEELMATRIX_NO_TELEMETRY = "1"', [StringComparison]::Ordinal)) "The developer guide must make source and package smoke commands safe when copied verbatim."
+Assert-Contract ($devGuide.IndexOf('$env:KEELMATRIX_NO_TELEMETRY = "1"', [StringComparison]::Ordinal) -lt $devGuide.IndexOf('package-consumer-smoke.ps1', [StringComparison]::Ordinal)) "The developer guide must set telemetry suppression before the package smoke command."
 Assert-AuditBeforePack "Normal CI" $ciWorkflow
 Assert-AuditBeforePack "Release validation" $workflow
 Assert-Contract ($ciWorkflow.Contains('git rev-parse HEAD', [StringComparison]::Ordinal) -and $ciWorkflow.Contains('-ExpectedCommit $expectedCommit', [StringComparison]::Ordinal)) "CI package inspection must validate exact repository provenance."
@@ -778,11 +812,47 @@ dotnet tool install --global KeelMatrix.FixtureVault --version 0.2.0
     $realChangelogText = [IO.File]::ReadAllText($trackedChangelogPath)
     $realChangelogIsPlanned = $realChangelogText -match '(?im)^##[ \t]+\[0\.1\.0\][^\r\n]*(?:planned|not[ \t-]+yet[ \t-]+published)'
     if ($realChangelogIsPlanned) {
+        Assert-Contract (Test-PreFrontierFirstReleaseShape $realChangelogText) "The real planned CHANGELOG.md is not a coherent pre-frontier first-release shape."
         Assert-Contract ($realChangelogExitCode -ne 0) "The real planned CHANGELOG.md passed the changelog publication gate. Output: $($realChangelogOutput -join [Environment]::NewLine)"
     }
     else {
         Assert-Contract ($realChangelogExitCode -eq 0) "The finalized real CHANGELOG.md was rejected by the changelog publication gate. Output: $($realChangelogOutput -join [Environment]::NewLine)"
     }
+
+    $plannedPreFrontier = @"
+# Changelog
+
+## [Unreleased]
+
+## [0.1.0] - Planned (not yet published)
+
+### Added
+
+- The first public tool contract is documented.
+"@
+    $plannedHeadingMatch = $plannedPreFrontier -match '(?im)^##[ \t]+\[0\.1\.0\][ \t]+-[ \t]+planned[ \t]+\(not[ \t-]+yet[ \t-]+published\)[ \t]*(?:\r)?$'
+    $plannedAddedMatch = $plannedPreFrontier -match '(?im)^###[ \t]+added\b'
+    $plannedNoFixedMatch = $plannedPreFrontier -notmatch '(?im)^###[ \t]+fixed\b'
+    Assert-Contract ([bool]($plannedHeadingMatch -and $plannedAddedMatch -and $plannedNoFixedMatch)) "A coherent planned first-release changelog was rejected by the pre-frontier state check."
+
+    $contradictoryPreFrontier = @"
+# Changelog
+
+## [Unreleased]
+
+### Fixed
+
+- Corrected a release behavior.
+
+## [0.1.0] - 2026-09-15
+
+### Added
+
+- The first public tool contract is documented.
+"@
+    $contradictoryPlannedHeadingMatch = $contradictoryPreFrontier -notmatch '(?im)^##[ \t]+\[0\.1\.0\][ \t]+-[ \t]+planned[ \t]+\(not[ \t-]+yet[ \t-]+published\)[ \t]*(?:\r)?$'
+    $contradictoryFixedMatch = $contradictoryPreFrontier -match '(?im)^##[ \t]+\[unreleased\][\s\S]*^###[ \t]+fixed\b'
+    Assert-Contract ([bool]($contradictoryPlannedHeadingMatch -and $contradictoryFixedMatch)) "A contradictory released-plus-unreleased-fixes changelog passed the pre-frontier state check."
 
     $changelogTagMismatch = Invoke-ChangelogContract @"
 # Changelog

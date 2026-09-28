@@ -16,23 +16,25 @@ internal static class PathUtilities
         }
 
         var directory = new DirectoryInfo(current);
+        string? policyWithoutRepositoryMarker = null;
         while (directory is not null)
         {
-            if (File.Exists(Path.Combine(directory.FullName, FixtureVaultContract.PolicyFileName)))
-            {
-                return directory.FullName;
-            }
-
             if (File.Exists(Path.Combine(directory.FullName, ".git")) ||
                 Directory.Exists(Path.Combine(directory.FullName, ".git")))
             {
                 return directory.FullName;
             }
 
+            if (policyWithoutRepositoryMarker is null &&
+                File.Exists(Path.Combine(directory.FullName, FixtureVaultContract.PolicyFileName)))
+            {
+                policyWithoutRepositoryMarker = directory.FullName;
+            }
+
             directory = directory.Parent;
         }
 
-        return current;
+        return policyWithoutRepositoryMarker ?? current;
     }
 
     internal static bool TryResolveRoot(
@@ -242,6 +244,9 @@ internal static class PathUtilities
         {
             switch (character)
             {
+                case '\\':
+                    escaped.Append("\\\\");
+                    break;
                 case '\0':
                     escaped.Append("\\0");
                     break;
@@ -272,6 +277,12 @@ internal static class PathUtilities
                 case char control when char.IsControl(control) || control == '\u007f':
                     escaped.Append("\\u").Append(((int)character).ToString("X4", System.Globalization.CultureInfo.InvariantCulture));
                     break;
+                case char presentationControl when
+                    char.GetUnicodeCategory(presentationControl) == System.Globalization.UnicodeCategory.Format ||
+                    char.GetUnicodeCategory(presentationControl) is System.Globalization.UnicodeCategory.LineSeparator or
+                        System.Globalization.UnicodeCategory.ParagraphSeparator:
+                    escaped.Append("\\u").Append(((int)character).ToString("X4", System.Globalization.CultureInfo.InvariantCulture));
+                    break;
                 default:
                     escaped.Append(character);
                     break;
@@ -290,6 +301,61 @@ internal static class PathUtilities
 }
 
 internal readonly record struct UnixFileIdentity(long Device, long Inode);
+
+internal static class WindowsPathResolver
+{
+    private const int InitialBufferLength = 512;
+    private const int MaximumBufferLength = 32 * 1024;
+
+    internal static bool TryGetFinalPath(SafeFileHandle handle, out string path)
+    {
+        path = string.Empty;
+        char[] buffer = new char[InitialBufferLength];
+        for (int attempt = 0; attempt < 8; attempt++)
+        {
+            uint length = GetFinalPathNameByHandle(handle, buffer, (uint)buffer.Length, 0);
+            if (length == 0)
+            {
+                return false;
+            }
+
+            if (length < buffer.Length)
+            {
+                path = Normalize(new string(buffer, 0, (int)length));
+                return true;
+            }
+
+            long requiredLength = (long)length + 1;
+            if (requiredLength > MaximumBufferLength)
+            {
+                return false;
+            }
+
+            buffer = new char[(int)requiredLength];
+        }
+
+        return false;
+    }
+
+    private static string Normalize(string path)
+    {
+        if (path.StartsWith("\\\\?\\UNC\\", StringComparison.OrdinalIgnoreCase))
+        {
+            return "\\\\" + path[8..];
+        }
+
+        return path.StartsWith("\\\\?\\", StringComparison.Ordinal)
+            ? path[4..]
+            : path;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetFinalPathNameByHandle(
+        SafeFileHandle fileHandle,
+        [Out] char[] path,
+        uint pathLength,
+        uint flags);
+}
 
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Interoperability", "CA2101", Justification = "Unix path arguments use the runtime's UTF-8 narrow-string ABI on Linux and macOS.")]
 internal sealed class SafePathBoundary : IDisposable
@@ -383,7 +449,7 @@ internal sealed class SafePathBoundary : IDisposable
         }
 
         SafeFileHandle rootHandle = CreateWindowsHandle(fullRoot, FileFlagBackupSemantics | FileFlagOpenReparsePoint);
-        if (rootHandle.IsInvalid || !TryGetFinalWindowsPath(rootHandle, out string trustedRootPath))
+        if (rootHandle.IsInvalid || !WindowsPathResolver.TryGetFinalPath(rootHandle, out string trustedRootPath))
         {
             rootHandle.Dispose();
             return false;
@@ -421,7 +487,7 @@ internal sealed class SafePathBoundary : IDisposable
         string path = CombineRelative(relativePath);
         SafeFileHandle candidate = CreateWindowsHandle(path, FileFlagBackupSemantics | FileFlagOpenReparsePoint);
         if (candidate.IsInvalid ||
-            !TryGetFinalWindowsPath(candidate, out string resolvedPath) ||
+            !WindowsPathResolver.TryGetFinalPath(candidate, out string resolvedPath) ||
             !IsTrustedWindowsPath(resolvedPath) ||
             !TryGetWindowsFileAttributes(candidate, out FileAttributes attributes) ||
             (attributes & FileAttributes.ReparsePoint) != 0 ||
@@ -498,7 +564,7 @@ internal sealed class SafePathBoundary : IDisposable
 
         SafeFileHandle candidate = CreateWindowsHandle(CombineRelative(relativePath), FileFlagOpenReparsePoint);
         if (candidate.IsInvalid ||
-            !TryGetFinalWindowsPath(candidate, out string resolvedPath) ||
+            !WindowsPathResolver.TryGetFinalPath(candidate, out string resolvedPath) ||
             !IsTrustedWindowsPath(resolvedPath) ||
             !TryGetWindowsFileAttributes(candidate, out FileAttributes attributes) ||
             (attributes & FileAttributes.ReparsePoint) != 0 ||
@@ -564,7 +630,7 @@ internal sealed class SafePathBoundary : IDisposable
             return false;
         }
 
-        bool trusted = TryGetFinalWindowsPath(candidate, out string resolvedPath) && IsTrustedWindowsPath(resolvedPath);
+        bool trusted = WindowsPathResolver.TryGetFinalPath(candidate, out string resolvedPath) && IsTrustedWindowsPath(resolvedPath);
         candidate.Dispose();
         return trusted;
     }
@@ -899,29 +965,6 @@ internal sealed class SafePathBoundary : IDisposable
             flags,
             IntPtr.Zero);
 
-    private static bool TryGetFinalWindowsPath(SafeFileHandle handle, out string path)
-    {
-        path = string.Empty;
-        char[] buffer = new char[512];
-        uint length = GetFinalPathNameByHandle(handle, buffer, (uint)buffer.Length, 0);
-        if (length == 0 || length >= buffer.Length)
-        {
-            return false;
-        }
-
-        path = new string(buffer, 0, (int)length);
-        if (path.StartsWith("\\\\?\\UNC\\", StringComparison.OrdinalIgnoreCase))
-        {
-            path = "\\\\" + path[8..];
-        }
-        else if (path.StartsWith("\\\\?\\", StringComparison.Ordinal))
-        {
-            path = path[4..];
-        }
-
-        return true;
-    }
-
     private static bool TryGetWindowsFileAttributes(SafeFileHandle handle, out FileAttributes attributes)
     {
         if (!GetFileInformationByHandle(handle, out ByHandleFileInformation information))
@@ -1016,13 +1059,6 @@ internal sealed class SafePathBoundary : IDisposable
         uint creationDisposition,
         uint flagsAndAttributes,
         IntPtr templateFile);
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern uint GetFinalPathNameByHandle(
-        SafeFileHandle fileHandle,
-        [Out] char[] path,
-        uint pathLength,
-        uint flags);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GetFileInformationByHandle(
@@ -1298,7 +1334,7 @@ internal static class SafeFileReader
             stream = new FileStream(handle!, FileAccess.Read, ReadBufferSize, isAsync: false);
             if (!TryValidateRegularFilePath(fullRoot, fullPath, relativePath, out exists) ||
                 !exists ||
-                !TryGetFinalWindowsPath(handle!, out string resolvedPath) ||
+                !WindowsPathResolver.TryGetFinalPath(handle!, out string resolvedPath) ||
                 !PathUtilities.IsWithin(fullRoot, resolvedPath))
             {
                 stream.Dispose();
@@ -1614,35 +1650,6 @@ internal static class SafeFileReader
 
     private static bool IsRegularMode(int mode) => (mode & UnixFileTypeMask) == UnixRegularFile;
 
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern uint GetFinalPathNameByHandle(
-        SafeFileHandle fileHandle,
-        [Out] char[] path,
-        uint pathLength,
-        uint flags);
-
-    private static bool TryGetFinalWindowsPath(SafeFileHandle handle, out string path)
-    {
-        path = string.Empty;
-        char[] buffer = new char[512];
-        uint length = GetFinalPathNameByHandle(handle, buffer, (uint)buffer.Length, 0);
-        if (length == 0 || length >= buffer.Length)
-        {
-            return false;
-        }
-
-        path = new string(buffer, 0, (int)length);
-        if (path.StartsWith("\\\\?\\UNC\\", StringComparison.OrdinalIgnoreCase))
-        {
-            path = "\\\\" + path[8..];
-        }
-        else if (path.StartsWith("\\\\?\\", StringComparison.Ordinal))
-        {
-            path = path[4..];
-        }
-
-        return true;
-    }
 }
 
 internal sealed record SafeFileEntry(

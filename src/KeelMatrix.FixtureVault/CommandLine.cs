@@ -132,6 +132,8 @@ internal static class CommandLineParser
               0  Scan completed without policy-blocking findings.
               1  Scan completed with policy-blocking findings.
               2  Configuration, input, or execution error prevented a trustworthy scan.
+              JSON reports include filesDiscovered, filesInspected, and completed;
+              an incomplete scan never counts unchecked files as inspected.
 
             Safety:
               Findings and skipped diagnostics share a 4,096-record / 1 MiB report-field budget.

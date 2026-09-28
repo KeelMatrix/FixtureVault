@@ -1,4 +1,4 @@
-# FixtureVault Development
+﻿# FixtureVault Development
 
 This guide covers repository-local validation and package-consumer checks for FixtureVault contributors and maintainers. Consumer installation and tool usage are documented in the [README](https://github.com/KeelMatrix/FixtureVault#readme). For vulnerability reporting, see [SECURITY.md](../SECURITY.md).
 
@@ -44,6 +44,7 @@ grammar is maintained in the [canonical detection grammar](DETECTION_GRAMMAR.md)
 ## Run the Tool from Source
 
 ```powershell
+$env:KEELMATRIX_NO_TELEMETRY = "1"
 dotnet run --project src/KeelMatrix.FixtureVault -- init
 dotnet run --project src/KeelMatrix.FixtureVault -- scan --format json
 ```
@@ -64,6 +65,7 @@ After a successful Release build, create the package and symbols, inspect the ac
 dotnet pack src/KeelMatrix.FixtureVault/KeelMatrix.FixtureVault.csproj -c Release --no-build --include-symbols --p:SymbolPackageFormat=snupkg --output ./artifacts/packages
 $expectedCommit = (git rev-parse HEAD).Trim()
 pwsh -NoProfile -File ./scripts/inspect-package.ps1 -PackagePath ./artifacts/packages/KeelMatrix.FixtureVault.0.1.0.nupkg -SymbolsPackagePath ./artifacts/packages/KeelMatrix.FixtureVault.0.1.0.snupkg -ExpectedVersion 0.1.0 -ExpectedCommit $expectedCommit
+$env:KEELMATRIX_NO_TELEMETRY = "1"
 pwsh -NoProfile -File ./scripts/package-consumer-smoke.ps1 -PackagePath ./artifacts/packages/KeelMatrix.FixtureVault.0.1.0.nupkg -ExpectedVersion 0.1.0
 ```
 

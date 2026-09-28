@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [string]$PackagePath,
@@ -20,6 +20,12 @@ function Assert-Contract {
     }
 }
 
+function Assert-TelemetrySuppressed {
+    Assert-Contract (
+        [Environment]::GetEnvironmentVariable("KEELMATRIX_NO_TELEMETRY", "Process") -eq "1" -and
+        $env:KEELMATRIX_NO_TELEMETRY -eq "1") "Repository-owned package smoke must suppress telemetry before starting a child tool."
+}
+
 function Invoke-CommandCapture {
     param(
         [string]$Executable,
@@ -27,8 +33,36 @@ function Invoke-CommandCapture {
         [string]$OutputPath
     )
 
-    & $Executable @Arguments *> $OutputPath
-    return $LASTEXITCODE
+    Assert-TelemetrySuppressed
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $Executable
+    $startInfo.WorkingDirectory = (Get-Location).Path
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    foreach ($argument in $Arguments) {
+        [void]$startInfo.ArgumentList.Add($argument)
+    }
+
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) {
+            throw "Could not start child command '$Executable'."
+        }
+
+        $standardOutputTask = $process.StandardOutput.ReadToEndAsync()
+        $standardErrorTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        $standardOutput = $standardOutputTask.GetAwaiter().GetResult()
+        $standardError = $standardErrorTask.GetAwaiter().GetResult()
+        [IO.File]::WriteAllText($OutputPath, $standardOutput + $standardError, [Text.UTF8Encoding]::new($false))
+        return $process.ExitCode
+    }
+    finally {
+        $process.Dispose()
+    }
 }
 
 function Invoke-CommandCaptureWithTimeout {
@@ -40,6 +74,7 @@ function Invoke-CommandCaptureWithTimeout {
         [int]$TimeoutMilliseconds = 10000
     )
 
+    Assert-TelemetrySuppressed
     $errorPath = $OutputPath + ".stderr"
     $startProcessParameters = @{
         FilePath               = $Executable
@@ -76,6 +111,9 @@ $packageCache = Join-Path $workRoot "packages"
 $httpCache = Join-Path $workRoot "http-cache"
 $configPath = Join-Path $workRoot "NuGet.config"
 New-Item -ItemType Directory -Force -Path $feedRoot, $toolRoot, $consumerRoot, $packageCache, $httpCache | Out-Null
+$originalTelemetryOptOut = [Environment]::GetEnvironmentVariable("KEELMATRIX_NO_TELEMETRY", "Process")
+[Environment]::SetEnvironmentVariable("KEELMATRIX_NO_TELEMETRY", "1", "Process")
+$env:KEELMATRIX_NO_TELEMETRY = "1"
 
 try {
     $feedPackage = Join-Path $feedRoot $expectedPackageName
@@ -147,11 +185,12 @@ try {
         $helpPath = Join-Path $workRoot "help.txt"
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("--help") $helpPath) -eq 0) "fixturevault --help failed."
         $help = [IO.File]::ReadAllText($helpPath)
-        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault" -and $help -match "FV007 detects high-confidence structured credentials without disclosing" -and $help -match "DETECTION_GRAMMAR.md") "fixturevault --help did not print the expected usage text."
+        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault" -and $help -match "filesDiscovered" -and $help -match "FV007 detects high-confidence structured credentials without disclosing" -and $help -match "DETECTION_GRAMMAR.md") "fixturevault --help did not print the expected usage text."
 
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "init.txt")) -eq 0) "fixturevault init failed."
         Assert-Contract (Test-Path -LiteralPath (Join-Path $consumerRoot ".fixturevault.json")) "fixturevault init did not create .fixturevault.json."
-        Assert-Contract ((Invoke-CommandCapture $fixtureVault @("scan") (Join-Path $workRoot "clean-scan.txt")) -eq 0) "Clean fixturevault scan failed."
+        $cleanScanPath = Join-Path $workRoot "clean-scan.txt"
+        Assert-Contract ((Invoke-CommandCapture $fixtureVault @("scan") $cleanScanPath) -eq 0) "Clean fixturevault scan failed."
 
         $testsRoot = Join-Path $consumerRoot "tests"
         New-Item -ItemType Directory -Force -Path $testsRoot | Out-Null
@@ -162,9 +201,43 @@ try {
         Assert-Contract ($blockingCode -eq 1) "Blocking fixturevault scan returned $blockingCode instead of 1."
         $report = [IO.File]::ReadAllText($blockingReportPath) | ConvertFrom-Json
         Assert-Contract ($report.schemaVersion -eq 1) "Blocking scan JSON did not report schema version 1."
+        Assert-Contract ($report.filesDiscovered -eq 2 -and $report.filesInspected -eq 2 -and $report.completed) "Blocking scan JSON did not report accurate discovery, inspection, and completion state (discovered=$($report.filesDiscovered), inspected=$($report.filesInspected), completed=$($report.completed))."
         Assert-Contract (@($report.findings | Where-Object { $_.ruleId -eq "FV001" }).Count -gt 0) "Blocking scan JSON did not contain the expected FV001 finding."
         Assert-Contract (@($report.findings | Where-Object { $_.ruleId -eq "FV007" }).Count -gt 0) "Blocking scan JSON did not contain the expected FV007 sensitive-data finding."
         Assert-Contract (-not ([IO.File]::ReadAllText($blockingReportPath).Contains("fixture-test-secret-1234567890", [StringComparison]::Ordinal))) "Sensitive data was disclosed by the package consumer report."
+
+        if ([OperatingSystem]::IsWindows()) {
+            $longConsumerRoot = Join-Path $workRoot "windows-long-consumer"
+            New-Item -ItemType Directory -Force -Path $longConsumerRoot | Out-Null
+            $longRoot = Join-Path $longConsumerRoot "windows-long-path"
+            New-Item -ItemType Directory -Force -Path $longRoot | Out-Null
+            $longSegment = "segment-" + ("x" * 72)
+            for ($segmentIndex = 0; $segmentIndex -lt 8; $segmentIndex++) {
+                $longRoot = Join-Path $longRoot $longSegment
+                New-Item -ItemType Directory -Force -Path $longRoot | Out-Null
+            }
+
+            $longTestsRoot = Join-Path $longRoot "tests"
+            New-Item -ItemType Directory -Force -Path $longTestsRoot | Out-Null
+            [IO.File]::WriteAllText(
+                (Join-Path $longTestsRoot "long.golden"),
+                "clean" + [Environment]::NewLine,
+                [Text.UTF8Encoding]::new($false))
+            Push-Location $longConsumerRoot
+            try {
+                Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "windows-long-init.txt")) -eq 0) "Windows long-path init failed."
+                $longRelativeTests = [IO.Path]::GetRelativePath($longConsumerRoot, $longTestsRoot)
+                $longReportPath = Join-Path $workRoot "windows-long-report.json"
+                $longCode = Invoke-CommandCapture $fixtureVault @("scan", "--root", $longRelativeTests, "--format", "json") $longReportPath
+                $longReport = [IO.File]::ReadAllText($longReportPath) | ConvertFrom-Json
+                $longErrorSummary = @($longReport.errors | ForEach-Object { "$($_.code):$($_.message)" }) -join "; "
+                Assert-Contract ($longCode -eq 0 -and $longReport.filesDiscovered -eq 1 -and $longReport.filesInspected -eq 1 -and $longReport.completed -and @($longReport.errors).Count -eq 0) "Windows long-path package smoke did not complete a clean scan (exit=$longCode, discovered=$($longReport.filesDiscovered), inspected=$($longReport.filesInspected), completed=$($longReport.completed), errors=$longErrorSummary)."
+            }
+            finally {
+                Pop-Location
+            }
+            Write-Host "Windows long-path package smoke: installed tool completed a clean scan beyond the former 512-character helper boundary from a short consumer working directory."
+        }
 
         $connectionPositiveRoot = Join-Path $workRoot "connection-positive"
         New-Item -ItemType Directory -Force -Path $connectionPositiveRoot | Out-Null
@@ -207,7 +280,7 @@ try {
                 Assert-Contract ($jsonCode -eq 1) "$($case.Name) JSON scan returned $jsonCode instead of 1."
                 $jsonText = [IO.File]::ReadAllText($jsonPath)
                 $jsonReport = $jsonText | ConvertFrom-Json
-                Assert-Contract ($jsonReport.filesInspected -eq 1) "$($case.Name) JSON scan did not inspect exactly the intended fixture."
+                Assert-Contract ($jsonReport.filesDiscovered -eq 1 -and $jsonReport.filesInspected -eq 1 -and $jsonReport.completed) "$($case.Name) JSON scan did not report accurate discovery, inspection, and completion state."
                 Assert-Contract (@($jsonReport.errors).Count -eq 0) "$($case.Name) JSON scan reported an execution error."
                 $jsonFindings = @($jsonReport.findings | Where-Object { $_.ruleId -eq "FV007" })
                 Assert-Contract ($jsonFindings.Count -eq 1 -and $jsonFindings[0].path -eq "tests/$($case.Name).golden") "$($case.Name) JSON scan did not report exactly one FV007 for the intended fixture path."
@@ -477,12 +550,13 @@ try {
                 $jsonText = [IO.File]::ReadAllText($jsonPath)
                 Assert-Contract (-not $jsonText.Contains($case.Fixture, [StringComparison]::Ordinal)) "structured $($case.Name) JSON output disclosed the fixture representation."
                 $jsonReport = $jsonText | ConvertFrom-Json
-                Assert-Contract ($jsonReport.filesInspected -eq 1 -and @($jsonReport.errors).Count -eq 0) "structured $($case.Name) JSON scan did not inspect one valid fixture without errors."
+                Assert-Contract ($jsonReport.filesDiscovered -eq 1 -and $jsonReport.filesInspected -eq 1 -and $jsonReport.completed -and @($jsonReport.errors).Count -eq 0) "structured $($case.Name) JSON scan did not report one valid completed inspection without errors."
                 $jsonFindings = @($jsonReport.findings | Where-Object { $_.ruleId -eq "FV007" })
                 Assert-Contract (@($jsonReport.findings).Count -eq [int]$case.ExpectedFinding) "structured $($case.Name) JSON scan did not report the exact total finding count."
                 Assert-Contract (($jsonFindings.Count -eq 1 -and $jsonFindings[0].path -eq $expectedFixturePath) -eq $case.ExpectedFinding) "structured $($case.Name) JSON finding classification or path was incorrect."
                 if ($case.Secret.Length -gt 0) {
-                    Assert-Contract (-not $consoleText.Contains($case.Secret, [StringComparison]::Ordinal) -and -not $jsonText.Contains($case.Secret, [StringComparison]::Ordinal)) "structured $($case.Name) disclosed its credential."
+                    $jsonDisclosureText = $jsonText.Replace('"completed": true', '"completed": <completed>', [StringComparison]::Ordinal)
+                    Assert-Contract (-not $consoleText.Contains($case.Secret, [StringComparison]::Ordinal) -and -not $jsonDisclosureText.Contains($case.Secret, [StringComparison]::Ordinal)) "structured $($case.Name) disclosed its credential."
                 }
 
                 $afterHash = (Get-FileHash -LiteralPath $fixturePath -Algorithm SHA256).Hash
@@ -516,7 +590,7 @@ try {
                 $scaleJsonCode = Invoke-CommandCaptureWithTimeout $fixtureVault @("scan", "--format", "json") $scaleCaseRoot $scaleJsonPath
                 Assert-Contract ($scaleJsonCode -eq 0) "Azure scale $fieldCount JSON scan returned $scaleJsonCode instead of 0."
                 $scaleReport = [IO.File]::ReadAllText($scaleJsonPath) | ConvertFrom-Json
-                Assert-Contract ($scaleReport.filesInspected -eq 1 -and @($scaleReport.findings).Count -eq 0 -and @($scaleReport.errors).Count -eq 0) "Azure scale $fieldCount JSON scan did not remain clean and error-free."
+                Assert-Contract ($scaleReport.filesDiscovered -eq 1 -and $scaleReport.filesInspected -eq 1 -and $scaleReport.completed -and @($scaleReport.findings).Count -eq 0 -and @($scaleReport.errors).Count -eq 0) "Azure scale $fieldCount JSON scan did not remain clean and error-free."
                 Assert-Contract ((Get-FileHash -LiteralPath $scaleFixturePath -Algorithm SHA256).Hash -eq $scaleBeforeHash) "Azure scale $fieldCount scan mutated the fixture."
                 Write-Host "Azure repeated-field scale $fieldCount package smoke: console/JSON completed within the 10s timeout, clean, no errors, no mutation."
             }
@@ -794,6 +868,15 @@ try {
     Write-Host "Consumer smoke passed: help, init, clean scan (0), sensitive/blocking JSON scan (1), connection-string positive/negative console+JSON cases, and Linux filesystem safety checks when applicable."
 }
 finally {
+    if ($null -eq $originalTelemetryOptOut) {
+        Remove-Item Env:KEELMATRIX_NO_TELEMETRY -ErrorAction SilentlyContinue
+        [Environment]::SetEnvironmentVariable("KEELMATRIX_NO_TELEMETRY", $null, "Process")
+    }
+    else {
+        $env:KEELMATRIX_NO_TELEMETRY = $originalTelemetryOptOut
+        [Environment]::SetEnvironmentVariable("KEELMATRIX_NO_TELEMETRY", $originalTelemetryOptOut, "Process")
+    }
+
     if (Test-Path -LiteralPath $workRoot) {
         Remove-Item -LiteralPath $workRoot -Recurse -Force
     }

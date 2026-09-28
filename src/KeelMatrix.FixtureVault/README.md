@@ -1,4 +1,4 @@
-# KeelMatrix.FixtureVault
+﻿# KeelMatrix.FixtureVault
 
 Keep your existing snapshot framework. FixtureVault is a .NET tool whose `scan` command is read-only while it audits the snapshot and golden files around Verify, Snapshooter, approval tests, or configured golden-file workflows. It complements those frameworks; it does not replace them or provide snapshot assertions.
 
@@ -31,6 +31,8 @@ fixturevault scan --root tests --format json
 ```
 
 `init` creates `.fixturevault.json` only when it does not already exist. `scan` reads fixture files and returns CI-friendly exit codes: `0` for no blocking findings, `1` for blocking findings, and `2` when an error prevents a trustworthy scan.
+
+JSON reports include `filesDiscovered`, `filesInspected`, and `completed`. The discovered count is the number of eligible files found after filtering; the inspected count includes only files whose bounded read and content-dependent checks completed. An incomplete exit-`2` report has `completed: false` and never presents unchecked files as inspected. A completed scan has `completed: true`, including a completed scan with exit `1` for blocking findings.
 
 ## Important limitations
 

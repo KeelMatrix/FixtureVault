@@ -1,4 +1,4 @@
-# FixtureVault Development Guide
+﻿# FixtureVault Development Guide
 
 ## Navigation
 
@@ -23,6 +23,7 @@ dotnet pack src/KeelMatrix.FixtureVault/KeelMatrix.FixtureVault.csproj -c Releas
 Run the tool from source during focused development:
 
 ```powershell
+$env:KEELMATRIX_NO_TELEMETRY = "1"
 dotnet run --project src/KeelMatrix.FixtureVault -- init
 dotnet run --project src/KeelMatrix.FixtureVault -- scan --format json
 ```

@@ -1,4 +1,4 @@
-# KeelMatrix.FixtureVault
+﻿# KeelMatrix.FixtureVault
 
 [![CI](https://github.com/KeelMatrix/FixtureVault/actions/workflows/ci.yml/badge.svg)](https://github.com/KeelMatrix/FixtureVault/actions/workflows/ci.yml)
 
@@ -175,7 +175,9 @@ Use `--format json` for CI and automation. JSON report schema version `1` is sta
 {
   "schemaVersion": 1,
   "toolVersion": "0.1.0",
+  "filesDiscovered": 2,
   "filesInspected": 2,
+  "completed": true,
   "findings": [
     {
       "ruleId": "FV001",
@@ -193,13 +195,15 @@ Use `--format json` for CI and automation. JSON report schema version `1` is sta
 
 Sensitive findings contain only the path and rule information. No matched value, fixture content, file hash, or secret category is included.
 
+`filesDiscovered` is the number of eligible fixture files found after root, extension, and ignore filtering. `filesInspected` counts files whose bounded read and content-dependent checks completed; it never counts a discovered file that was skipped or failed inspection. An incomplete scan has `completed: false`, exits `2`, and may have fewer inspected files than discovered files. A completed scan has `completed: true`, including completed scans that return `1` for blocking findings.
+
 Diagnostics do not echo raw untrusted CLI arguments or policy values. Human-readable paths escape control characters as `\\n`, `\\r`, `\\t`, `\\x1B`, or `\\uNNNN`; JSON keeps the actual repository-relative path value. Collision messages use a bounded group size rather than repeating every path. Findings and skipped diagnostics share an aggregate budget of 4,096 retained records and a conservative 1 MiB JSON-field estimate; the first limit reached returns `FV-E017` before the next diagnostic is retained or serialized.
 
 ## Exit Codes
 
 - `0`: the scan completed without policy-blocking findings;
 - `1`: the scan completed and policy-blocking findings exist;
-- `2`: a configuration, input, filesystem, or execution error prevented a trustworthy scan.
+- `2`: a configuration, input, filesystem, or execution error prevented a trustworthy scan. JSON reports mark this with `completed: false` and expose discovered versus actually inspected files.
 
 Malformed `.fixturevault.json`, a missing configured root, an unsafe root path, or a missing/malformed enabled manifest returns `2`, never a false clean result. A scan that cannot honor an enabled sensitive-data policy because a counted fixture's content could not be inspected also returns `2` (`FV-E016`) instead of reporting a clean scan. Filesystem read failures, file replacement or growth or shrinkage detected at the open/read boundary, total-byte exhaustion, and a diagnostic budget exhaustion likewise return `2` and do not activate successful-scan telemetry.
 

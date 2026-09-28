@@ -1,7 +1,9 @@
-{
+﻿{
   "schemaVersion": 1,
   "toolVersion": "0.1.0",
+  "filesDiscovered": 1,
   "filesInspected": 1,
+  "completed": true,
   "findings": [
     {
       "ruleId": "FV001",
