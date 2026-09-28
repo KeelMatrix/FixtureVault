@@ -1,6 +1,7 @@
 ﻿using System.Diagnostics;
 using System.Data.Common;
 using System.Security.Cryptography;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using KeelMatrix.Redaction;
@@ -439,6 +440,24 @@ public sealed class FixtureVaultTests
     }
 
     [Fact]
+    public void Hard_linked_fixture_aliases_are_classified_by_repository_relative_path()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        string verifiedPath = Path.Combine(repository.Root, "tests", "alias.verified.json");
+        string receivedPath = Path.Combine(repository.Root, "tests", "alias.received.json");
+        File.WriteAllText(verifiedPath, "fixture\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        CreateHardLinkOrSkip(receivedPath, verifiedPath);
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(2, result.Report.FilesDiscovered);
+        Assert.Equal(2, result.Report.FilesInspected);
+        Assert.Contains(result.Report.Findings, item =>
+            item.RuleId == "FV001" && item.Path == "tests/alias.received.json");
+    }
+
+    [Fact]
     public void Verify_bommed_verified_baseline_is_clean()
     {
         using var repository = new TemporaryRepository();
@@ -595,6 +614,65 @@ public sealed class FixtureVaultTests
         Assert.Equal(1, result.ExitCode);
         Finding finding = Assert.Single(result.Report.Findings, item => item.RuleId == "FV002");
         Assert.Equal("tests/orphan.golden", finding.Path);
+    }
+
+    [Fact]
+    public void Manifest_membership_requires_exact_repository_relative_spelling()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Conventions = ["generic", "fixturevault-manifest"]);
+        repository.WriteText("tests/Case.golden", "clean\n");
+        repository.WriteText(
+            FixtureVaultContract.ManifestFileName,
+            "{\"version\":1,\"activeBaselines\":[\"tests/case.golden\"]}\n");
+
+        if (File.ReadAllText(Path.Combine(repository.Root, "tests", "Case.golden")) ==
+            File.ReadAllText(Path.Combine(repository.Root, "tests", "case.golden")))
+        {
+            return;
+        }
+
+        ScanResult mismatched = repository.Scan();
+        Assert.Contains(mismatched.Report.Findings, item =>
+            item.RuleId == "FV002" && item.Path == "tests/Case.golden");
+
+        repository.WriteText(
+            FixtureVaultContract.ManifestFileName,
+            "{\"version\":1,\"activeBaselines\":[\"tests/Case.golden\"]}\n");
+        ScanResult exact = repository.Scan();
+        Assert.DoesNotContain(exact.Report.Findings, item => item.RuleId == "FV002");
+    }
+
+    [Fact]
+    public void Manifest_membership_does_not_use_unicode_normalization()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.Conventions = ["generic", "fixturevault-manifest"]);
+        const string actualRelativePath = "tests/caf\u00E9.golden";
+        const string mismatchedRelativePath = "tests/cafe\u0301.golden";
+        repository.WriteText(actualRelativePath, "clean\n");
+
+        string actualPath = Path.Combine(repository.Root, actualRelativePath.Replace('/', Path.DirectorySeparatorChar));
+        string mismatchedPath = Path.Combine(repository.Root, mismatchedRelativePath.Replace('/', Path.DirectorySeparatorChar));
+        if (File.Exists(mismatchedPath))
+        {
+            return;
+        }
+
+        repository.WriteText(
+            FixtureVaultContract.ManifestFileName,
+            $"{{\"version\":1,\"activeBaselines\":[\"{mismatchedRelativePath}\"]}}\n");
+
+        ScanResult mismatched = repository.Scan();
+        Assert.Contains(mismatched.Report.Findings, item =>
+            item.RuleId == "FV002" && item.Path == actualRelativePath);
+
+        repository.WriteText(
+            FixtureVaultContract.ManifestFileName,
+            $"{{\"version\":1,\"activeBaselines\":[\"{actualRelativePath}\"]}}\n");
+        ScanResult exact = repository.Scan();
+        Assert.DoesNotContain(exact.Report.Findings, item => item.RuleId == "FV002");
+        Assert.True(File.Exists(actualPath));
     }
 
     [Fact]
@@ -5159,15 +5237,22 @@ public sealed class FixtureVaultTests
         int walkCalls = 0;
         long activeWalkStartOperations = 0;
         long activeWalkOperations = 0;
+        long repositoryWalkStartOperations = 0;
         FixtureFileWalk measurementWalk = (repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory) =>
         {
             long before = measurementBudget.PathOperationsConsumed;
             WalkResult result = SafeFileWalker.Walk(repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory);
-            if (walkCalls++ == 0)
+            if (walkCalls == 0)
             {
                 activeWalkStartOperations = before;
                 activeWalkOperations = measurementBudget.PathOperationsConsumed - before;
             }
+            else if (walkCalls == 1)
+            {
+                repositoryWalkStartOperations = before;
+            }
+
+            walkCalls++;
 
             return result;
         };
@@ -5181,11 +5266,12 @@ public sealed class FixtureVaultTests
         Assert.True(activeWalkOperations > 0);
         Assert.True(measurementBudget.PathOperationsConsumed > activeWalkOperations);
         Assert.True(measurementBudget.PathOperationsConsumed > 1);
+        Assert.True(repositoryWalkStartOperations >= activeWalkStartOperations + activeWalkOperations);
 
         var telemetry = new RecordingTelemetry();
         var repositoryBudget = new FilesystemTraversalBudget(
             maximumEntries: 100_000,
-            maximumPathOperations: activeWalkStartOperations + activeWalkOperations + 128);
+            maximumPathOperations: repositoryWalkStartOperations);
         int exitCode = repository.Run(
             ["scan", "--format", "json"],
             telemetry,
@@ -5436,6 +5522,52 @@ public sealed class FixtureVaultTests
             File.WriteAllText(path, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         }
     }
+
+    private static void CreateHardLinkOrSkip(string linkPath, string targetPath)
+    {
+        try
+        {
+            bool created = OperatingSystem.IsWindows()
+                ? CreateWindowsHardLink(linkPath, targetPath, IntPtr.Zero)
+                : CreateUnixHardLink(targetPath, linkPath);
+            if (!created)
+            {
+                throw new IOException($"Hard-link creation failed with error {Marshal.GetLastPInvokeError()}.");
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            throw SkipException.ForSkip(
+                $"Hard-link capability is unavailable in this environment ({ex.GetType().Name}: {ex.Message}).");
+        }
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateHardLink(
+        [MarshalAs(UnmanagedType.LPWStr)] string fileName,
+        [MarshalAs(UnmanagedType.LPWStr)] string existingFileName,
+        IntPtr securityAttributes);
+
+    private static bool CreateUnixHardLink(string existingFileName, string fileName)
+    {
+        IntPtr existingPointer = Marshal.StringToCoTaskMemUTF8(existingFileName);
+        IntPtr filePointer = Marshal.StringToCoTaskMemUTF8(fileName);
+        try
+        {
+            return UnixLink(existingPointer, filePointer) == 0;
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(existingPointer);
+            Marshal.FreeCoTaskMem(filePointer);
+        }
+    }
+
+    [DllImport("libc", EntryPoint = "link", SetLastError = true)]
+    private static extern int UnixLink(IntPtr existingFileName, IntPtr fileName);
+
+    private static bool CreateWindowsHardLink(string fileName, string existingFileName, IntPtr securityAttributes) =>
+        CreateHardLink(fileName, existingFileName, securityAttributes);
 
     private static void CreateSymbolicFileOrSkip(string linkPath, string targetPath)
     {

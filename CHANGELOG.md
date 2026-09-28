@@ -9,8 +9,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 
 - Documents that private vulnerability reports are accepted by email only while GitHub private vulnerability reporting is disabled.
-- Bounds one scan to 64 configured or CLI-selected roots and one scan-wide filesystem traversal budget of 100,000 entries plus 1,000,000 path operations shared across active-root and repository-wide discovery.
-- Makes filesystem identity, containment, and case-collision handling follow resolved filesystem objects rather than the operating-system name.
+- Bounds one scan to 64 configured or CLI-selected roots and one scan-wide filesystem traversal budget of 100,000 entries plus 1,000,000 logical path-work units shared across active-root and repository-wide discovery, with the same directory-entry and path-component charges on every supported operating system.
+- Keeps filesystem identity for traversal-boundary and root deduplication while classifying every distinct eligible repository-relative alias, including hard-linked files with different fixture-rule suffixes.
+- Requires manifest membership to use exact repository-relative spelling; portability normalization remains limited to case/Unicode collision grouping.
+- Preserves the scan-owned trusted repository boundary and fails closed when the root or an ancestor changes instead of rebinding to the substituted path.
 - Treats POSIX directory-stream errors as incomplete scans with exit code `2` instead of accepting an uncertain end-of-directory.
 
 ## [0.1.0] - Planned (not yet published)

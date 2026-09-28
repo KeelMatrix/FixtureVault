@@ -139,9 +139,17 @@ internal static class CommandLineParser
               Policy roots and --root overrides are limited to 64 entries. Exceeding the limit
               returns FV-E018, exit code 2, and no successful-scan telemetry.
               Filesystem traversal has one scan-wide budget of 100,000 entries and 1,000,000
-              path operations shared by all active roots and repository-wide path-policy discovery.
+              logical path-work units shared by all active roots and repository-wide path-policy
+              discovery. Every directory entry and every path component/ancestor validation uses
+              the same charge on every supported operating system.
               Exhaustion returns exit code 2; active-root exhaustion reports FV-E003 and
               repository-wide exhaustion reports FV-E015.
+
+            Classification:
+              Physical identity may deduplicate traversal roots, but classification is complete
+              for every distinct eligible repository-relative path alias, including hard links.
+              Manifest activeBaselines entries use exact repository-relative spelling; portability
+              normalization is used only to group FV003 collisions.
 
             Exit codes:
               0  Scan completed without policy-blocking findings.

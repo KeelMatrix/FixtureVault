@@ -177,8 +177,10 @@ internal sealed class FixtureScanner
         AddConventionSkips(policy, skipped, diagnosticBudget);
         List<SafeFileEntry> fixtureFiles = [];
         int filesInspected = 0;
-        var seenFiles = new HashSet<FileSystemIdentity>();
-        var syntheticSeenFiles = new HashSet<string>(StringComparer.Ordinal);
+        // Traversal roots are identity-deduplicated above. Classification is deliberately
+        // path-complete: a physical file may have multiple eligible repository-relative
+        // aliases, and each alias must retain its own convention/manifest semantics.
+        var classifiedRelativePaths = new HashSet<string>(StringComparer.Ordinal);
         foreach (ResolvedRoot root in activeRoots)
         {
             WalkResult walk = walkFunction(
@@ -226,9 +228,7 @@ internal sealed class FixtureScanner
                         policy,
                         insideActiveRoot: true,
                         isRepositoryRoot: root.RelativePath.Length == 0) &&
-                    (file.ExpectedIdentity is FileSystemIdentity identity
-                        ? seenFiles.Add(identity)
-                        : syntheticSeenFiles.Add(Path.GetFullPath(file.FullPath))))
+                    classifiedRelativePaths.Add(file.RelativePath))
                 {
                     fixtureFiles.Add(file);
                 }
@@ -288,7 +288,7 @@ internal sealed class FixtureScanner
             foreach (SafeFileEntry file in fixtureFiles)
             {
                 if (IsBaselineCandidate(file.RelativePath, policy) &&
-                    !manifest.ActiveBaselines.Contains(PathUtilities.NormalizeComparisonPath(file.RelativePath)))
+                    !manifest.ActiveBaselines.Contains(file.RelativePath))
                 {
                     AddFinding(
                         findings,
@@ -607,7 +607,10 @@ internal sealed class FixtureScanner
                         "The configured FixtureVault manifest is malformed."));
                 }
 
-                string normalized = baseline.Replace('\\', '/').Normalize(NormalizationForm.FormC);
+                // Manifest membership uses the exact repository-relative spelling. The
+                // portability key is reserved for FV003 collision grouping and must not
+                // authorize a relationship between differently spelled paths.
+                string normalized = baseline.Replace('\\', '/');
                 string fullBaselinePath;
                 try
                 {
@@ -627,8 +630,7 @@ internal sealed class FixtureScanner
                         "The configured FixtureVault manifest is malformed."));
                 }
 
-                paths.Add(PathUtilities.NormalizeComparisonPath(
-                    PathUtilities.NormalizeRelative(repositoryRoot, fullBaselinePath)));
+                paths.Add(PathUtilities.NormalizeRelative(repositoryRoot, fullBaselinePath));
             }
 
             return new ManifestLoadResult(paths, null);

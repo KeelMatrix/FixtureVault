@@ -26,10 +26,11 @@ History validation is fail-closed and uses the same `.githooks/check-history` po
 pwsh -NoProfile -File ./scripts/test-history-gate.ps1
 ```
 
-The safety regressions cover ancestor-link replacement during repository-wide path-policy discovery, both directions of
-a read-boundary change, POSIX directory-stream errors at first/middle/final positions for active-root and
+The safety regressions cover trusted-boundary replacement during active-root and repository-wide discovery, hard-linked
+fixture aliases, exact manifest spelling, POSIX directory-stream errors at first/middle/final positions for active-root and
 repository-wide walks, 64/65 policy and CLI root counts, nested/overlapping roots, and the aggregate diagnostic and
-filesystem traversal bounds. The filesystem budget is one 100,000-entry plus 1,000,000-path-operation limit across all walks; active-root
+filesystem traversal bounds. The filesystem budget is one 100,000-entry plus 1,000,000-logical-path-work limit across all walks; every
+directory entry and every path component/ancestor validation uses the same charge on every supported operating system. Active-root
 exhaustion is `FV-E003`, repository-wide exhaustion is `FV-E015`, and root-count exhaustion is `FV-E018`. Every
 exhaustion path is exit code `2`, `Completed=false`, and no successful-scan telemetry. The aggregate diagnostic bound
 applies to ordinary findings and skipped diagnostics as well as collision findings; its exhaustion is `FV-E017`.

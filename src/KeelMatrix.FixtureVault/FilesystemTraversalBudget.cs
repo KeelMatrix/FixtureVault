@@ -61,6 +61,22 @@ internal static class FilesystemTraversalBudgetContext
 
     internal static FilesystemTraversalBudget? Current => CurrentBudget.Value;
 
+    // Path work is charged from a logical path, not from the number of native calls
+    // used by a platform walker. One unit covers the final path object plus one unit
+    // for each logical component/ancestor validation. Directory-entry work is
+    // charged separately, once per entry.
+    internal static bool TryConsumePathWork(string path)
+    {
+        long componentCount = path.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries).LongLength;
+        return Current?.TryConsumePathOperations(componentCount + 1) ?? true;
+    }
+
+    internal static bool TryConsumeDirectoryEntryWork() =>
+        Current?.TryConsumePathOperations(1) ?? true;
+
+    internal static bool TryConsumePathValidation() =>
+        Current?.TryConsumePathOperations(1) ?? true;
+
     internal static IDisposable Push(FilesystemTraversalBudget budget)
     {
         FilesystemTraversalBudget? previous = CurrentBudget.Value;
