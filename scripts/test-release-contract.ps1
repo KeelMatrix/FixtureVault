@@ -3,6 +3,7 @@ param()
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot '../build/Invoke-NestedPwsh.ps1')
 
 function Assert-Contract {
     param(
@@ -169,40 +170,17 @@ function Invoke-PwshScript {
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$Arguments
     )
 
-    $startInfo = [Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = "pwsh"
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    [void]$startInfo.ArgumentList.Add("-NoProfile")
-    [void]$startInfo.ArgumentList.Add("-File")
-    [void]$startInfo.ArgumentList.Add($ScriptPath)
-    foreach ($argument in $Arguments) {
-        [void]$startInfo.ArgumentList.Add($argument)
-    }
-
-    $process = [Diagnostics.Process]::new()
-    $process.StartInfo = $startInfo
-    try {
-        if (-not $process.Start()) {
-            throw "Could not start PowerShell script '$ScriptPath'."
-        }
-
-        $standardOutputTask = $process.StandardOutput.ReadToEndAsync()
-        $standardErrorTask = $process.StandardError.ReadToEndAsync()
-        $process.WaitForExit()
-        $standardOutput = $standardOutputTask.GetAwaiter().GetResult()
-        $standardError = $standardErrorTask.GetAwaiter().GetResult()
-        [pscustomobject]@{
-            ExitCode = $process.ExitCode
-            StandardOutput = $standardOutput
-            StandardError = $standardError
-            Output = $standardOutput + $standardError
-        }
-    }
-    finally {
-        $process.Dispose()
+    $processArguments = @(
+        "-NoProfile",
+        "-File",
+        $ScriptPath
+    ) + $Arguments
+    $result = Invoke-NestedProcess -Executable "pwsh" -ArgumentList $processArguments
+    [pscustomobject]@{
+        ExitCode = $result.ExitCode
+        StandardOutput = $result.StandardOutput
+        StandardError = $result.StandardError
+        Output = $result.StandardOutput + $result.StandardError
     }
 }
 

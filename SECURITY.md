@@ -2,14 +2,14 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in FixtureVault, report it privately by either:
+If you discover a security vulnerability in FixtureVault, report it privately by emailing **keelmatrix@gmail.com**.
 
-1. emailing **keelmatrix@gmail.com**;
-2. opening a private GitHub security advisory.
+Private vulnerability reporting through GitHub is not currently enabled for this repository, so email is the only
+supported private reporting route.
 
 Do **not** disclose vulnerabilities publicly or create a public issue containing sensitive fixture contents.
 
-For ordinary bugs and feature requests, use the [public GitHub issue tracker](https://github.com/KeelMatrix/FixtureVault/issues). This security route is not for ordinary support or community-conduct reports.
+For ordinary bugs and feature requests, use the [public GitHub issue tracker](https://github.com/KeelMatrix/FixtureVault/issues). This email route is not for ordinary support or community-conduct reports.
 
 Useful report details:
 

@@ -8,6 +8,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot '../build/Invoke-NestedPwsh.ps1')
 
 function Assert-Contract {
     param(
@@ -34,35 +35,9 @@ function Invoke-CommandCapture {
     )
 
     Assert-TelemetrySuppressed
-    $startInfo = [Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = $Executable
-    $startInfo.WorkingDirectory = (Get-Location).Path
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    foreach ($argument in $Arguments) {
-        [void]$startInfo.ArgumentList.Add($argument)
-    }
-
-    $process = [Diagnostics.Process]::new()
-    $process.StartInfo = $startInfo
-    try {
-        if (-not $process.Start()) {
-            throw "Could not start child command '$Executable'."
-        }
-
-        $standardOutputTask = $process.StandardOutput.ReadToEndAsync()
-        $standardErrorTask = $process.StandardError.ReadToEndAsync()
-        $process.WaitForExit()
-        $standardOutput = $standardOutputTask.GetAwaiter().GetResult()
-        $standardError = $standardErrorTask.GetAwaiter().GetResult()
-        [IO.File]::WriteAllText($OutputPath, $standardOutput + $standardError, [Text.UTF8Encoding]::new($false))
-        return $process.ExitCode
-    }
-    finally {
-        $process.Dispose()
-    }
+    $result = Invoke-NestedProcess -Executable $Executable -ArgumentList $Arguments -WorkingDirectory (Get-Location).Path
+    [IO.File]::WriteAllText($OutputPath, $result.StandardOutput + $result.StandardError, [Text.UTF8Encoding]::new($false))
+    return $result.ExitCode
 }
 
 function Invoke-CommandCaptureWithTimeout {
@@ -76,41 +51,18 @@ function Invoke-CommandCaptureWithTimeout {
 
     Assert-TelemetrySuppressed
     $errorPath = $OutputPath + ".stderr"
-    $startInfo = [Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = $Executable
-    $startInfo.WorkingDirectory = $WorkingDirectory
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    foreach ($argument in $Arguments) {
-        [void]$startInfo.ArgumentList.Add($argument)
+    $result = Invoke-NestedProcess `
+        -Executable $Executable `
+        -ArgumentList $Arguments `
+        -WorkingDirectory $WorkingDirectory `
+        -TimeoutMilliseconds $TimeoutMilliseconds
+    if ($result.TimedOut) {
+        throw "Command exceeded the ${TimeoutMilliseconds}ms package-smoke timeout: $Executable $($Arguments -join ' ')"
     }
 
-    $process = [Diagnostics.Process]::new()
-    $process.StartInfo = $startInfo
-    try {
-        if (-not $process.Start()) {
-            throw "Could not start child command '$Executable'."
-        }
-
-        $standardOutputTask = $process.StandardOutput.ReadToEndAsync()
-        $standardErrorTask = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit($TimeoutMilliseconds)) {
-            $process.Kill()
-            $process.WaitForExit()
-            throw "Command exceeded the ${TimeoutMilliseconds}ms package-smoke timeout: $Executable $($Arguments -join ' ')"
-        }
-
-        $standardOutput = $standardOutputTask.GetAwaiter().GetResult()
-        $standardError = $standardErrorTask.GetAwaiter().GetResult()
-        [IO.File]::WriteAllText($OutputPath, $standardOutput, [Text.UTF8Encoding]::new($false))
-        [IO.File]::WriteAllText($errorPath, $standardError, [Text.UTF8Encoding]::new($false))
-        return $process.ExitCode
-    }
-    finally {
-        $process.Dispose()
-    }
+    [IO.File]::WriteAllText($OutputPath, $result.StandardOutput, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($errorPath, $result.StandardError, [Text.UTF8Encoding]::new($false))
+    return $result.ExitCode
 }
 
 $resolvedPackage = (Resolve-Path -LiteralPath $PackagePath).Path

@@ -3,6 +3,7 @@ param()
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot '../build/Invoke-NestedPwsh.ps1')
 
 $timer = [Diagnostics.Stopwatch]::StartNew()
 $completed = $false
@@ -130,32 +131,26 @@ printf '%s\n' "$case_count"
     $mismatchPath = Join-Path $temporaryRoot $mismatchName
     [IO.File]::WriteAllText($mismatchPath, "", [Text.Encoding]::ASCII)
     $command = "export PATH=/usr/bin:/bin:`$PATH; sh $runnerName $inputName $mismatchName"
-    $processInfo = [Diagnostics.ProcessStartInfo]::new()
-    $processInfo.FileName = $shellPath
-    $processInfo.WorkingDirectory = $temporaryRoot
-    $processInfo.UseShellExecute = $false
-    $processInfo.RedirectStandardOutput = $true
-    $processInfo.RedirectStandardError = $true
+    $shellArguments = [System.Collections.Generic.List[string]]::new()
     if ([IO.Path]::GetFileName($shellPath) -eq "bash.exe") {
-        $null = $processInfo.ArgumentList.Add("--noprofile")
-        $null = $processInfo.ArgumentList.Add("--norc")
+        $null = $shellArguments.Add("--noprofile")
+        $null = $shellArguments.Add("--norc")
     }
-    $null = $processInfo.ArgumentList.Add("-c")
-    $null = $processInfo.ArgumentList.Add($command)
+    $null = $shellArguments.Add("-c")
+    $null = $shellArguments.Add($command)
 
-    $process = [Diagnostics.Process]::new()
-    $process.StartInfo = $processInfo
-    Assert-Contract $process.Start() "Could not start the $BatchName case runner."
-    $finished = $process.WaitForExit(45000)
-    if (-not $finished) {
-        $process.Kill()
-        $process.WaitForExit()
+    $result = Invoke-NestedProcess `
+        -Executable $shellPath `
+        -ArgumentList $shellArguments.ToArray() `
+        -WorkingDirectory $temporaryRoot `
+        -TimeoutMilliseconds 45000
+    if ($result.TimedOut) {
         throw "$BatchName case runner exceeded its 45-second batch timeout."
     }
 
-    $output = $process.StandardOutput.ReadToEnd()
-    $errorOutput = $process.StandardError.ReadToEnd()
-    $exitCode = $process.ExitCode
+    $output = $result.StandardOutput
+    $errorOutput = $result.StandardError
+    $exitCode = $result.ExitCode
     Assert-Contract ($exitCode -eq 0) "$BatchName case runner failed with exit $exitCode. Output: $output $errorOutput"
 
     $reportedCount = [int]$output.Trim()
@@ -220,8 +215,8 @@ $timeoutArguments = @("-c", "command -v timeout")
 if ([IO.Path]::GetFileName($shellPath) -eq "bash.exe") {
     $timeoutArguments = @("--noprofile", "--norc", "-c", "command -v timeout")
 }
-$timeoutProbe = & $shellPath @timeoutArguments 2>&1
-Assert-Contract ($LASTEXITCODE -eq 0) "The history gate requires a POSIX timeout command for bounded per-case execution."
+$timeoutProbeResult = Invoke-NestedProcess -Executable $shellPath -ArgumentList $timeoutArguments
+Assert-Contract ($timeoutProbeResult.ExitCode -eq 0) "The history gate requires a POSIX timeout command for bounded per-case execution."
 
 $hookText = [IO.File]::ReadAllText((Join-Path $repositoryRoot ".githooks/commit-msg"))
 $prefixMatch = [regex]::Match($hookText, "(?m)^internal_prefixes='([^']*)'")
