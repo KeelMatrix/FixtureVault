@@ -2350,7 +2350,10 @@ internal static class SafeFileWalker
                                     : "A configured fixture root could not be inspected completely."));
                         }
 
-                        if (!budget.TryConsumeEntry())
+                        // Ignored contents are traversed only to validate native names. They
+                        // remain outside the inspected-entry budget so pruning still protects
+                        // the ordinary fixture walk from large standard ignored trees.
+                        if (!directory.IgnoredSubtree && !budget.TryConsumeEntry())
                         {
                             return new WalkResult(files, reparsePaths, new ScanError(
                                 FixtureVaultContract.FilesystemTraversalErrorCode,
