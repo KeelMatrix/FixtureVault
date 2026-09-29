@@ -6490,7 +6490,8 @@ public sealed class FixtureVaultTests
                 WorkingDirectory = repository.Root,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
-                UseShellExecute = false
+                UseShellExecute = false,
+                CreateNoWindow = true
             }
         };
         scan.StartInfo.ArgumentList.Add(typeof(FixtureVaultApplication).Assembly.Location);
