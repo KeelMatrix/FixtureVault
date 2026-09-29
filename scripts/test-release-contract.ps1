@@ -51,12 +51,14 @@ $historyGuardPath = Join-Path $repositoryRoot ".githooks/check-history"
 $tagScriptPath = Join-Path $repositoryRoot "scripts/validate-release-tag.ps1"
 $changelogScriptPath = Join-Path $repositoryRoot "scripts/test-changelog-contract.ps1"
 $smokeScriptPath = Join-Path $repositoryRoot "scripts/package-consumer-smoke.ps1"
+$auditScriptPath = Join-Path $repositoryRoot "scripts/audit-vulnerabilities.ps1"
 $devGuidePath = Join-Path $repositoryRoot "docs/DEV.md"
 $workflow = [IO.File]::ReadAllText($workflowPath)
 $ciWorkflow = [IO.File]::ReadAllText($ciWorkflowPath)
 $historyWorkflow = [IO.File]::ReadAllText($historyWorkflowPath)
 $historyGuard = [IO.File]::ReadAllText($historyGuardPath)
 $smokeScript = [IO.File]::ReadAllText($smokeScriptPath)
+$auditScript = [IO.File]::ReadAllText($auditScriptPath)
 $devGuide = [IO.File]::ReadAllText($devGuidePath)
 $releaseContractSource = [IO.File]::ReadAllText($PSCommandPath)
 $reservedReleaseTerms = @(
@@ -202,6 +204,9 @@ Assert-Contract (([Text.RegularExpressions.Regex]::Matches($publication, 'dotnet
 Assert-Contract ($publication.Contains("--no-symbols", [StringComparison]::Ordinal)) "The primary package push must not publish symbols implicitly."
 Assert-Contract ($publication.Contains(".snupkg", [StringComparison]::Ordinal)) "Publication must push the symbols package explicitly."
 Assert-Contract ($ciWorkflow.Contains("audit-vulnerabilities.ps1", [StringComparison]::Ordinal)) "Normal CI must run the repository vulnerability audit."
+Assert-Contract ($auditScript.Contains('"--format",', [StringComparison]::Ordinal) -and $auditScript.Contains('"json",', [StringComparison]::Ordinal)) "The vulnerability audit must request structured JSON output."
+Assert-Contract ($auditScript.Contains('"--output-version",', [StringComparison]::Ordinal) -and $auditScript.Contains('"1"', [StringComparison]::Ordinal)) "The vulnerability audit must pin its structured output version."
+Assert-Contract ($auditScript.Contains('Get-ExpectedProjectPaths', [StringComparison]::Ordinal) -and $auditScript.Contains('$seenProjects', [StringComparison]::Ordinal)) "The vulnerability audit must reconcile complete solution project coverage."
 Assert-Contract (Test-Path -LiteralPath $changelogScriptPath -PathType Leaf) "The changelog/version contract script is missing."
 Assert-Contract (Test-Path -LiteralPath $smokeScriptPath -PathType Leaf) "The package consumer smoke script is missing."
 Assert-Contract ($smokeScript.Contains("Assert-TelemetrySuppressed", [StringComparison]::Ordinal)) "Package consumer smoke must guard every child tool invocation with telemetry suppression."

@@ -151,7 +151,7 @@ try {
         $helpPath = Join-Path $workRoot "help.txt"
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("--help") $helpPath) -eq 0) "fixturevault --help failed."
         $help = [IO.File]::ReadAllText($helpPath)
-        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault" -and $help -match "filesDiscovered" -and $help -match "FV007 detects high-confidence structured credentials without disclosing" -and $help -match "DETECTION_GRAMMAR.md" -and $help -match "FV-E018" -and $help -match "100,000 entries" -and $help -match "1,000,000" -and $help -match "repository-relative path alias" -and $help -match "exact repository-relative spelling") "fixturevault --help did not print the expected usage text."
+        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault" -and $help -match "filesDiscovered" -and $help -match "FV007 detects high-confidence structured credentials without disclosing" -and $help -match "DETECTION_GRAMMAR.md" -and $help -match "FV-E018" -and $help -match "100,000 entries" -and $help -match "1,000,000" -and $help -match "repository-relative path alias" -and $help -match "exact repository-relative spelling" -and $help -match "strict UTF-8" -and $help -match "alternate-spelling overlapping roots") "fixturevault --help did not print the expected usage text."
 
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "init.txt")) -eq 0) "fixturevault init failed."
         Assert-Contract (Test-Path -LiteralPath (Join-Path $consumerRoot ".fixturevault.json")) "fixturevault init did not create .fixturevault.json."
@@ -840,8 +840,65 @@ try {
                 Assert-Contract ($fifoCode -eq 2) "Linux FIFO scan returned $fifoCode instead of 2."
                 $fifoReport = [IO.File]::ReadAllText($fifoReportPath) | ConvertFrom-Json
                 Assert-Contract (@($fifoReport.errors | Where-Object { $_.code -eq "FV-E009" }).Count -gt 0) "Linux FIFO scan did not report FV-E009."
+
+                $nativeFilenameScriptPath = Join-Path $workRoot "native-filename-regression.sh"
+                $nativeFilenameScript = @'
+set -eu
+root="$1/tests"
+invalid=$(printf '\377')
+if [ "$2" = "cleanup" ]; then
+    rm -f -- "$root/ignored/${invalid}.golden" "$root/${invalid}.golden" "$root/�.golden"
+    rm -rf -- "$root/${invalid}"
+    rmdir -- "$root/ignored" 2>/dev/null || true
+    exit 0
+fi
+mkdir -p "$root/ignored"
+printf '%s' 'ignored native fixture' > "$root/ignored/${invalid}.golden"
+if [ "$2" = "file" ]; then
+    printf '%s' 'fixture-test-secret-1234567890' > "$root/${invalid}.golden"
+    printf '%s' 'clean counterpart' > "$root/�.golden"
+else
+    rm -f "$root/${invalid}.golden"
+    mkdir "$root/${invalid}"
+    printf '%s' 'fixture-test-secret-1234567890' > "$root/${invalid}/nested.golden"
+fi
+'@
+                [IO.File]::WriteAllText($nativeFilenameScriptPath, $nativeFilenameScript, [Text.UTF8Encoding]::new($false))
+                $nativePolicyPath = Join-Path $safetyRoot ".fixturevault.json"
+                $nativePolicy = [IO.File]::ReadAllText($nativePolicyPath) | ConvertFrom-Json
+                $nativePolicy.ignoredPaths = @($nativePolicy.ignoredPaths) + "tests/ignored/**"
+                [IO.File]::WriteAllText($nativePolicyPath, ($nativePolicy | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
+
+                & bash $nativeFilenameScriptPath $safetyRoot file
+                Assert-Contract ($LASTEXITCODE -eq 0) "Linux native filename file setup failed."
+                foreach ($nativeFormat in @("console", "json")) {
+                    $nativeReportPath = Join-Path $workRoot "native-file-$nativeFormat.txt"
+                    $nativeCode = Invoke-CommandCapture $fixtureVault @("scan", "--format", $nativeFormat) $nativeReportPath
+                    $nativeText = [IO.File]::ReadAllText($nativeReportPath)
+                    Assert-Contract ($nativeCode -eq 2) "Linux native filename file scan ($nativeFormat) returned $nativeCode instead of 2."
+                    Assert-Contract ($nativeText.Contains("FV-E002", [StringComparison]::Ordinal)) "Linux native filename file scan ($nativeFormat) did not report FV-E002."
+                    Assert-Contract (-not $nativeText.Contains("fixture-test-secret-1234567890", [StringComparison]::Ordinal)) "Linux native filename file scan ($nativeFormat) disclosed its fixture contents."
+                    if ($nativeFormat -eq "json") {
+                        $nativeReport = $nativeText | ConvertFrom-Json
+                        Assert-Contract (-not $nativeReport.completed -and @($nativeReport.errors | Where-Object { $_.code -eq "FV-E002" }).Count -gt 0) "Linux native filename JSON file scan did not report an incomplete FV-E002 result."
+                    }
+                }
+
+                & bash $nativeFilenameScriptPath $safetyRoot directory
+                Assert-Contract ($LASTEXITCODE -eq 0) "Linux native filename directory setup failed."
+                foreach ($nativeFormat in @("console", "json")) {
+                    $nativeReportPath = Join-Path $workRoot "native-directory-$nativeFormat.txt"
+                    $nativeCode = Invoke-CommandCapture $fixtureVault @("scan", "--format", $nativeFormat) $nativeReportPath
+                    $nativeText = [IO.File]::ReadAllText($nativeReportPath)
+                    Assert-Contract ($nativeCode -eq 2) "Linux native filename directory scan ($nativeFormat) returned $nativeCode instead of 2."
+                    Assert-Contract ($nativeText.Contains("FV-E002", [StringComparison]::Ordinal)) "Linux native filename directory scan ($nativeFormat) did not report FV-E002."
+                    Assert-Contract (-not $nativeText.Contains("fixture-test-secret-1234567890", [StringComparison]::Ordinal)) "Linux native filename directory scan ($nativeFormat) disclosed its fixture contents."
+                }
             }
             finally {
+                if (Test-Path -LiteralPath $nativeFilenameScriptPath) {
+                    & bash $nativeFilenameScriptPath $safetyRoot cleanup | Out-Null
+                }
                 Pop-Location
             }
         }
@@ -850,7 +907,7 @@ try {
         Pop-Location
     }
 
-    Write-Host "Consumer smoke passed: help, init, clean scan (0), sensitive/blocking JSON scan (1), connection-string positive/negative console+JSON cases, and Linux filesystem safety checks when applicable."
+    Write-Host "Consumer smoke passed: help, init, clean scan (0), sensitive/blocking JSON scan (1), connection-string positive/negative console+JSON cases, native filename console/JSON fail-closed checks, and Linux filesystem safety checks when applicable."
 }
 finally {
     if ($null -eq $originalTelemetryOptOut) {

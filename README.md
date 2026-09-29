@@ -47,6 +47,8 @@ One scan accepts at most 64 policy roots or `--root` overrides. Exceeding that l
 
 Traversal and classification use separate sets. Physical filesystem identity may deduplicate traversal roots and repeated walks, but classification remains complete for every distinct eligible repository-relative path alias, including hard-linked files whose names imply different fixture rules.
 
+Root paths are canonicalized from the actual repository directory entries before descendant paths are classified. Selecting the same directory through alternate spellings or overlapping roots therefore cannot manufacture a second report path, `FV003` collision, or manifest mismatch; genuine hard-link aliases and distinct case-sensitive entries remain separate. On POSIX systems, a directory entry whose native filename is not strict UTF-8 cannot be represented safely as a .NET path. Such a scan fails closed with `FV-E002`, exit code `2`, `completed: false`, and no successful-scan telemetry; replacement-decoded text is never used to open or authorize another entry, and fixture contents are not disclosed.
+
 ## Documentation
 
 - [Policy and report contract](https://github.com/KeelMatrix/FixtureVault/blob/main/docs/SCHEMA_CHANGE_CHECKLIST.md)

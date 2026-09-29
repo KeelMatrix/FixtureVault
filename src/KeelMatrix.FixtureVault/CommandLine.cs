@@ -148,8 +148,14 @@ internal static class CommandLineParser
               FV008 or malformed-manifest FV-E011, and it never records successful telemetry.
 
             Classification:
-              Physical identity may deduplicate traversal roots, but classification is complete
-              for every distinct eligible repository-relative path alias, including hard links.
+              A native filename that cannot be represented as strict UTF-8 makes the scan
+              incomplete with FV-E002, exit code 2, and no successful-scan telemetry; its
+              decoded replacement text is never used to open or authorize another entry.
+              Configured roots are resolved to the spelling of the actual repository entry
+              before descendants are classified, so alternate-spelling overlapping roots do
+              not manufacture paths. Physical identity may deduplicate traversal roots, but
+              classification is complete for every distinct eligible repository-relative path alias,
+              including hard links.
               Manifest activeBaselines entries use exact repository-relative spelling after
               separator canonicalization only (backslash becomes slash). Dot segments,
               duplicate/trailing separators, leading ./, case, and Unicode normalization

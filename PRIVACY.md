@@ -6,4 +6,6 @@ The shared telemetry source of truth is the [KeelMatrix.Telemetry README](https:
 
 After a successfully completed scan, FixtureVault uses `KeelMatrix.Telemetry` for at most one anonymous activation signal and at most one weekly heartbeat. The telemetry dependency may send those signals over HTTPS and write its own minimal local queue and marker state. Installation, `init`, configuration errors, and aborted scans do not activate telemetry. Telemetry failures do not affect scanning. Set `KEELMATRIX_NO_TELEMETRY=1` to disable telemetry for the current process.
 
+An unrepresentable POSIX filename produces an incomplete scan rather than a successful clean result. The tool does not use replacement-decoded names for filesystem authorization, does not activate successful-scan telemetry for that result, and does not disclose the filename or fixture contents.
+
 FixtureVault never sends fixture names, file paths, root paths, repository names, rule IDs, findings, file counts, matched values, file contents, file hashes, or policy contents.

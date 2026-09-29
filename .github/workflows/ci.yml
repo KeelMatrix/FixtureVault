@@ -66,11 +66,11 @@ jobs:
           path: artifacts/test-results
           if-no-files-found: error
 
-      - name: Check for vulnerable dependencies
+      - name: Check for vulnerable dependencies (complete structured coverage)
         shell: pwsh
         run: pwsh -NoProfile -File ./scripts/audit-vulnerabilities.ps1 -SolutionPath KeelMatrix.FixtureVault.sln
 
-      - name: Test vulnerability audit fail-closed behavior
+      - name: Test vulnerability audit completeness and fail-closed behavior
         shell: pwsh
         run: pwsh -NoProfile -File ./scripts/test-vulnerability-audit.ps1
 

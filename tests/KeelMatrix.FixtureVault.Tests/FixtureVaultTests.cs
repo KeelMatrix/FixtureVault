@@ -14,6 +14,186 @@ public sealed class FixtureVaultTests
 {
     private const string SensitiveValue = "fixture-test-secret-1234567890";
 
+    private sealed class LinuxTheoryAttribute : TheoryAttribute
+    {
+        public LinuxTheoryAttribute()
+        {
+            if (!OperatingSystem.IsLinux())
+            {
+                Skip = "Raw native filename capability is available only on Linux in this test suite.";
+            }
+        }
+    }
+
+    private sealed class CaseSensitiveFactAttribute : FactAttribute
+    {
+        public CaseSensitiveFactAttribute()
+        {
+            if (!SupportsCaseSensitiveSiblings())
+            {
+                Skip = "The test filesystem cannot create distinct case-sensitive sibling entries.";
+            }
+        }
+    }
+
+    private sealed class CaseSensitiveTheoryAttribute : TheoryAttribute
+    {
+        public CaseSensitiveTheoryAttribute()
+        {
+            if (!SupportsCaseSensitiveSiblings())
+            {
+                Skip = "The test filesystem cannot create distinct case-sensitive sibling entries.";
+            }
+        }
+    }
+
+    private sealed class CaseAliasTheoryAttribute : TheoryAttribute
+    {
+        public CaseAliasTheoryAttribute()
+        {
+            if (!SupportsCaseInsensitiveAliases())
+            {
+                Skip = "The test filesystem cannot resolve case-variant aliases to one directory entry.";
+            }
+        }
+    }
+
+    private sealed class CaseAliasFactAttribute : FactAttribute
+    {
+        public CaseAliasFactAttribute()
+        {
+            if (!SupportsCaseInsensitiveAliases())
+            {
+                Skip = "The test filesystem cannot resolve case-variant aliases to one directory entry.";
+            }
+        }
+    }
+
+    private sealed class UnicodeAliasTheoryAttribute : TheoryAttribute
+    {
+        public UnicodeAliasTheoryAttribute()
+        {
+            if (!SupportsUnicodeNormalizationAliases())
+            {
+                Skip = "The test filesystem cannot resolve Unicode-normalization aliases to one directory entry.";
+            }
+        }
+    }
+
+    private sealed class UnicodeDistinctFactAttribute : FactAttribute
+    {
+        public UnicodeDistinctFactAttribute()
+        {
+            if (!SupportsDistinctUnicodeSiblings())
+            {
+                Skip = "The test filesystem cannot create distinct Unicode-normalization sibling entries.";
+            }
+        }
+    }
+
+    private static bool SupportsCaseSensitiveSiblings()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "fixturevault-capability", Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(root);
+            string upper = Path.Combine(root, "Case");
+            string lower = Path.Combine(root, "case");
+            Directory.CreateDirectory(upper);
+            Directory.CreateDirectory(lower);
+            File.WriteAllText(Path.Combine(upper, "probe"), "upper");
+            File.WriteAllText(Path.Combine(lower, "probe"), "lower");
+            return Directory.Exists(lower) &&
+                File.ReadAllText(Path.Combine(upper, "probe")) != File.ReadAllText(Path.Combine(lower, "probe"));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            return false;
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    private static bool SupportsCaseInsensitiveAliases()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "fixturevault-capability", Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(root, "tests"));
+            File.WriteAllText(Path.Combine(root, "tests", "probe"), "probe");
+            return Directory.Exists(Path.Combine(root, "TESTS")) &&
+                File.Exists(Path.Combine(root, "TESTS", "probe"));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            return false;
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    private static bool SupportsUnicodeNormalizationAliases()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "fixturevault-capability", Guid.NewGuid().ToString("N"));
+        const string composed = "caf\u00E9";
+        const string decomposed = "cafe\u0301";
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(root, composed));
+            File.WriteAllText(Path.Combine(root, composed, "probe"), "probe");
+            return Directory.Exists(Path.Combine(root, decomposed)) &&
+                File.Exists(Path.Combine(root, decomposed, "probe"));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            return false;
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    private static bool SupportsDistinctUnicodeSiblings()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "fixturevault-capability", Guid.NewGuid().ToString("N"));
+        const string composed = "caf\u00E9";
+        const string decomposed = "cafe\u0301";
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(root, composed));
+            Directory.CreateDirectory(Path.Combine(root, decomposed));
+            File.WriteAllText(Path.Combine(root, composed, "probe"), "composed");
+            File.WriteAllText(Path.Combine(root, decomposed, "probe"), "decomposed");
+            return File.ReadAllText(Path.Combine(root, composed, "probe")) !=
+                File.ReadAllText(Path.Combine(root, decomposed, "probe"));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            return false;
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
     [Fact]
     public void Init_creates_only_the_versioned_policy_file()
     {
@@ -1761,7 +1941,7 @@ public sealed class FixtureVaultTests
         Assert.DoesNotContain(result.Report.Findings, item => item.RuleId == "FV008");
     }
 
-    [Fact]
+    [CaseSensitiveFact]
     public void Case_colliding_paths_are_reported_when_the_filesystem_can_create_both()
     {
         using var repository = new TemporaryRepository();
@@ -1771,7 +1951,7 @@ public sealed class FixtureVaultTests
         if (File.ReadAllText(Path.Combine(repository.Root, "tests/Case.snap")) ==
             File.ReadAllText(Path.Combine(repository.Root, "tests/case.snap")))
         {
-            return;
+            throw SkipException.ForSkip("The filesystem cannot create distinct case-sensitive sibling entries.");
         }
 
         ScanResult result = repository.Scan();
@@ -1782,7 +1962,7 @@ public sealed class FixtureVaultTests
             finding => Assert.DoesNotContain("Case.snap", finding.Message, StringComparison.Ordinal));
     }
 
-    [Fact]
+    [CaseSensitiveFact]
     public void Case_variant_sibling_is_outside_a_case_sensitive_configured_root()
     {
         using var repository = new TemporaryRepository();
@@ -1798,7 +1978,7 @@ public sealed class FixtureVaultTests
             File.ReadAllText(Path.Combine(repository.Root, "tests", "Case", "identity-probe")) ==
             File.ReadAllText(Path.Combine(repository.Root, "tests", "case", "identity-probe")))
         {
-            return;
+            throw SkipException.ForSkip("The filesystem cannot create distinct case-sensitive directories.");
         }
 
         Assert.True(SafePathBoundary.TryGetPathIdentity(configuredRoot, out FileSystemIdentity configuredIdentity));
@@ -1812,7 +1992,7 @@ public sealed class FixtureVaultTests
             finding.RuleId == "FV008" && finding.Path == "tests/case/outside.golden");
     }
 
-    [Fact]
+    [CaseAliasFact]
     public void Case_variant_configured_roots_deduplicate_the_same_filesystem_root()
     {
         using var repository = new TemporaryRepository();
@@ -1820,7 +2000,7 @@ public sealed class FixtureVaultTests
         string upperSpelling = Path.Combine(repository.Root, "TESTS");
         if (!Directory.Exists(upperSpelling))
         {
-            return;
+            throw SkipException.ForSkip("The filesystem does not expose an alternate spelling for the same directory entry.");
         }
 
         repository.WritePolicy(policy => policy.Roots = ["tests", "TESTS"]);
@@ -1831,7 +2011,7 @@ public sealed class FixtureVaultTests
         Assert.DoesNotContain(result.Report.Errors, error => error.Code == FixtureVaultContract.PathPolicyTraversalErrorCode);
     }
 
-    [Fact]
+    [UnicodeDistinctFact]
     public void Unicode_normalization_colliding_paths_are_reported_when_the_filesystem_can_create_both()
     {
         using var repository = new TemporaryRepository();
@@ -1845,7 +2025,7 @@ public sealed class FixtureVaultTests
             File.ReadAllText(Path.Combine(repository.Root, "tests", "café.golden")) ==
             File.ReadAllText(Path.Combine(repository.Root, "tests", "cafe\u0301.golden")))
         {
-            return;
+            throw SkipException.ForSkip("The filesystem cannot create distinct Unicode-normalization sibling entries.");
         }
 
         ScanResult result = repository.Scan();
@@ -1866,6 +2046,95 @@ public sealed class FixtureVaultTests
 
         Assert.Equal(1, result.Report.FilesInspected);
         Assert.Single(result.Report.Findings, item => item.RuleId == "FV001");
+    }
+
+    public static IEnumerable<object[]> Alternate_spelling_root_cases()
+    {
+        foreach (bool reverseOrder in new[] { false, true })
+        {
+            foreach (bool manifestEnabled in new[] { false, true })
+            {
+                yield return [reverseOrder, manifestEnabled];
+            }
+        }
+    }
+
+    [CaseAliasTheory]
+    [MemberData(nameof(Alternate_spelling_root_cases))]
+    public void Alternate_spelling_overlapping_roots_use_actual_entry_paths(
+        bool reverseOrder,
+        bool manifestEnabled)
+    {
+        using var repository = new TemporaryRepository();
+        string alternateNestedRoot = Path.Combine(repository.Root, "TESTS", "nested");
+        repository.WriteText("tests/nested/one.received.json", "received\n");
+        repository.WriteText("tests/nested/two.golden", "baseline\n");
+
+        if (!Directory.Exists(alternateNestedRoot))
+        {
+            throw SkipException.ForSkip("The filesystem cannot resolve the alternate-spelling overlapping root.");
+        }
+
+        repository.WritePolicy(policy =>
+        {
+            policy.Roots = reverseOrder
+                ? ["TESTS/nested", "tests"]
+                : ["tests", "TESTS/nested"];
+            if (manifestEnabled)
+            {
+                policy.Conventions = ["verify", "snapshooter", "generic", "fixturevault-manifest"];
+            }
+        });
+        if (manifestEnabled)
+        {
+            repository.WriteText(
+                FixtureVaultContract.ManifestFileName,
+                "{\"version\":1,\"activeBaselines\":[\"tests/nested/one.received.json\",\"tests/nested/two.golden\"]}\n");
+        }
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Equal(2, result.Report.FilesInspected);
+        Assert.Single(result.Report.Findings);
+        Assert.All(result.Report.Findings, finding =>
+            Assert.Equal("tests/nested/one.received.json", finding.Path));
+        Assert.Contains(result.Report.Findings, finding =>
+            finding.RuleId == "FV001" && finding.Path == "tests/nested/one.received.json");
+        Assert.DoesNotContain(result.Report.Findings, finding => finding.RuleId == "FV002");
+        Assert.DoesNotContain(result.Report.Findings, finding => finding.RuleId == "FV003");
+        Assert.DoesNotContain(result.Report.Findings, finding => finding.Path.StartsWith("TESTS/", StringComparison.Ordinal));
+    }
+
+    [UnicodeAliasTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Unicode_normalization_alternate_spelling_roots_do_not_manufacture_paths(bool reverseOrder)
+    {
+        using var repository = new TemporaryRepository();
+        const string composedRoot = "tests/café";
+        const string decomposedRoot = "tests/cafe\u0301";
+        repository.WriteText($"{composedRoot}/one.received.json", "received\n");
+        if (!Directory.Exists(Path.Combine(repository.Root, decomposedRoot.Replace('/', Path.DirectorySeparatorChar))))
+        {
+            throw SkipException.ForSkip("The filesystem cannot resolve Unicode-normalization alternate root spellings.");
+        }
+
+        repository.WritePolicy(policy =>
+        {
+            policy.Roots = reverseOrder
+                ? [decomposedRoot, "tests"]
+                : ["tests", decomposedRoot];
+        });
+
+        ScanResult result = repository.Scan();
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Equal(1, result.Report.FilesInspected);
+        Assert.Single(result.Report.Findings, finding =>
+            finding.RuleId == "FV001" && finding.Path == "tests/café/one.received.json");
+        Assert.DoesNotContain(result.Report.Findings, finding => finding.RuleId == "FV003");
+        Assert.DoesNotContain(result.Report.Findings, finding => finding.Path.Contains("cafe\u0301", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -5249,6 +5518,123 @@ public sealed class FixtureVaultTests
         Assert.Equal(0, telemetry.SuccessfulScans);
     }
 
+    public static IEnumerable<object[]> Unrepresentable_native_filename_cases()
+    {
+        string[] formats = ["console", "json"];
+        string[] cases = [
+            "leading",
+            "continuation",
+            "truncated",
+            "overlong",
+            "multiple-with-counterpart",
+            "multiple-without-counterpart",
+            "directory",
+            "ignored-context"
+        ];
+
+        foreach (string format in formats)
+        {
+            foreach (string testCase in cases)
+            {
+                yield return [format, testCase];
+            }
+        }
+    }
+
+    [LinuxTheory]
+    [MemberData(nameof(Unrepresentable_native_filename_cases))]
+    public void Unrepresentable_native_filenames_fail_closed_without_disclosure(
+        string format,
+        string testCase)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            throw SkipException.ForSkip("Raw invalid native filename regression requires Linux byte-oriented filesystem APIs.");
+        }
+
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy =>
+        {
+            policy.IgnoredPaths = ["tests/ignored/**"];
+        });
+        const string validReplacementName = "\uFFFD.golden";
+        repository.WriteText($"tests/{validReplacementName}", "clean counterpart\n");
+        if (testCase == "ignored-context")
+        {
+            repository.WriteText("tests/ignored/clean.golden", "ignored clean fixture\n");
+        }
+
+        List<(byte[] Path, bool Directory)> createdEntries = [];
+        try
+        {
+            byte[][] invalidNames = testCase switch
+            {
+                "multiple-with-counterpart" or "multiple-without-counterpart" => [
+                    [0xFF, (byte)'a'],
+                    [0xFE, (byte)'a']
+                ],
+                _ => [GetInvalidNativeName(testCase)]
+            };
+            bool isDirectory = testCase == "directory";
+            bool includeCounterpart = testCase != "multiple-without-counterpart";
+            if (!includeCounterpart)
+            {
+                File.Delete(Path.Combine(repository.Root, "tests", validReplacementName));
+            }
+
+            foreach (byte[] invalidName in invalidNames)
+            {
+                byte[] filename = [.. invalidName, (byte)'.', (byte)'g', (byte)'o', (byte)'l', (byte)'d', (byte)'e', (byte)'n'];
+                if (isDirectory)
+                {
+                    byte[] directoryPath = BuildRawRepositoryPath(repository.Root, "tests", invalidName);
+                    CreateRawDirectoryOrSkip(directoryPath);
+                    createdEntries.Add((directoryPath, true));
+                    byte[] nestedPath = [.. directoryPath, (byte)'/', (byte)'n', (byte)'e', (byte)'s', (byte)'t', (byte)'e', (byte)'d', (byte)'.', (byte)'g', (byte)'o', (byte)'l', (byte)'d', (byte)'e', (byte)'n'];
+                    CreateRawFileOrSkip(nestedPath, Encoding.UTF8.GetBytes(SensitiveValue));
+                    createdEntries.Add((nestedPath, false));
+                }
+                else
+                {
+                    byte[] filePath = BuildRawRepositoryPath(repository.Root, "tests", filename);
+                    CreateRawFileOrSkip(filePath, Encoding.UTF8.GetBytes(SensitiveValue));
+                    createdEntries.Add((filePath, false));
+                }
+            }
+
+            var telemetry = new RecordingTelemetry();
+            int exitCode = repository.Run(
+                format == "json" ? ["scan", "--format", "json"] : ["scan"],
+                telemetry,
+                out string output,
+                out string error);
+
+            Assert.Equal(2, exitCode);
+            Assert.Equal(0, telemetry.SuccessfulScans);
+            Assert.DoesNotContain(SensitiveValue, output, StringComparison.Ordinal);
+            Assert.DoesNotContain(SensitiveValue, error, StringComparison.Ordinal);
+            if (format == "json")
+            {
+                using JsonDocument report = JsonDocument.Parse(output);
+                Assert.False(report.RootElement.GetProperty("completed").GetBoolean());
+                Assert.Contains(
+                    report.RootElement.GetProperty("errors").EnumerateArray(),
+                    item => item.GetProperty("code").GetString() == "FV-E002");
+            }
+            else
+            {
+                Assert.Contains("FV-E002", error, StringComparison.Ordinal);
+            }
+        }
+        finally
+        {
+            foreach ((byte[] path, bool directory) in createdEntries.AsEnumerable().Reverse())
+            {
+                DeleteRawEntry(path, directory);
+            }
+        }
+    }
+
     [Theory]
     [InlineData(64, true)]
     [InlineData(65, false)]
@@ -5909,6 +6295,115 @@ public sealed class FixtureVaultTests
         }
     }
 
+    private static byte[] GetInvalidNativeName(string testCase) =>
+        testCase switch
+        {
+            "leading" => [0xFF, (byte)'l'],
+            "continuation" => [0x80, (byte)'c'],
+            "truncated" => [0xC2],
+            "overlong" => [0xC0, 0xAF, (byte)'o'],
+            "directory" => [0xFF, (byte)'d'],
+            "ignored-context" => [0xFF, (byte)'i'],
+            _ => throw new ArgumentOutOfRangeException(nameof(testCase), testCase, "Unknown native filename test case.")
+        };
+
+    private static byte[] BuildRawRepositoryPath(string repositoryRoot, string relativeDirectory, byte[] filename)
+    {
+        byte[] prefix = Encoding.UTF8.GetBytes(
+            Path.Combine(repositoryRoot, relativeDirectory) + Path.DirectorySeparatorChar);
+        return [.. prefix, .. filename];
+    }
+
+    private static void CreateRawFileOrSkip(byte[] path, byte[] contents)
+    {
+        const int writeOnly = 1;
+        const int create = 64;
+        const int truncate = 512;
+        const uint mode = 0x180;
+        IntPtr pathPointer = AllocateRawPath(path);
+        int descriptor = -1;
+        try
+        {
+            descriptor = UnixOpenRaw(pathPointer, writeOnly | create | truncate, mode);
+            if (descriptor < 0 || UnixWriteRaw(descriptor, contents, (nuint)contents.Length) != contents.Length)
+            {
+                throw SkipException.ForSkip(
+                    $"The Linux filesystem could not create the raw filename regression entry (errno {Marshal.GetLastPInvokeError()}).");
+            }
+        }
+        catch (DllNotFoundException ex)
+        {
+            throw SkipException.ForSkip($"The Linux libc API is unavailable ({ex.Message}).");
+        }
+        catch (EntryPointNotFoundException ex)
+        {
+            throw SkipException.ForSkip($"The Linux raw filename API is unavailable ({ex.Message}).");
+        }
+        finally
+        {
+            if (descriptor >= 0)
+            {
+                _ = UnixCloseRaw(descriptor);
+            }
+
+            Marshal.FreeHGlobal(pathPointer);
+        }
+    }
+
+    private static void CreateRawDirectoryOrSkip(byte[] path)
+    {
+        const uint mode = 0x1ED;
+        IntPtr pathPointer = AllocateRawPath(path);
+        try
+        {
+            if (UnixMkdirRaw(pathPointer, mode) != 0)
+            {
+                throw SkipException.ForSkip(
+                    $"The Linux filesystem could not create the raw directory regression entry (errno {Marshal.GetLastPInvokeError()}).");
+            }
+        }
+        catch (DllNotFoundException ex)
+        {
+            throw SkipException.ForSkip($"The Linux libc API is unavailable ({ex.Message}).");
+        }
+        catch (EntryPointNotFoundException ex)
+        {
+            throw SkipException.ForSkip($"The Linux raw filename API is unavailable ({ex.Message}).");
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(pathPointer);
+        }
+    }
+
+    private static void DeleteRawEntry(byte[] path, bool directory)
+    {
+        IntPtr pathPointer = AllocateRawPath(path);
+        try
+        {
+            if (directory)
+            {
+                _ = UnixRmdirRaw(pathPointer);
+            }
+            else
+            {
+                _ = UnixUnlinkRaw(pathPointer);
+            }
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(pathPointer);
+        }
+    }
+
+    private static IntPtr AllocateRawPath(byte[] path)
+    {
+        IntPtr pointer = Marshal.AllocHGlobal(path.Length + 1);
+        Marshal.Copy(path, 0, pointer, path.Length);
+        Marshal.WriteByte(pointer, path.Length, 0);
+        return pointer;
+    }
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool CreateHardLink(
         [MarshalAs(UnmanagedType.LPWStr)] string fileName,
@@ -5932,6 +6427,24 @@ public sealed class FixtureVaultTests
 
     [DllImport("libc", EntryPoint = "link", SetLastError = true)]
     private static extern int UnixLink(IntPtr existingFileName, IntPtr fileName);
+
+    [DllImport("libc", EntryPoint = "open", SetLastError = true)]
+    private static extern int UnixOpenRaw(IntPtr path, int flags, uint mode);
+
+    [DllImport("libc", EntryPoint = "write", SetLastError = true)]
+    private static extern nint UnixWriteRaw(int fileDescriptor, byte[] buffer, nuint count);
+
+    [DllImport("libc", EntryPoint = "close", SetLastError = true)]
+    private static extern int UnixCloseRaw(int fileDescriptor);
+
+    [DllImport("libc", EntryPoint = "mkdir", SetLastError = true)]
+    private static extern int UnixMkdirRaw(IntPtr path, uint mode);
+
+    [DllImport("libc", EntryPoint = "unlink", SetLastError = true)]
+    private static extern int UnixUnlinkRaw(IntPtr path);
+
+    [DllImport("libc", EntryPoint = "rmdir", SetLastError = true)]
+    private static extern int UnixRmdirRaw(IntPtr path);
 
     private static bool CreateWindowsHardLink(string fileName, string existingFileName, IntPtr securityAttributes) =>
         CreateHardLink(fileName, existingFileName, securityAttributes);

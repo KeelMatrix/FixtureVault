@@ -372,6 +372,7 @@ internal static class WindowsPathResolver
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Interoperability", "CA2101", Justification = "Unix path arguments use the runtime's UTF-8 narrow-string ABI on Linux and macOS.")]
 internal sealed class SafePathBoundary : IDisposable
 {
+    private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
     private const int UnixReadOnly = 0;
     private const int LinuxNonBlocking = 0x800;
     private const int LinuxCloseOnExec = 0x80000;
@@ -478,6 +479,75 @@ internal sealed class SafePathBoundary : IDisposable
     internal bool Matches(string repositoryRoot) =>
         (BoundaryMatchOverrideForTesting?.Invoke(repositoryRoot) ?? true) &&
         TryGetPathIdentity(repositoryRoot, out FileSystemIdentity identity) && identity == rootIdentity;
+
+    internal bool TryGetCanonicalPath(string path, out string canonicalPath)
+    {
+        canonicalPath = string.Empty;
+        string fullPath;
+        try
+        {
+            fullPath = Path.GetFullPath(path);
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException)
+        {
+            return false;
+        }
+
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            const int maximumNativePathBytes = 32 * 1024;
+            IntPtr resolvedPath = Marshal.AllocHGlobal(maximumNativePathBytes);
+            try
+            {
+                IntPtr nativePath = UnixRealPath(fullPath, resolvedPath);
+                if (nativePath == IntPtr.Zero || !TryReadStrictUtf8(nativePath, out canonicalPath))
+                {
+                    return false;
+                }
+            }
+            catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or MarshalDirectiveException)
+            {
+                return false;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(resolvedPath);
+            }
+        }
+        else if (OperatingSystem.IsWindows())
+        {
+            using SafeFileHandle handle = CreateWindowsHandle(
+                fullPath,
+                FileFlagBackupSemantics | FileFlagOpenReparsePoint);
+            if (handle.IsInvalid || !WindowsPathResolver.TryGetFinalPath(handle, out canonicalPath))
+            {
+                return false;
+            }
+        }
+        else
+        {
+            return false;
+        }
+
+        string containmentRoot = RootPath;
+        if ((OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()) &&
+            !TryGetUnixCanonicalPath(RootPath, out containmentRoot))
+        {
+            canonicalPath = string.Empty;
+            return false;
+        }
+
+        if (!TryGetPathIdentityCore(fullPath, out FileSystemIdentity requestedIdentity) ||
+            !TryGetPathIdentityCore(canonicalPath, out FileSystemIdentity canonicalIdentity) ||
+            requestedIdentity != canonicalIdentity ||
+            !TryIsWithinUncharged(containmentRoot, canonicalPath))
+        {
+            canonicalPath = string.Empty;
+            return false;
+        }
+
+        return true;
+    }
 
     internal bool TryAuthorizeDirectory(string relativePath, FileSystemIdentity identity)
     {
@@ -828,7 +898,17 @@ internal sealed class SafePathBoundary : IDisposable
             byte value = Marshal.ReadByte(entry, nameOffset + offset);
             if (value == 0)
             {
-                return Encoding.UTF8.GetString(bytes.ToArray());
+                try
+                {
+                    return StrictUtf8.GetString(bytes.ToArray());
+                }
+                catch (DecoderFallbackException)
+                {
+                    // A native filename that cannot be represented as a .NET string
+                    // is an incomplete scan. Returning null makes the walker fail
+                    // closed before the decoded value can authorize another entry.
+                    return null;
+                }
             }
 
             bytes.Add(value);
@@ -1012,6 +1092,53 @@ internal sealed class SafePathBoundary : IDisposable
 
     private static string[] SplitRelativePath(string relativePath) =>
         relativePath.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries);
+
+    private static bool TryReadStrictUtf8(IntPtr nativeString, out string value)
+    {
+        var bytes = new List<byte>(256);
+        for (int offset = 0; offset < 32 * 1024; offset++)
+        {
+            byte current = Marshal.ReadByte(nativeString, offset);
+            if (current == 0)
+            {
+                try
+                {
+                    value = StrictUtf8.GetString(bytes.ToArray());
+                    return true;
+                }
+                catch (DecoderFallbackException)
+                {
+                    value = string.Empty;
+                    return false;
+                }
+            }
+
+            bytes.Add(current);
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    private static bool TryGetUnixCanonicalPath(string path, out string canonicalPath)
+    {
+        canonicalPath = string.Empty;
+        const int maximumNativePathBytes = 32 * 1024;
+        IntPtr resolvedPath = Marshal.AllocHGlobal(maximumNativePathBytes);
+        try
+        {
+            IntPtr nativePath = UnixRealPath(path, resolvedPath);
+            return nativePath != IntPtr.Zero && TryReadStrictUtf8(nativePath, out canonicalPath);
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or MarshalDirectiveException)
+        {
+            return false;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(resolvedPath);
+        }
+    }
 
     private bool TryOpenUnixRelative(string relativePath, int flags, out int descriptor)
     {
@@ -1293,6 +1420,11 @@ internal sealed class SafePathBoundary : IDisposable
 
     [DllImport("libc", EntryPoint = "open", CharSet = CharSet.Ansi, SetLastError = true)]
     private static extern int UnixOpen([MarshalAs(UnmanagedType.LPStr)] string path, int flags);
+
+    [DllImport("libc", EntryPoint = "realpath", CharSet = CharSet.Ansi, SetLastError = true)]
+    private static extern IntPtr UnixRealPath(
+        [MarshalAs(UnmanagedType.LPStr)] string path,
+        IntPtr resolvedPath);
 
     [DllImport("libc", EntryPoint = "openat", CharSet = CharSet.Ansi, SetLastError = true)]
     private static extern int UnixOpenAt(int directoryFileDescriptor, [MarshalAs(UnmanagedType.LPStr)] string path, int flags);

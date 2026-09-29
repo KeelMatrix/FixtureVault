@@ -36,6 +36,8 @@ One scan accepts at most 64 policy roots or `--root` overrides. Exceeding that l
 
 Physical identity may deduplicate traversal roots, but classification is complete for every distinct eligible repository-relative path alias, including hard-linked files whose names imply different fixture rules. Manifest membership uses exact repository-relative spelling after separator canonicalization only: backslash becomes slash, while dot segments, duplicate or trailing separators, leading `./`, case, and Unicode normalization remain distinct. Portability normalization is reserved for `FV003` collision grouping.
 
+Root paths are canonicalized from the actual repository directory entries before descendant paths are classified. Alternate-spelling overlapping roots therefore cannot manufacture a second report path, `FV003` collision, or manifest mismatch; genuine hard-link aliases and distinct case-sensitive entries remain separate. On POSIX systems, a native filename that is not strict UTF-8 fails closed with `FV-E002`, exit code `2`, `completed: false`, and no successful-scan telemetry. Replacement-decoded text is never used to open or authorize another entry, and fixture contents are not disclosed.
+
 JSON reports include `filesDiscovered`, `filesInspected`, and `completed`. The discovered count is the number of eligible files found after filtering; the inspected count includes only files whose bounded read and content-dependent checks completed. An incomplete exit-`2` report has `completed: false` and never presents unchecked files as inspected. A completed scan has `completed: true`, including a completed scan with exit `1` for blocking findings.
 
 ## Important limitations

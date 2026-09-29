@@ -14,6 +14,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Requires manifest membership to use exact repository-relative spelling after separator canonicalization only; dot segments, duplicate/trailing separators, case, and Unicode normalization remain distinct, while portability normalization remains limited to `FV003` collision grouping.
 - Preserves the scan-owned trusted repository boundary and fails closed when an authorized root, ancestor, or queued directory changes identity instead of rebinding to the substituted path.
 - Treats POSIX directory-stream errors as incomplete scans with exit code `2` instead of accepting an uncertain end-of-directory.
+- Fails closed with `FV-E002` when a POSIX directory entry name cannot be represented as strict UTF-8; replacement-decoded names are never used for authorization or inspection, fixture contents are not disclosed, and successful-scan telemetry is not activated.
+- Canonicalizes configured roots from actual repository directory entries before classification, so alternate-spelling overlapping roots cannot manufacture report paths, `FV003` collisions, or manifest mismatches while hard-link aliases remain independently classified.
+- Makes the dependency vulnerability gate consume version-pinned structured JSON and require complete direct-and-transitive coverage for every project in the solution, rejecting missing, duplicate, unrelated, malformed, unavailable, and vulnerable results.
 
 ## [0.1.0] - Planned (not yet published)
 

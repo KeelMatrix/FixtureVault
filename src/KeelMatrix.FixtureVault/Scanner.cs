@@ -141,6 +141,21 @@ internal sealed class FixtureScanner
                 strict);
         }
 
+        if (!boundary.TryGetCanonicalPath(repositoryRoot, out string canonicalRepositoryRoot))
+        {
+            errors.Add(new ScanError(
+                traversalBudget.IsExhausted
+                    ? FixtureVaultContract.FilesystemTraversalErrorCode
+                    : "FV-E008",
+                traversalBudget.IsExhausted
+                    ? FixtureVaultContract.FilesystemTraversalErrorMessage
+                    : "The repository root could not be resolved safely."));
+            return CompleteWithErrors(errors, strict);
+        }
+
+        bool usesDefaultFileWalker = fileWalk is null;
+        string walkerRepositoryRoot = usesDefaultFileWalker ? canonicalRepositoryRoot : repositoryRoot;
+
         var seenRoots = new HashSet<FileSystemIdentity>();
         foreach (string configuredRoot in configuredRoots)
         {
@@ -154,6 +169,26 @@ internal sealed class FixtureScanner
                         ? FixtureVaultContract.FilesystemTraversalErrorMessage
                         : error));
                 return CompleteWithErrors(errors, strict);
+            }
+
+            if (!boundary.TryGetCanonicalPath(fullPath, out fullPath))
+            {
+                errors.Add(new ScanError(
+                    traversalBudget.IsExhausted
+                        ? FixtureVaultContract.FilesystemTraversalErrorCode
+                        : "FV-E008",
+                    traversalBudget.IsExhausted
+                        ? FixtureVaultContract.FilesystemTraversalErrorMessage
+                        : "A configured fixture root could not be resolved safely."));
+                return CompleteWithErrors(errors, strict);
+            }
+
+            // Classification and reporting must use the spelling of the selected
+            // directory entry, not an alias supplied by the policy or CLI.
+            relativePath = PathUtilities.NormalizeRelative(canonicalRepositoryRoot, fullPath);
+            if (relativePath == ".")
+            {
+                relativePath = string.Empty;
             }
 
             if (!SafePathBoundary.TryGetPathIdentity(fullPath, out FileSystemIdentity identity))
@@ -191,9 +226,14 @@ internal sealed class FixtureScanner
         var classifiedRelativePaths = new HashSet<string>(StringComparer.Ordinal);
         foreach (ResolvedRoot root in activeRoots)
         {
+            string walkerRoot = usesDefaultFileWalker
+                ? root.FullPath
+                : string.IsNullOrEmpty(root.RelativePath)
+                    ? repositoryRoot
+                    : Path.Combine(repositoryRoot, root.RelativePath.Replace('/', Path.DirectorySeparatorChar));
             WalkResult walk = walkFunction(
-                repositoryRoot,
-                root.FullPath,
+                walkerRepositoryRoot,
+                walkerRoot,
                 failOnAccessErrors: true,
                 shouldPruneDirectory: relativePath => IsIgnoredDirectory(relativePath, ignoredMatchers, ignoreBudget));
             AddReparseSkips(walk, skipped, diagnosticBudget);
@@ -244,7 +284,7 @@ internal sealed class FixtureScanner
         }
 
         AddPathPolicyFindings(
-            repositoryRoot,
+            walkerRepositoryRoot,
             policy,
             activeRoots,
             ignoredMatchers,
@@ -331,7 +371,7 @@ internal sealed class FixtureScanner
             }
 
             SafeFileReadStatus readStatus = SafeFileReader.TryReadBytes(
-                repositoryRoot,
+                walkerRepositoryRoot,
                 file,
                 policy.MaxFileBytes,
                 MaximumTotalBytes - totalBytesRead,
