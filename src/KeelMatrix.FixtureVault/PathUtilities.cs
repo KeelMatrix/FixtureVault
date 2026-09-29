@@ -2141,7 +2141,8 @@ internal static class SafeFileWalker
     private sealed record UnixPendingDirectory(
         int Descriptor,
         string RelativePath,
-        FileSystemIdentity ExpectedIdentity);
+        FileSystemIdentity ExpectedIdentity,
+        bool IgnoredSubtree);
 
     private sealed record WindowsPendingDirectory(
         DirectoryInfo Directory,
@@ -2233,11 +2234,6 @@ internal static class SafeFileWalker
                 "Ignored path matching could not be completed safely."));
         }
 
-        if (startingStatus == GlobMatchStatus.Match)
-        {
-            return new WalkResult(files, reparsePaths, null);
-        }
-
         if (!boundary.TryDuplicateDirectory(
                 relativeRoot,
                 expectedIdentity: null,
@@ -2254,7 +2250,11 @@ internal static class SafeFileWalker
         }
 
         var pending = new Stack<UnixPendingDirectory>();
-        pending.Push(new UnixPendingDirectory(startingDescriptor, relativeRoot, startingIdentity));
+        pending.Push(new UnixPendingDirectory(
+            startingDescriptor,
+            relativeRoot,
+            startingIdentity,
+            startingStatus == GlobMatchStatus.Match));
 
         try
         {
@@ -2398,7 +2398,12 @@ internal static class SafeFileWalker
 
                         if (isDirectory)
                         {
-                            GlobMatchStatus directoryStatus = shouldPruneDirectory?.Invoke(relativePath) ?? GlobMatchStatus.NoMatch;
+                            // Ignored subtrees are not classified or inspected, but they must
+                            // still be enumerated so strict native-name decoding remains a
+                            // scan-boundary invariant.
+                            GlobMatchStatus directoryStatus = directory.IgnoredSubtree
+                                ? GlobMatchStatus.NoMatch
+                                : shouldPruneDirectory?.Invoke(relativePath) ?? GlobMatchStatus.NoMatch;
                             if (directoryStatus == GlobMatchStatus.Failure)
                             {
                                 SafePathBoundary.CloseDescriptor(childDescriptor);
@@ -2426,25 +2431,24 @@ internal static class SafeFileWalker
                                         : "A configured fixture root could not be inspected completely."));
                             }
 
-                            if (directoryStatus == GlobMatchStatus.Match)
-                            {
-                                SafePathBoundary.CloseDescriptor(childDescriptor);
-                            }
-                            else
-                            {
-                                pending.Push(new UnixPendingDirectory(
-                                    childDescriptor,
-                                    relativePath,
-                                    identity));
-                            }
+                            pending.Push(new UnixPendingDirectory(
+                                childDescriptor,
+                                relativePath,
+                                identity,
+                                directory.IgnoredSubtree || directoryStatus == GlobMatchStatus.Match));
 
                             continue;
                         }
 
-                        files.Add(new SafeFileEntry(
-                            Path.Combine(repositoryRoot, relativePath.Replace('/', Path.DirectorySeparatorChar)),
-                            relativePath,
-                            identity));
+                        if (!directory.IgnoredSubtree)
+                        {
+                            files.Add(new SafeFileEntry(
+                                Path.Combine(repositoryRoot, relativePath.Replace('/', Path.DirectorySeparatorChar)),
+                                relativePath,
+                                identity));
+                        }
+                        // An ignored regular file was opened and its native name validated
+                        // above, but remains outside fixture inspection and classification.
                         SafePathBoundary.CloseDescriptor(childDescriptor);
                     }
                 }

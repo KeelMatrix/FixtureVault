@@ -44,8 +44,9 @@ rejection, and FIFO rejection.
 
 The installed-package smoke corpus exercises the FV007 contract through the complete tool in console and JSON modes,
 including ownership boundaries, quoted values, sibling credentials, accepted markers, strict/non-strict dispositions,
-non-disclosure, non-mutation, the 64-container JSON depth boundary, and bounded whitespace scale cases. The full
-grammar is maintained in the [canonical detection grammar](DETECTION_GRAMMAR.md).
+non-disclosure, non-mutation, the 64-container JSON depth boundary, bounded whitespace scale cases, and Linux
+invalid-native-name failures when the only invalid entry is below exact or recursive ignored paths. The full grammar
+is maintained in the [canonical detection grammar](DETECTION_GRAMMAR.md).
 
 ## Run the Tool from Source
 
@@ -57,7 +58,7 @@ dotnet run --project src/KeelMatrix.FixtureVault -- scan --format json
 
 ## Audit Dependencies
 
-The repository-owned audit requests version-pinned structured JSON, reconciles every project listed in the solution, requires direct and transitive coverage for each result, and fails closed for missing, duplicate, unrelated, malformed, vulnerable, unavailable, or unrecognized data:
+The repository-owned audit runs two version-pinned structured queries. It derives every target framework from every solution project and requires non-empty top-level and transitive package arrays for each project/framework from the complete package graph. It then checks the vulnerability-only result, whose clean projects may be represented by path alone, and fails closed for missing, empty, duplicate, mismatched, unrelated, malformed, vulnerable, unavailable, or unrecognized data:
 
 ```powershell
 pwsh -NoProfile -File ./scripts/audit-vulnerabilities.ps1 -SolutionPath KeelMatrix.FixtureVault.sln

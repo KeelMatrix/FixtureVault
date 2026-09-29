@@ -47,7 +47,7 @@ One scan accepts at most 64 policy roots or `--root` overrides. Exceeding that l
 
 Traversal and classification use separate sets. Physical filesystem identity may deduplicate traversal roots and repeated walks, but classification remains complete for every distinct eligible repository-relative path alias, including hard-linked files whose names imply different fixture rules.
 
-Root paths are canonicalized from the actual repository directory entries before descendant paths are classified. Selecting the same directory through alternate spellings or overlapping roots therefore cannot manufacture a second report path, `FV003` collision, or manifest mismatch; genuine hard-link aliases and distinct case-sensitive entries remain separate. On POSIX systems, a directory entry whose native filename is not strict UTF-8 cannot be represented safely as a .NET path. Such a scan fails closed with `FV-E002`, exit code `2`, `completed: false`, and no successful-scan telemetry; replacement-decoded text is never used to open or authorize another entry, and fixture contents are not disclosed.
+Root paths are canonicalized from the actual repository directory entries before descendant paths are classified. Selecting the same directory through alternate spellings or overlapping roots therefore cannot manufacture a second report path, `FV003` collision, or manifest mismatch; genuine hard-link aliases and distinct case-sensitive entries remain separate. On POSIX systems, a directory entry whose native filename is not strict UTF-8 cannot be represented safely as a .NET path. Such a scan fails closed with `FV-E002`, exit code `2`, `completed: false`, and no successful-scan telemetry, including when the only unrepresentable file or directory is below an exact or recursive ignored path or is discovered by the repository-wide path-policy walk. Ignored subtrees remain excluded from fixture inspection, but their directory-entry names are still validated; replacement-decoded text is never used to open or authorize another entry, and fixture contents are not disclosed.
 
 ## Documentation
 
@@ -247,6 +247,10 @@ $env:KEELMATRIX_NO_TELEMETRY = "1"
 ```
 
 The shared telemetry package also supports repository-local opt-out through `keelmatrix.telemetry.json`, `.env.local`, or `.env`.
+
+## Dependency Security Gate
+
+Repository validation derives every target framework from every solution project and requires a complete structured package graph with both top-level and transitive package arrays for each project/framework. It separately checks the vulnerability-only result, which may represent clean projects by path without framework arrays. Missing, empty, duplicate, mismatched, malformed, unrelated, unavailable, or vulnerable results fail the gate closed.
 
 ## CI Example
 

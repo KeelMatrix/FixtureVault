@@ -5529,7 +5529,12 @@ public sealed class FixtureVaultTests
             "multiple-with-counterpart",
             "multiple-without-counterpart",
             "directory",
-            "ignored-context"
+            "ignored-exact-file",
+            "ignored-recursive-file",
+            "ignored-exact-directory",
+            "ignored-recursive-directory",
+            "ignored-repository-exact-file",
+            "ignored-repository-recursive-file"
         ];
 
         foreach (string format in formats)
@@ -5553,16 +5558,31 @@ public sealed class FixtureVaultTests
         }
 
         using var repository = new TemporaryRepository();
+        bool repositoryWideOnly = testCase.StartsWith("ignored-repository", StringComparison.Ordinal);
+        bool exactIgnoredPath = testCase.Contains("exact", StringComparison.Ordinal);
+        string ignoredRoot = repositoryWideOnly ? "outside/ignored" : "tests/ignored";
         repository.WritePolicy(policy =>
         {
-            policy.IgnoredPaths = ["tests/ignored/**"];
+            if (repositoryWideOnly)
+            {
+                policy.Roots = ["."];
+            }
+
+            policy.IgnoredPaths = exactIgnoredPath
+                ? [ignoredRoot]
+                : [$"{ignoredRoot}/**"];
         });
         const string validReplacementName = "\uFFFD.golden";
-        repository.WriteText($"tests/{validReplacementName}", "clean counterpart\n");
-        if (testCase == "ignored-context")
+        bool ignoredContext = testCase.StartsWith("ignored-", StringComparison.Ordinal);
+        bool isDirectory = testCase is "directory" or "ignored-exact-directory" or "ignored-recursive-directory";
+        string invalidDirectory = ignoredContext ? ignoredRoot : "tests";
+        if (ignoredContext)
         {
-            repository.WriteText("tests/ignored/clean.golden", "ignored clean fixture\n");
+            repository.WriteText($"{ignoredRoot}/clean.golden", "ignored clean fixture\n");
         }
+        repository.WriteText(
+            $"{invalidDirectory}/{validReplacementName}",
+            "clean counterpart\n");
 
         List<(byte[] Path, bool Directory)> createdEntries = [];
         try
@@ -5573,13 +5593,15 @@ public sealed class FixtureVaultTests
                     [0xFF, (byte)'a'],
                     [0xFE, (byte)'a']
                 ],
+                "ignored-exact-file" or "ignored-recursive-file" or
+                "ignored-repository-exact-file" or "ignored-repository-recursive-file" => [[0xFF, (byte)'i'],],
+                "ignored-exact-directory" or "ignored-recursive-directory" => [[0xFF, (byte)'d'],],
                 _ => [GetInvalidNativeName(testCase)]
             };
-            bool isDirectory = testCase == "directory";
-            bool includeCounterpart = testCase != "multiple-without-counterpart";
+            bool includeCounterpart = testCase is not "multiple-without-counterpart";
             if (!includeCounterpart)
             {
-                File.Delete(Path.Combine(repository.Root, "tests", validReplacementName));
+                File.Delete(Path.Combine(repository.Root, invalidDirectory, validReplacementName));
             }
 
             foreach (byte[] invalidName in invalidNames)
@@ -5587,7 +5609,7 @@ public sealed class FixtureVaultTests
                 byte[] filename = [.. invalidName, (byte)'.', (byte)'g', (byte)'o', (byte)'l', (byte)'d', (byte)'e', (byte)'n'];
                 if (isDirectory)
                 {
-                    byte[] directoryPath = BuildRawRepositoryPath(repository.Root, "tests", invalidName);
+                    byte[] directoryPath = BuildRawRepositoryPath(repository.Root, invalidDirectory, invalidName);
                     CreateRawDirectoryOrSkip(directoryPath);
                     createdEntries.Add((directoryPath, true));
                     byte[] nestedPath = [.. directoryPath, (byte)'/', (byte)'n', (byte)'e', (byte)'s', (byte)'t', (byte)'e', (byte)'d', (byte)'.', (byte)'g', (byte)'o', (byte)'l', (byte)'d', (byte)'e', (byte)'n'];
@@ -5596,7 +5618,7 @@ public sealed class FixtureVaultTests
                 }
                 else
                 {
-                    byte[] filePath = BuildRawRepositoryPath(repository.Root, "tests", filename);
+                    byte[] filePath = BuildRawRepositoryPath(repository.Root, invalidDirectory, filename);
                     CreateRawFileOrSkip(filePath, Encoding.UTF8.GetBytes(SensitiveValue));
                     createdEntries.Add((filePath, false));
                 }
@@ -6303,7 +6325,6 @@ public sealed class FixtureVaultTests
             "truncated" => [0xC2],
             "overlong" => [0xC0, 0xAF, (byte)'o'],
             "directory" => [0xFF, (byte)'d'],
-            "ignored-context" => [0xFF, (byte)'i'],
             _ => throw new ArgumentOutOfRangeException(nameof(testCase), testCase, "Unknown native filename test case.")
         };
 

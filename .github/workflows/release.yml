@@ -56,7 +56,7 @@ jobs:
       - name: Restore from NuGet.org
         run: dotnet restore KeelMatrix.FixtureVault.sln --configfile NuGet.config --no-cache --force
 
-      - name: Audit vulnerable dependencies (complete structured coverage)
+      - name: Audit complete package graph and vulnerable dependencies
         shell: pwsh
         run: pwsh -NoProfile -File ./scripts/audit-vulnerabilities.ps1 -SolutionPath KeelMatrix.FixtureVault.sln
 
