@@ -1217,7 +1217,7 @@ public sealed class FixtureVaultTests
             Assert.True(replaced);
             Assert.Equal(2, directResult.ExitCode);
             Assert.False(directResult.Completed);
-            Assert.Contains(directResult.Report.Errors, item => item.Code == "FV-E002");
+            Assert.Contains(directResult.Report.Errors, item => item.Code == "FV-E015");
             Assert.DoesNotContain(directResult.Report.Findings, item => item.Path.Contains("outside.received.json", StringComparison.Ordinal));
 
             Directory.Delete(pendingPath, recursive: true);
@@ -1238,7 +1238,7 @@ public sealed class FixtureVaultTests
             Assert.Equal(0, telemetry.SuccessfulScans);
             Assert.Contains(
                 report.RootElement.GetProperty("errors").EnumerateArray(),
-                item => item.GetProperty("code").GetString() == "FV-E002");
+                item => item.GetProperty("code").GetString() == "FV-E015");
             Assert.DoesNotContain("outside.received.json", output, StringComparison.Ordinal);
             Assert.DoesNotContain("FixtureVault scan complete.", output, StringComparison.Ordinal);
         }
@@ -1299,7 +1299,7 @@ public sealed class FixtureVaultTests
             Assert.Equal(2, exitCode);
             Assert.Empty(error);
             Assert.False(report.Completed);
-            Assert.Contains(report.Errors, item => item.Code == "FV-E002");
+            Assert.Contains(report.Errors, item => item.Code == "FV-E015");
             Assert.Equal(0, telemetry.SuccessfulScans);
             Assert.DoesNotContain(outsideCanary, output, StringComparison.Ordinal);
             Assert.DoesNotContain("outside.received.json", output, StringComparison.Ordinal);
@@ -1354,7 +1354,7 @@ public sealed class FixtureVaultTests
             Assert.True(replaced);
             Assert.Equal(2, directResult.ExitCode);
             Assert.False(directResult.Completed);
-            Assert.Contains(directResult.Report.Errors, item => item.Code == "FV-E002");
+            Assert.Contains(directResult.Report.Errors, item => item.Code == "FV-E015");
             Assert.DoesNotContain(directResult.Report.Findings, item => item.Path.Contains("private.received.json", StringComparison.Ordinal));
 
             Directory.Delete(parentPath, recursive: true);
@@ -1375,7 +1375,7 @@ public sealed class FixtureVaultTests
             Assert.Equal(0, telemetry.SuccessfulScans);
             Assert.Contains(
                 report.RootElement.GetProperty("errors").EnumerateArray(),
-                item => item.GetProperty("code").GetString() == "FV-E002");
+                item => item.GetProperty("code").GetString() == "FV-E015");
             Assert.DoesNotContain("private.received.json", output, StringComparison.Ordinal);
             Assert.DoesNotContain("outside-only canary", output, StringComparison.Ordinal);
         }
@@ -1525,7 +1525,7 @@ public sealed class FixtureVaultTests
             Assert.True(replaced, $"Repository root: {repository.RepositoryRoot}; output: {output.ToString()}");
             Assert.Equal(2, exitCode);
             Assert.False(report.Completed);
-            Assert.Equal("FV-E002", Assert.Single(report.Errors).Code);
+            Assert.Equal(repositoryWide ? "FV-E015" : "FV-E002", Assert.Single(report.Errors).Code);
             Assert.Equal(0, telemetry.SuccessfulScans);
             Assert.DoesNotContain(outsideCanary, output.ToString(), StringComparison.Ordinal);
             Assert.DoesNotContain("outside.received.json", output.ToString(), StringComparison.Ordinal);
@@ -4974,7 +4974,7 @@ public sealed class FixtureVaultTests
     {
         using var repository = new TemporaryRepository();
         repository.WritePolicy();
-        repository.WriteText("outside.golden", "fixture outside roots\n");
+        repository.WriteText("outside.golden", "outside-path-policy-canary\n");
 
         bool? pathPolicyWalkFailOnAccessErrors = null;
         FixtureFileWalk failingWalk = (repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory) =>
@@ -4988,15 +4988,27 @@ public sealed class FixtureVaultTests
             return SafeFileWalker.Walk(repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory);
         };
 
-        ScanResult result = repository.Scan(fileWalk: failingWalk);
+        var telemetry = new RecordingTelemetry();
+        int exitCode = repository.Run(
+            ["scan", "--format", "json"],
+            telemetry,
+            out string output,
+            out string error,
+            fileWalk: failingWalk);
+        ScanReport result = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
 
-        Assert.Equal(2, result.ExitCode);
+        Assert.Equal(2, exitCode);
+        Assert.Empty(error);
         Assert.False(result.Completed);
         Assert.True(pathPolicyWalkFailOnAccessErrors);
-        ScanError error = Assert.Single(result.Report.Errors);
-        Assert.Equal("FV-E002", error.Code);
-        Assert.Equal("test-only injected walk failure", error.Message);
-        Assert.DoesNotContain(result.Report.Findings, item => item.RuleId == "FV008");
+        ScanError scanError = Assert.Single(result.Errors);
+        Assert.Equal("FV-E015", scanError.Code);
+        Assert.Equal(FixtureVaultContract.PathPolicyTraversalErrorMessage, scanError.Message);
+        Assert.Empty(result.Findings);
+        Assert.Equal(0, telemetry.SuccessfulScans);
+        Assert.DoesNotContain("outside.golden", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("outside-path-policy-canary", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("FV008", output, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -5014,12 +5026,21 @@ public sealed class FixtureVaultTests
 
         try
         {
-            ScanResult result = repository.Scan();
+            var telemetry = new RecordingTelemetry();
+            int exitCode = repository.Run(
+                ["scan", "--format", "json"],
+                telemetry,
+                out string output,
+                out string error);
+            ScanReport result = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
 
-            Assert.Equal(2, result.ExitCode);
+            Assert.Equal(2, exitCode);
+            Assert.Empty(error);
             Assert.False(result.Completed);
-            Assert.Contains(result.Report.Errors, item => item.Code == "FV-E002");
-            Assert.DoesNotContain(result.Report.Findings, item => item.RuleId == "FV008" && item.Path == "unreadable/hidden.golden");
+            Assert.Contains(result.Errors, item => item.Code == "FV-E015");
+            Assert.DoesNotContain(result.Findings, item => item.RuleId == "FV008" && item.Path == "unreadable/hidden.golden");
+            Assert.Equal(0, telemetry.SuccessfulScans);
+            Assert.DoesNotContain("unreadable/hidden.golden", output, StringComparison.Ordinal);
         }
         finally
         {
@@ -5514,7 +5535,7 @@ public sealed class FixtureVaultTests
         Assert.Equal(2, exitCode);
         Assert.Empty(error);
         Assert.False(report.Completed);
-        Assert.Equal("FV-E002", Assert.Single(report.Errors).Code);
+        Assert.Equal(repositoryWideWalk ? "FV-E015" : "FV-E002", Assert.Single(report.Errors).Code);
         Assert.Equal(0, telemetry.SuccessfulScans);
     }
 

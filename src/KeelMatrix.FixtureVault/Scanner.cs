@@ -239,7 +239,9 @@ internal sealed class FixtureScanner
             AddReparseSkips(walk, skipped, diagnosticBudget);
             if (walk.Error is not null)
             {
-                errors.Add(walk.Error);
+                errors.Add(walk.Error.Code == FixtureVaultContract.UnrepresentableNativeNameErrorCode
+                    ? walk.Error with { Code = "FV-E002" }
+                    : walk.Error);
                 return CompleteWithErrors(
                     errors,
                     strict,
@@ -507,11 +509,17 @@ internal sealed class FixtureScanner
         AddReparseSkips(walk, skipped, diagnosticBudget);
         if (walk.Error is not null)
         {
-            errors.Add(walk.Error.Code is FixtureVaultContract.FilesystemTraversalErrorCode
-                ? new ScanError(
+            errors.Add(walk.Error.Code switch
+            {
+                FixtureVaultContract.FilesystemTraversalErrorCode => new ScanError(
                     FixtureVaultContract.PathPolicyTraversalErrorCode,
-                    FixtureVaultContract.PathPolicyTraversalErrorMessage)
-                : walk.Error);
+                    FixtureVaultContract.PathPolicyTraversalErrorMessage),
+                FixtureVaultContract.UnrepresentableNativeNameErrorCode => walk.Error with { Code = "FV-E002" },
+                "FV-E002" => new ScanError(
+                    FixtureVaultContract.PathPolicyTraversalErrorCode,
+                    FixtureVaultContract.PathPolicyTraversalErrorMessage),
+                _ => walk.Error
+            });
             return;
         }
 

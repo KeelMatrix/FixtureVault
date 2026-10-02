@@ -884,8 +884,12 @@ internal sealed class SafePathBoundary : IDisposable
         return new DirectoryEntryReadHookScope(previous);
     }
 
-    internal static string? ReadDirectoryEntryName(IntPtr entry)
+    internal static string? ReadDirectoryEntryName(IntPtr entry) =>
+        ReadDirectoryEntryName(entry, out _);
+
+    internal static string? ReadDirectoryEntryName(IntPtr entry, out bool unrepresentable)
     {
+        unrepresentable = false;
         if (entry == IntPtr.Zero)
         {
             return null;
@@ -907,6 +911,7 @@ internal sealed class SafePathBoundary : IDisposable
                     // A native filename that cannot be represented as a .NET string
                     // is an incomplete scan. Returning null makes the walker fail
                     // closed before the decoded value can authorize another entry.
+                    unrepresentable = true;
                     return null;
                 }
             }
@@ -2326,11 +2331,15 @@ internal static class SafeFileWalker
                             break;
                         }
 
-                        string? name = SafePathBoundary.ReadDirectoryEntryName(readResult.Entry);
+                        string? name = SafePathBoundary.ReadDirectoryEntryName(
+                            readResult.Entry,
+                            out bool unrepresentableName);
                         if (name is null)
                         {
                             return new WalkResult(files, reparsePaths, new ScanError(
-                                "FV-E002",
+                                unrepresentableName
+                                    ? FixtureVaultContract.UnrepresentableNativeNameErrorCode
+                                    : "FV-E002",
                                 "A configured fixture root could not be inspected completely."));
                         }
 

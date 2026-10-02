@@ -22,6 +22,9 @@ internal static class FixtureVaultContract
     internal const int MaximumSupportedJsonDepth = 64;
     internal const string PathPolicyTraversalErrorCode = "FV-E015";
     internal const string PathPolicyTraversalErrorMessage = "Repository path-policy discovery could not be completed safely.";
+    // Internal walker identity only. The scanner maps this to the public FV-E002
+    // native-name contract for both active-root and repository-wide scans.
+    internal const string UnrepresentableNativeNameErrorCode = "FV-E002-NATIVE-NAME";
     internal const string UninspectableContentErrorCode = "FV-E016";
     internal const string UninspectableContentErrorMessage = "Content inspection could not be completed because no encoding suitable for inspection could be established.";
     internal const string DiagnosticBudgetErrorCode = "FV-E017";
