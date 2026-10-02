@@ -507,7 +507,7 @@ internal sealed class FixtureScanner
         AddReparseSkips(walk, skipped, diagnosticBudget);
         if (walk.Error is not null)
         {
-            errors.Add(walk.Error.Code is "FV-E002" or FixtureVaultContract.FilesystemTraversalErrorCode
+            errors.Add(walk.Error.Code is FixtureVaultContract.FilesystemTraversalErrorCode
                 ? new ScanError(
                     FixtureVaultContract.PathPolicyTraversalErrorCode,
                     FixtureVaultContract.PathPolicyTraversalErrorMessage)

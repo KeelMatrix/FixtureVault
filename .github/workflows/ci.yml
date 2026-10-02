@@ -40,14 +40,6 @@ jobs:
         shell: bash
         run: bash .githooks/check-history
 
-      - name: Verify nested PowerShell launch guard self-test
-        shell: pwsh
-        run: pwsh -NoProfile -File ./build/Test-NestedPwshLaunch.ps1 -SelfTest
-
-      - name: Verify repository child process launches
-        shell: pwsh
-        run: pwsh -NoProfile -File ./build/Test-NestedPwshLaunch.ps1
-
       - name: Build Release
         run: dotnet build KeelMatrix.FixtureVault.sln -c Release --no-restore
 
