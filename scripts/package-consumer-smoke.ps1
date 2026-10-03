@@ -840,6 +840,7 @@ try {
                 Assert-Contract ($fifoCode -eq 2) "Linux FIFO scan returned $fifoCode instead of 2."
                 $fifoReport = [IO.File]::ReadAllText($fifoReportPath) | ConvertFrom-Json
                 Assert-Contract (@($fifoReport.errors | Where-Object { $_.code -eq "FV-E009" }).Count -gt 0) "Linux FIFO scan did not report FV-E009."
+                Remove-Item -LiteralPath $fifoPath -Force
 
                 $nativeFilenameScriptPath = Join-Path $workRoot "native-filename-regression.sh"
                 $nativeFilenameScript = @'
