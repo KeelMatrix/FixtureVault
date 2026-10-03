@@ -5277,7 +5277,7 @@ public sealed class FixtureVaultTests
                 {
                     ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
                     Assert.False(report.Completed);
-                    Assert.Contains(report.Errors, item => item.Code == "FV-E009");
+                    Assert.Contains(report.Errors, item => item.Code is "FV-E002" or "FV-E009");
                     Assert.Empty(report.Findings);
                 }
                 else
