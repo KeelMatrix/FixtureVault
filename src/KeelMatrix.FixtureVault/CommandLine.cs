@@ -149,11 +149,14 @@ internal static class CommandLineParser
 
             Classification:
               A native filename that cannot be represented as strict UTF-8 makes the scan
-              incomplete with FV-E002, exit code 2, and no successful-scan telemetry,
-              including when the only invalid entry is below an exact or recursive ignored
-              path or is found during repository-wide path-policy discovery. Ignored
-              subtrees are not fixture-inspected, but their native names are still validated;
-              decoded replacement text is never used to open or authorize another entry.
+              incomplete with FV-E002, exit code 2, and no successful-scan telemetry when
+              the entry is encountered during governed traversal. Ignored directories are
+              pruned before their descendants are enumerated or opened in both active-root
+              and repository-wide path-policy discovery, so descendants behind an exact or
+              recursive ignored path are not decoded, budgeted, classified, or emitted as
+              skipped diagnostics. An invalid name in the ignored directory's own entry is
+              still encountered while establishing the exclusion and fails closed. Decoded
+              replacement text is never used to open or authorize another entry.
               Configured roots are resolved to the spelling of the actual repository entry
               before descendants are classified, so alternate-spelling overlapping roots do
               not manufacture paths. Physical identity may deduplicate traversal roots, but

@@ -151,7 +151,7 @@ try {
         $helpPath = Join-Path $workRoot "help.txt"
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("--help") $helpPath) -eq 0) "fixturevault --help failed."
         $help = [IO.File]::ReadAllText($helpPath)
-        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault" -and $help -match "filesDiscovered" -and $help -match "FV007 detects high-confidence structured credentials without disclosing" -and $help -match "DETECTION_GRAMMAR.md" -and $help -match "FV-E018" -and $help -match "100,000 entries" -and $help -match "1,000,000" -and $help -match "repository-relative path alias" -and $help -match "exact repository-relative spelling" -and $help -match "strict UTF-8" -and $help -match "ignored\s+path" -and $help -match "alternate-spelling overlapping roots") "fixturevault --help did not print the expected usage text."
+        Assert-Contract ($help -match "Usage:" -and $help -match "fixturevault" -and $help -match "filesDiscovered" -and $help -match "FV007 detects high-confidence structured credentials without disclosing" -and $help -match "DETECTION_GRAMMAR.md" -and $help -match "FV-E018" -and $help -match "100,000 entries" -and $help -match "1,000,000" -and $help -match "repository-relative path alias" -and $help -match "exact repository-relative spelling" -and $help -match "strict UTF-8" -and $help -match "ignored\s+path" -and $help -match "pruned\s+before\s+their\s+descendants\s+are\s+enumerated\s+or\s+opened" -and $help -match "alternate-spelling overlapping roots") "fixturevault --help did not print the expected usage text."
 
         Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "init.txt")) -eq 0) "fixturevault init failed."
         Assert-Contract (Test-Path -LiteralPath (Join-Path $consumerRoot ".fixturevault.json")) "fixturevault init did not create .fixturevault.json."
@@ -908,7 +908,7 @@ esac
                     Assert-Contract (-not $nativeText.Contains("fixture-test-secret-1234567890", [StringComparison]::Ordinal)) "Linux native filename directory scan ($nativeFormat) disclosed its fixture contents."
                 }
 
-                foreach ($ignoredPattern in @("tests/ignored", "tests/ignored/**")) {
+                foreach ($ignoredPattern in @("tests/ignored", "tests/ignored/", "tests/ignored/**", "tests/ignored/**/")) {
                     $nativePolicy.ignoredPaths = $nativeIgnoredPaths + $ignoredPattern
                     [IO.File]::WriteAllText($nativePolicyPath, ($nativePolicy | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
 
@@ -921,12 +921,13 @@ esac
                             $nativeReportPath = Join-Path $workRoot "native-ignored-$($ignoredMode)-$($nativeFormat).txt"
                             $nativeCode = Invoke-CommandCapture $fixtureVault @("scan", "--format", $nativeFormat) $nativeReportPath
                             $nativeText = [IO.File]::ReadAllText($nativeReportPath)
-                            Assert-Contract ($nativeCode -eq 2) "Linux ignored-only native filename $ignoredMode scan ($nativeFormat) for '$ignoredPattern' returned $nativeCode instead of 2."
-                            Assert-Contract ($nativeText.Contains("FV-E002", [StringComparison]::Ordinal)) "Linux ignored-only native filename $ignoredMode scan ($nativeFormat) for '$ignoredPattern' did not report FV-E002."
+                            Assert-Contract ($nativeCode -eq 0) "Linux ignored-only native filename $ignoredMode scan ($nativeFormat) for '$ignoredPattern' returned $nativeCode instead of 0."
+                            Assert-Contract (-not $nativeText.Contains("FV-E002", [StringComparison]::Ordinal)) "Linux ignored-only native filename $ignoredMode scan ($nativeFormat) for '$ignoredPattern' reported FV-E002."
                             Assert-Contract (-not $nativeText.Contains("fixture-test-secret-1234567890", [StringComparison]::Ordinal)) "Linux ignored-only native filename $ignoredMode scan ($nativeFormat) disclosed its fixture contents."
+                            Assert-Contract (-not $nativeText.Contains("FV-SKIP-REPARSE", [StringComparison]::Ordinal)) "Linux ignored-only native filename $ignoredMode scan ($nativeFormat) emitted an ignored descendant reparse diagnostic."
                             if ($nativeFormat -eq "json") {
                                 $nativeReport = $nativeText | ConvertFrom-Json
-                                Assert-Contract (-not $nativeReport.completed -and @($nativeReport.errors | Where-Object { $_.code -eq "FV-E002" }).Count -gt 0) "Linux ignored-only native filename $ignoredMode JSON scan for '$ignoredPattern' did not report an incomplete FV-E002 result."
+                                Assert-Contract ($nativeReport.completed -and @($nativeReport.errors).Count -eq 0) "Linux ignored-only native filename $ignoredMode JSON scan for '$ignoredPattern' did not complete cleanly."
                             }
                         }
 
@@ -947,7 +948,7 @@ esac
         Pop-Location
     }
 
-    Write-Host "Consumer smoke passed: help, init, clean scan (0), sensitive/blocking JSON scan (1), connection-string positive/negative console+JSON cases, native filename console/JSON fail-closed checks including ignored-only paths, and Linux filesystem safety checks when applicable."
+    Write-Host "Consumer smoke passed: help, init, clean scan (0), sensitive/blocking JSON scan (1), connection-string positive/negative console+JSON cases, native filename console/JSON fail-closed checks with ignored-subtree pruning, and Linux filesystem safety checks when applicable."
 }
 finally {
     if ($null -eq $originalTelemetryOptOut) {

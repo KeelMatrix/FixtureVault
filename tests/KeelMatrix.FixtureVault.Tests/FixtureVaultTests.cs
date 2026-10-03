@@ -2,6 +2,7 @@
 using System.Data.Common;
 using System.Security.Cryptography;
 using System.Runtime.InteropServices;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using KeelMatrix.Redaction;
@@ -21,6 +22,17 @@ public sealed class FixtureVaultTests
             if (!OperatingSystem.IsLinux())
             {
                 Skip = "Raw native filename capability is available only on Linux in this test suite.";
+            }
+        }
+    }
+
+    private sealed class LinuxFactAttribute : FactAttribute
+    {
+        public LinuxFactAttribute()
+        {
+            if (!OperatingSystem.IsLinux())
+            {
+                Skip = "The Unix socket filesystem regression runs only on Linux.";
             }
         }
     }
@@ -359,6 +371,7 @@ public sealed class FixtureVaultTests
         Assert.Contains("FV-E018", output, StringComparison.Ordinal);
         Assert.Contains("100,000 entries", output, StringComparison.Ordinal);
         Assert.Contains("1,000,000", output, StringComparison.Ordinal);
+        Assert.Contains("pruned before their descendants are enumerated or opened", output, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1261,38 +1274,28 @@ public sealed class FixtureVaultTests
         string outsideCanary = "ordinary-same-name-pending-canary";
         bool replaced = false;
 
-        FixtureFileWalk replacingWalk = (repositoryRoot, root, failOnAccessErrors, shouldPruneDirectory) =>
-            SafeFileWalker.Walk(
-                repositoryRoot,
-                root,
-                failOnAccessErrors,
-                relativePath =>
-                {
-                    if (!replaced &&
-                        Path.GetFullPath(root).Equals(repository.Root, StringComparison.Ordinal) &&
-                        relativePath.Equals("misc/pending", StringComparison.Ordinal))
-                    {
-                        replaced = true;
-                        Directory.Delete(pendingPath, recursive: true);
-                        Directory.CreateDirectory(pendingPath);
-                        File.WriteAllText(
-                            Path.Combine(pendingPath, "outside.received.json"),
-                            outsideCanary,
-                            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-                    }
-
-                    return shouldPruneDirectory?.Invoke(relativePath) ?? GlobMatchStatus.NoMatch;
-                });
-
         try
         {
+            SafeFileWalker.BeforeEnumerationForTesting = relativePath =>
+            {
+                if (!replaced && relativePath.Equals("misc/pending", StringComparison.Ordinal))
+                {
+                    replaced = true;
+                    Directory.Delete(pendingPath, recursive: true);
+                    Directory.CreateDirectory(pendingPath);
+                    File.WriteAllText(
+                        Path.Combine(pendingPath, "outside.received.json"),
+                        outsideCanary,
+                        new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+                }
+            };
+
             var telemetry = new RecordingTelemetry();
             int exitCode = repository.Run(
                 ["scan", "--format", "json"],
                 telemetry,
                 out string output,
-                out string error,
-                fileWalk: replacingWalk);
+                out string error);
             ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
 
             Assert.True(replaced);
@@ -1306,6 +1309,8 @@ public sealed class FixtureVaultTests
         }
         finally
         {
+            SafeFileWalker.BeforeEnumerationForTesting = null;
+            SafeFileWalker.AfterEnumerationOpenedForTesting = null;
             if (Directory.Exists(pendingPath))
             {
                 Directory.Delete(pendingPath, recursive: true);
@@ -5075,6 +5080,275 @@ public sealed class FixtureVaultTests
         Assert.Contains(unignored.Report.Errors, item => item.Code == FixtureVaultContract.PathPolicyTraversalErrorCode);
     }
 
+    public static IEnumerable<object[]> Ignored_directory_pruning_cases()
+    {
+        string[] formats = ["console", "json"];
+        string[] patternTemplates = ["{0}", "{0}/", "{0}/**", "{0}/**/"];
+
+        foreach (string format in formats)
+        {
+            foreach (bool repositoryWide in new[] { false, true })
+            {
+                string root = repositoryWide ? "outside/ignored" : "tests/ignored";
+                foreach (string patternTemplate in patternTemplates)
+                {
+                    yield return [format, repositoryWide, string.Format(patternTemplate, root)];
+                }
+            }
+        }
+    }
+
+    [LinuxFact]
+    public void Ignored_unix_domain_socket_is_not_opened_or_enumerated()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.IgnoredPaths = ["tests/ignored"]);
+        repository.WriteText("tests/clean.golden", "clean\n");
+        repository.WriteText("tests/ignored/placeholder.golden", "ignored\n");
+
+        string socketPath = Path.Combine(repository.Root, "tests", "ignored", "cache.sock");
+        Socket? listener = null;
+        try
+        {
+            listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            listener.Bind(new UnixDomainSocketEndPoint(socketPath));
+
+            var enumerated = new List<string>();
+            try
+            {
+                SafeFileWalker.BeforeEnumerationForTesting = relativePath => enumerated.Add(relativePath);
+                ScanResult result = repository.Scan(["--format", "json"]);
+
+                Assert.Equal(0, result.ExitCode);
+                Assert.True(result.Completed);
+                Assert.Empty(result.Report.Errors);
+                Assert.Empty(result.Report.Findings);
+                Assert.DoesNotContain(result.Report.Skipped, item => item.Code == "FV-SKIP-REPARSE");
+                Assert.DoesNotContain(enumerated, path => IsPathOrDescendant(path, "tests/ignored"));
+            }
+            finally
+            {
+                SafeFileWalker.BeforeEnumerationForTesting = null;
+                SafeFileWalker.AfterEnumerationOpenedForTesting = null;
+            }
+        }
+        catch (SocketException ex)
+        {
+            throw SkipException.ForSkip($"The Linux filesystem could not create a Unix-domain socket fixture ({ex.SocketErrorCode}).");
+        }
+        finally
+        {
+            listener?.Dispose();
+            if (File.Exists(socketPath))
+            {
+                File.Delete(socketPath);
+            }
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(Ignored_directory_pruning_cases))]
+    public void Ignored_directories_are_pruned_before_either_discovery_pass_enumerates_them(
+        string format,
+        bool repositoryWide,
+        string ignoredPattern)
+    {
+        using var repository = new TemporaryRepository();
+        string ignoredRoot = repositoryWide ? "outside/ignored" : "tests/ignored";
+        repository.WritePolicy(policy =>
+        {
+            policy.Roots = ["tests"];
+            policy.IgnoredPaths = [ignoredPattern];
+        });
+        repository.WriteText("tests/clean.golden", "clean\n");
+        repository.WriteText($"{ignoredRoot}/nested/ignored.received.json", "received\n");
+        repository.WriteText($"{ignoredRoot}/nested/deep/cache.sock", "socket placeholder\n");
+
+        var enumerated = new List<string>();
+        var opened = new List<string>();
+        try
+        {
+            SafeFileWalker.BeforeEnumerationForTesting = relativePath => enumerated.Add(relativePath);
+            SafeFileWalker.AfterEnumerationOpenedForTesting = relativePath => opened.Add(relativePath);
+
+            string[] args = format == "json"
+                ? ["scan", "--format", "json"]
+                : ["scan"];
+            var telemetry = new RecordingTelemetry();
+            int exitCode = repository.Run(args, telemetry, out string output, out string error);
+
+            Assert.Equal(0, exitCode);
+            Assert.Empty(error);
+            Assert.Equal(1, telemetry.SuccessfulScans);
+            Assert.DoesNotContain(enumerated, path => IsPathOrDescendant(path, ignoredRoot));
+            Assert.DoesNotContain(opened, path => IsPathOrDescendant(path, ignoredRoot));
+            Assert.DoesNotContain(ignoredRoot, output, StringComparison.Ordinal);
+            if (format == "json")
+            {
+                ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
+                Assert.True(report.Completed);
+                Assert.Equal(1, report.FilesDiscovered);
+                Assert.Equal(1, report.FilesInspected);
+                Assert.Empty(report.Findings);
+                Assert.DoesNotContain(report.Skipped, item => item.Code == "FV-SKIP-REPARSE");
+                Assert.Empty(report.Errors);
+            }
+            else
+            {
+                Assert.Contains("1 fixture file(s) inspected", output, StringComparison.Ordinal);
+            }
+        }
+        finally
+        {
+            SafeFileWalker.BeforeEnumerationForTesting = null;
+            SafeFileWalker.AfterEnumerationOpenedForTesting = null;
+        }
+    }
+
+    [Theory]
+    [InlineData("tests/ignored")]
+    [InlineData("tests/ignored/")]
+    [InlineData("tests/ignored/**")]
+    [InlineData("tests/ignored/**/")]
+    public void An_ignored_selected_root_is_pruned_without_opening_or_enumerating_it(string ignoredPattern)
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy =>
+        {
+            policy.Roots = ["tests/ignored"];
+            policy.IgnoredPaths = [ignoredPattern];
+        });
+        repository.WriteText("tests/ignored/clean.golden", "clean\n");
+
+        var enumerated = new List<string>();
+        var opened = new List<string>();
+        try
+        {
+            SafeFileWalker.BeforeEnumerationForTesting = relativePath => enumerated.Add(relativePath);
+            SafeFileWalker.AfterEnumerationOpenedForTesting = relativePath => opened.Add(relativePath);
+
+            ScanResult result = repository.Scan(["--format", "json"]);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.True(result.Completed);
+            Assert.Empty(result.Report.Errors);
+            Assert.Empty(result.Report.Findings);
+            Assert.Equal(0, result.Report.FilesDiscovered);
+            Assert.Equal(0, result.Report.FilesInspected);
+            Assert.DoesNotContain(enumerated, path => IsPathOrDescendant(path, "tests/ignored"));
+            Assert.DoesNotContain(opened, path => IsPathOrDescendant(path, "tests/ignored"));
+        }
+        finally
+        {
+            SafeFileWalker.BeforeEnumerationForTesting = null;
+            SafeFileWalker.AfterEnumerationOpenedForTesting = null;
+        }
+    }
+
+    [Fact]
+    public void Inaccessible_ignored_subtree_is_pruned_before_permission_is_checked()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.IgnoredPaths = ["unreadable"]);
+        repository.WriteText("tests/clean.golden", "clean\n");
+        repository.WriteText("unreadable/hidden.received.json", "received\n");
+        string inaccessibleDirectory = Path.Combine(repository.Root, "unreadable");
+
+        if (!TryMakeDirectoryInaccessible(inaccessibleDirectory, out Action restore, out string skipReason))
+        {
+            throw SkipException.ForSkip(skipReason);
+        }
+
+        var enumerated = new List<string>();
+        try
+        {
+            SafeFileWalker.BeforeEnumerationForTesting = relativePath => enumerated.Add(relativePath);
+            ScanResult result = repository.Scan(["--format", "json"]);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.True(result.Completed);
+            Assert.Empty(result.Report.Errors);
+            Assert.Empty(result.Report.Findings);
+            Assert.DoesNotContain(result.Report.Skipped, item => item.Code == "FV-SKIP-REPARSE");
+            Assert.DoesNotContain(enumerated, path => IsPathOrDescendant(path, "unreadable"));
+        }
+        finally
+        {
+            SafeFileWalker.BeforeEnumerationForTesting = null;
+            SafeFileWalker.AfterEnumerationOpenedForTesting = null;
+            restore();
+        }
+    }
+
+    [Fact]
+    public void Default_ignored_directories_are_pruned_in_active_and_repository_discovery()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy();
+        repository.WriteText("tests/clean.golden", "clean\n");
+        foreach (string directory in new[] { ".git", "bin", "obj" })
+        {
+            repository.WriteText($"tests/{directory}/nested/ignored.received.json", "received\n");
+            repository.WriteText($"tests/{directory}/nested/deep/cache.sock", "socket placeholder\n");
+        }
+
+        var enumerated = new List<string>();
+        try
+        {
+            SafeFileWalker.BeforeEnumerationForTesting = relativePath => enumerated.Add(relativePath);
+            ScanResult result = repository.Scan(["--format", "json"]);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.True(result.Completed);
+            Assert.Equal(1, result.Report.FilesInspected);
+            Assert.Empty(result.Report.Findings);
+            Assert.DoesNotContain(result.Report.Skipped, item => item.Code == "FV-SKIP-REPARSE");
+            Assert.Empty(result.Report.Errors);
+            Assert.DoesNotContain(
+                enumerated,
+                path => IsPathOrDescendant(path, "tests/.git") ||
+                    IsPathOrDescendant(path, "tests/bin") ||
+                    IsPathOrDescendant(path, "tests/obj"));
+        }
+        finally
+        {
+            SafeFileWalker.BeforeEnumerationForTesting = null;
+            SafeFileWalker.AfterEnumerationOpenedForTesting = null;
+        }
+    }
+
+    [Fact]
+    public void Ignored_descendants_do_not_consume_filesystem_budget_but_unignored_controls_fail_closed()
+    {
+        using var repository = new TemporaryRepository();
+        repository.WritePolicy(policy => policy.IgnoredPaths = ["tests/ignored"]);
+        repository.WriteText("tests/clean.golden", "clean\n");
+        repository.WriteEmptyFiles("tests/ignored", 1_024);
+
+        var ignoredBudget = new FilesystemTraversalBudget(
+            maximumEntries: 100_000,
+            maximumPathOperations: 2_000);
+        ScanResult ignored = repository.Scan(traversalBudget: ignoredBudget);
+
+        Assert.Equal(0, ignored.ExitCode);
+        Assert.True(ignored.Completed);
+        Assert.Empty(ignored.Report.Errors);
+        Assert.True(ignoredBudget.PathOperationsConsumed < ignoredBudget.MaximumPathOperations);
+
+        repository.WritePolicy(policy => policy.IgnoredPaths = []);
+        var unignoredBudget = new FilesystemTraversalBudget(
+            maximumEntries: 100_000,
+            maximumPathOperations: 2_000);
+        ScanResult unignored = repository.Scan(traversalBudget: unignoredBudget);
+
+        Assert.Equal(2, unignored.ExitCode);
+        Assert.False(unignored.Completed);
+        Assert.Contains(
+            unignored.Report.Errors,
+            item => item.Code is FixtureVaultContract.FilesystemTraversalErrorCode or FixtureVaultContract.PathPolicyTraversalErrorCode);
+        Assert.Equal(unignoredBudget.MaximumPathOperations, unignoredBudget.PathOperationsConsumed);
+    }
+
     [Fact]
     public void Multiple_roots_and_root_override_are_enforced()
     {
@@ -5549,13 +5823,7 @@ public sealed class FixtureVaultTests
             "overlong",
             "multiple-with-counterpart",
             "multiple-without-counterpart",
-            "directory",
-            "ignored-exact-file",
-            "ignored-recursive-file",
-            "ignored-exact-directory",
-            "ignored-recursive-directory",
-            "ignored-repository-exact-file",
-            "ignored-repository-recursive-file"
+            "directory"
         ];
 
         foreach (string format in formats)
@@ -5579,28 +5847,10 @@ public sealed class FixtureVaultTests
         }
 
         using var repository = new TemporaryRepository();
-        bool repositoryWideOnly = testCase.StartsWith("ignored-repository", StringComparison.Ordinal);
-        bool exactIgnoredPath = testCase.Contains("exact", StringComparison.Ordinal);
-        string ignoredRoot = repositoryWideOnly ? "outside/ignored" : "tests/ignored";
-        repository.WritePolicy(policy =>
-        {
-            if (repositoryWideOnly)
-            {
-                policy.Roots = ["tests"];
-            }
-
-            policy.IgnoredPaths = exactIgnoredPath
-                ? [ignoredRoot]
-                : [$"{ignoredRoot}/**"];
-        });
+        repository.WritePolicy(policy => policy.IgnoredPaths = []);
         const string validReplacementName = "\uFFFD.golden";
-        bool ignoredContext = testCase.StartsWith("ignored-", StringComparison.Ordinal);
-        bool isDirectory = testCase is "directory" or "ignored-exact-directory" or "ignored-recursive-directory";
-        string invalidDirectory = ignoredContext ? ignoredRoot : "tests";
-        if (ignoredContext)
-        {
-            repository.WriteText($"{ignoredRoot}/clean.golden", "ignored clean fixture\n");
-        }
+        bool isDirectory = testCase == "directory";
+        string invalidDirectory = "tests";
         repository.WriteText(
             $"{invalidDirectory}/{validReplacementName}",
             "clean counterpart\n");
@@ -5614,9 +5864,6 @@ public sealed class FixtureVaultTests
                     [0xFF, (byte)'a'],
                     [0xFE, (byte)'a']
                 ],
-                "ignored-exact-file" or "ignored-recursive-file" or
-                "ignored-repository-exact-file" or "ignored-repository-recursive-file" => [[0xFF, (byte)'i'],],
-                "ignored-exact-directory" or "ignored-recursive-directory" => [[0xFF, (byte)'d'],],
                 _ => [GetInvalidNativeName(testCase)]
             };
             bool includeCounterpart = testCase is not "multiple-without-counterpart";
@@ -5656,8 +5903,6 @@ public sealed class FixtureVaultTests
             Assert.Equal(0, telemetry.SuccessfulScans);
             Assert.DoesNotContain(SensitiveValue, output, StringComparison.Ordinal);
             Assert.DoesNotContain(SensitiveValue, error, StringComparison.Ordinal);
-            Assert.DoesNotContain(ignoredRoot, output, StringComparison.Ordinal);
-            Assert.DoesNotContain(ignoredRoot, error, StringComparison.Ordinal);
             Assert.DoesNotContain(validReplacementName, output, StringComparison.Ordinal);
             Assert.DoesNotContain(validReplacementName, error, StringComparison.Ordinal);
             if (format == "json")
@@ -5678,6 +5923,103 @@ public sealed class FixtureVaultTests
             foreach ((byte[] path, bool directory) in createdEntries.AsEnumerable().Reverse())
             {
                 DeleteRawEntry(path, directory);
+            }
+        }
+    }
+
+    public static IEnumerable<object[]> Ignored_native_filename_cases()
+    {
+        string[] formats = ["console", "json"];
+        string[] patterns = ["{0}", "{0}/", "{0}/**", "{0}/**/"];
+
+        foreach (string format in formats)
+        {
+            foreach (bool repositoryWide in new[] { false, true })
+            {
+                string root = repositoryWide ? "outside/ignored" : "tests/ignored";
+                foreach (bool directory in new[] { false, true })
+                {
+                    foreach (string pattern in patterns)
+                    {
+                        yield return [format, repositoryWide, directory, string.Format(pattern, root)];
+                    }
+                }
+            }
+        }
+    }
+
+    [LinuxTheory]
+    [MemberData(nameof(Ignored_native_filename_cases))]
+    public void Ignored_native_names_are_not_decoded_behind_pruned_subtrees(
+        string format,
+        bool repositoryWide,
+        bool directory,
+        string ignoredPattern)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            throw SkipException.ForSkip("Raw invalid native filename regression requires Linux byte-oriented filesystem APIs.");
+        }
+
+        using var repository = new TemporaryRepository();
+        string ignoredRoot = repositoryWide ? "outside/ignored" : "tests/ignored";
+        repository.WritePolicy(policy =>
+        {
+            policy.Roots = ["tests"];
+            policy.IgnoredPaths = [ignoredPattern];
+        });
+        repository.WriteText("tests/clean.golden", "clean\n");
+        repository.WriteText($"{ignoredRoot}/clean.golden", "ignored clean fixture\n");
+
+        byte[] invalidName = [0xFF, (byte)'i'];
+        List<(byte[] Path, bool Directory)> createdEntries = [];
+        try
+        {
+            if (directory)
+            {
+                byte[] directoryPath = BuildRawRepositoryPath(repository.Root, ignoredRoot, invalidName);
+                CreateRawDirectoryOrSkip(directoryPath);
+                createdEntries.Add((directoryPath, true));
+                byte[] nestedPath = [.. directoryPath, (byte)'/', (byte)'n', (byte)'e', (byte)'s', (byte)'t', (byte)'e', (byte)'d', (byte)'.', (byte)'g', (byte)'o', (byte)'l', (byte)'d', (byte)'e', (byte)'n'];
+                CreateRawFileOrSkip(nestedPath, Encoding.UTF8.GetBytes(SensitiveValue));
+                createdEntries.Add((nestedPath, false));
+            }
+            else
+            {
+                byte[] fileName = [.. invalidName, (byte)'.', (byte)'g', (byte)'o', (byte)'l', (byte)'d', (byte)'e', (byte)'n'];
+                byte[] filePath = BuildRawRepositoryPath(repository.Root, ignoredRoot, fileName);
+                CreateRawFileOrSkip(filePath, Encoding.UTF8.GetBytes(SensitiveValue));
+                createdEntries.Add((filePath, false));
+            }
+
+            var telemetry = new RecordingTelemetry();
+            int exitCode = repository.Run(
+                format == "json" ? ["scan", "--format", "json"] : ["scan"],
+                telemetry,
+                out string output,
+                out string error);
+
+            Assert.Equal(0, exitCode);
+            Assert.Equal(1, telemetry.SuccessfulScans);
+            Assert.Empty(error);
+            Assert.DoesNotContain("FV-E002", output, StringComparison.Ordinal);
+            Assert.DoesNotContain(SensitiveValue, output, StringComparison.Ordinal);
+            if (format == "json")
+            {
+                ScanReport report = JsonSerializer.Deserialize<ScanReport>(output, FixtureVaultContract.JsonOptions)!;
+                Assert.True(report.Completed);
+                Assert.Equal(1, report.FilesDiscovered);
+                Assert.Equal(1, report.FilesInspected);
+                Assert.Empty(report.Findings);
+                Assert.DoesNotContain(report.Skipped, item => item.Code == "FV-SKIP-REPARSE");
+                Assert.Empty(report.Errors);
+            }
+        }
+        finally
+        {
+            foreach ((byte[] path, bool isDirectory) in createdEntries.AsEnumerable().Reverse())
+            {
+                DeleteRawEntry(path, isDirectory);
             }
         }
     }
@@ -6340,6 +6682,14 @@ public sealed class FixtureVaultTests
             throw SkipException.ForSkip(
                 $"Hard-link capability is unavailable in this environment ({ex.GetType().Name}: {ex.Message}).");
         }
+    }
+
+    private static bool IsPathOrDescendant(string path, string root)
+    {
+        string normalizedPath = path.Replace('\\', '/').TrimEnd('/');
+        string normalizedRoot = root.Replace('\\', '/').TrimEnd('/');
+        return normalizedPath.Equals(normalizedRoot, StringComparison.Ordinal) ||
+            normalizedPath.StartsWith(normalizedRoot + "/", StringComparison.Ordinal);
     }
 
     private static byte[] GetInvalidNativeName(string testCase) =>

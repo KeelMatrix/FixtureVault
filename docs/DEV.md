@@ -45,7 +45,9 @@ rejection, and FIFO rejection.
 The installed-package smoke corpus exercises the FV007 contract through the complete tool in console and JSON modes,
 including ownership boundaries, quoted values, sibling credentials, accepted markers, strict/non-strict dispositions,
 non-disclosure, non-mutation, the 64-container JSON depth boundary, bounded whitespace scale cases, and Linux
-invalid-native-name failures when the only invalid entry is below exact or recursive ignored paths. The full grammar
+invalid-native-name failures for encountered entries. Invalid names below exact or recursive ignored paths are instead
+pruned before descendant enumeration in both discovery passes, with console/JSON success and no skipped reparse
+diagnostics. The full grammar
 is maintained in the [canonical detection grammar](DETECTION_GRAMMAR.md).
 
 ## Run the Tool from Source

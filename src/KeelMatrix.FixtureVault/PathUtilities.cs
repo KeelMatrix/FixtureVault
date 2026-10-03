@@ -387,9 +387,14 @@ internal sealed class SafePathBoundary : IDisposable
     private const int UnixFileTypeMask = 0xF000;
     private const int UnixDirectory = 0x4000;
     private const int UnixRegularFile = 0x8000;
+    private const byte UnixDirectoryEntryUnknown = 0;
+    private const byte UnixDirectoryEntryDirectory = 4;
+    private const byte UnixDirectoryEntrySymbolicLink = 10;
+    private const int UnixDirectoryEntryTypeOffset = 18;
     private const int LinuxAtFileDescriptor = -100;
     private const int LinuxAtSymlinkNoFollow = 0x100;
     private const int LinuxAtEmptyPath = 0x1000;
+    private const int MacAtSymlinkNoFollow = 0x20;
     private const uint LinuxStatxBasicStats = 0x000007ff;
     private const int LinuxStatxModeOffset = 0x1C;
     private const int LinuxStatxInodeOffset = 0x20;
@@ -850,6 +855,74 @@ internal sealed class SafePathBoundary : IDisposable
         return true;
     }
 
+    internal static bool TryGetEntryMetadataAt(
+        int parentDescriptor,
+        string name,
+        out FileSystemIdentity identity,
+        out bool isDirectory,
+        out bool isSymbolicLink)
+    {
+        identity = default;
+        isDirectory = false;
+        isSymbolicLink = false;
+        IntPtr statBuffer = Marshal.AllocHGlobal(256);
+        try
+        {
+            int mode;
+            UnixFileIdentity unixIdentity;
+            if (OperatingSystem.IsLinux())
+            {
+                try
+                {
+                    if (UnixStatX(
+                            parentDescriptor,
+                            name,
+                            LinuxAtSymlinkNoFollow,
+                            LinuxStatxBasicStats,
+                            statBuffer) != 0)
+                    {
+                        return false;
+                    }
+                }
+                catch (EntryPointNotFoundException)
+                {
+                    return false;
+                }
+
+                mode = Marshal.ReadInt16(statBuffer, LinuxStatxModeOffset);
+                unixIdentity = new UnixFileIdentity(
+                    ((long)(uint)Marshal.ReadInt32(statBuffer, LinuxStatxDeviceMajorOffset) << 32) |
+                    (uint)Marshal.ReadInt32(statBuffer, LinuxStatxDeviceMinorOffset),
+                    Marshal.ReadInt64(statBuffer, LinuxStatxInodeOffset));
+            }
+            else if (OperatingSystem.IsMacOS())
+            {
+                if (UnixFStatAt(parentDescriptor, name, statBuffer, MacAtSymlinkNoFollow) != 0)
+                {
+                    return false;
+                }
+
+                mode = Marshal.ReadInt16(statBuffer, 4);
+                unixIdentity = new UnixFileIdentity(
+                    Marshal.ReadInt32(statBuffer, 0),
+                    Marshal.ReadInt64(statBuffer, 8));
+            }
+            else
+            {
+                return false;
+            }
+
+            identity = ToFileSystemIdentity(unixIdentity);
+            isDirectory = (mode & UnixFileTypeMask) == UnixDirectory;
+            isSymbolicLink = (mode & UnixFileTypeMask) == 0xA000;
+            return true;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(statBuffer);
+        }
+    }
+
     internal static bool IsSymbolicLinkAt(int parentDescriptor, string name) =>
         UnixReadLinkAt(parentDescriptor, name) >= 0;
 
@@ -920,6 +993,29 @@ internal sealed class SafePathBoundary : IDisposable
         }
 
         return null;
+    }
+
+    internal static bool TryGetDirectoryEntryType(
+        IntPtr entry,
+        out bool isDirectory,
+        out bool isSymbolicLink)
+    {
+        isDirectory = false;
+        isSymbolicLink = false;
+        if (entry == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        byte type = Marshal.ReadByte(entry, UnixDirectoryEntryTypeOffset);
+        if (type == UnixDirectoryEntryUnknown)
+        {
+            return false;
+        }
+
+        isDirectory = type == UnixDirectoryEntryDirectory;
+        isSymbolicLink = type == UnixDirectoryEntrySymbolicLink;
+        return true;
     }
 
     internal static void CloseDirectoryStream(IntPtr directoryStream)
@@ -1450,6 +1546,13 @@ internal sealed class SafePathBoundary : IDisposable
         int flags,
         uint mask,
         IntPtr buffer);
+
+    [DllImport("libc", EntryPoint = "fstatat", CharSet = CharSet.Ansi, SetLastError = true)]
+    private static extern int UnixFStatAt(
+        int directoryFileDescriptor,
+        [MarshalAs(UnmanagedType.LPStr)] string path,
+        IntPtr buffer,
+        int flags);
 
     [DllImport("libc", EntryPoint = "readlinkat", CharSet = CharSet.Ansi, SetLastError = true)]
     private static extern nint UnixReadLinkAtNative(
@@ -2146,8 +2249,7 @@ internal static class SafeFileWalker
     private sealed record UnixPendingDirectory(
         int Descriptor,
         string RelativePath,
-        FileSystemIdentity ExpectedIdentity,
-        bool IgnoredSubtree);
+        FileSystemIdentity ExpectedIdentity);
 
     private sealed record WindowsPendingDirectory(
         DirectoryInfo Directory,
@@ -2239,6 +2341,11 @@ internal static class SafeFileWalker
                 "Ignored path matching could not be completed safely."));
         }
 
+        if (startingStatus == GlobMatchStatus.Match)
+        {
+            return new WalkResult(files, reparsePaths, null);
+        }
+
         if (!boundary.TryDuplicateDirectory(
                 relativeRoot,
                 expectedIdentity: null,
@@ -2258,8 +2365,7 @@ internal static class SafeFileWalker
         pending.Push(new UnixPendingDirectory(
             startingDescriptor,
             relativeRoot,
-            startingIdentity,
-            startingStatus == GlobMatchStatus.Match));
+            startingIdentity));
 
         try
         {
@@ -2359,10 +2465,7 @@ internal static class SafeFileWalker
                                     : "A configured fixture root could not be inspected completely."));
                         }
 
-                        // Ignored contents are traversed only to validate native names. They
-                        // remain outside the inspected-entry budget so pruning still protects
-                        // the ordinary fixture walk from large standard ignored trees.
-                        if (!directory.IgnoredSubtree && !budget.TryConsumeEntry())
+                        if (!budget.TryConsumeEntry())
                         {
                             return new WalkResult(files, reparsePaths, new ScanError(
                                 FixtureVaultContract.FilesystemTraversalErrorCode,
@@ -2386,18 +2489,58 @@ internal static class SafeFileWalker
                                 FixtureVaultContract.FilesystemTraversalErrorMessage));
                         }
 
-                        if (SafePathBoundary.IsSymbolicLinkAt(directory.Descriptor, name))
+                        bool entryTypeKnown = SafePathBoundary.TryGetDirectoryEntryType(
+                            readResult.Entry,
+                            out bool directoryHint,
+                            out bool symbolicLinkHint);
+                        bool directoryStatusKnown = false;
+                        GlobMatchStatus directoryStatus = GlobMatchStatus.NoMatch;
+                        if (entryTypeKnown && symbolicLinkHint)
                         {
-                            reparsePaths.Add(relativePath);
-                            continue;
+                            if (SafePathBoundary.IsSymbolicLinkAt(directory.Descriptor, name))
+                            {
+                                reparsePaths.Add(relativePath);
+                                continue;
+                            }
+
+                            entryTypeKnown = false;
                         }
 
-                        if (!SafePathBoundary.TryOpenEntryAt(
+                        if (entryTypeKnown && directoryHint)
+                        {
+                            directoryStatusKnown = true;
+                            directoryStatus = shouldPruneDirectory?.Invoke(relativePath) ?? GlobMatchStatus.NoMatch;
+                            if (directoryStatus == GlobMatchStatus.Failure)
+                            {
+                                return new WalkResult(
+                                    files,
+                                    reparsePaths,
+                                    new ScanError(FixtureVaultContract.IgnoredPathMatchingErrorCode, "Ignored path matching could not be completed safely."));
+                            }
+
+                            if (directoryStatus == GlobMatchStatus.Match)
+                            {
+                                continue;
+                            }
+                        }
+
+                        if (!SafePathBoundary.TryGetEntryMetadataAt(
                                 directory.Descriptor,
                                 name,
-                                out int childDescriptor,
                                 out FileSystemIdentity identity,
-                                out bool isDirectory))
+                                out bool isDirectory,
+                                out bool isSymbolicLink))
+                        {
+                            return new WalkResult(files, reparsePaths, new ScanError(
+                                budget.IsExhausted
+                                    ? FixtureVaultContract.FilesystemTraversalErrorCode
+                                    : "FV-E002",
+                                budget.IsExhausted
+                                    ? FixtureVaultContract.FilesystemTraversalErrorMessage
+                                : "A configured fixture root could not be inspected completely."));
+                        }
+
+                        if (directoryStatusKnown && !isDirectory)
                         {
                             return new WalkResult(files, reparsePaths, new ScanError(
                                 budget.IsExhausted
@@ -2408,21 +2551,63 @@ internal static class SafeFileWalker
                                     : "A configured fixture root could not be inspected completely."));
                         }
 
+                        if (isSymbolicLink)
+                        {
+                            if (!SafePathBoundary.IsSymbolicLinkAt(directory.Descriptor, name))
+                            {
+                                return new WalkResult(files, reparsePaths, new ScanError(
+                                    budget.IsExhausted
+                                        ? FixtureVaultContract.FilesystemTraversalErrorCode
+                                        : "FV-E002",
+                                    budget.IsExhausted
+                                        ? FixtureVaultContract.FilesystemTraversalErrorMessage
+                                        : "A configured fixture root could not be inspected completely."));
+                            }
+
+                            reparsePaths.Add(relativePath);
+                            continue;
+                        }
+
                         if (isDirectory)
                         {
-                            // Ignored subtrees are not classified or inspected, but they must
-                            // still be enumerated so strict native-name decoding remains a
-                            // scan-boundary invariant.
-                            GlobMatchStatus directoryStatus = directory.IgnoredSubtree
-                                ? GlobMatchStatus.NoMatch
-                                : shouldPruneDirectory?.Invoke(relativePath) ?? GlobMatchStatus.NoMatch;
-                            if (directoryStatus == GlobMatchStatus.Failure)
+                            if (!directoryStatusKnown)
                             {
-                                SafePathBoundary.CloseDescriptor(childDescriptor);
-                                return new WalkResult(
-                                    files,
-                                    reparsePaths,
-                                    new ScanError(FixtureVaultContract.IgnoredPathMatchingErrorCode, "Ignored path matching could not be completed safely."));
+                                directoryStatus = shouldPruneDirectory?.Invoke(relativePath) ?? GlobMatchStatus.NoMatch;
+                                if (directoryStatus == GlobMatchStatus.Failure)
+                                {
+                                    return new WalkResult(
+                                        files,
+                                        reparsePaths,
+                                        new ScanError(FixtureVaultContract.IgnoredPathMatchingErrorCode, "Ignored path matching could not be completed safely."));
+                                }
+
+                                if (directoryStatus == GlobMatchStatus.Match)
+                                {
+                                    continue;
+                                }
+                            }
+
+                            if (!SafePathBoundary.TryOpenEntryAt(
+                                    directory.Descriptor,
+                                    name,
+                                    out int childDescriptor,
+                                    out FileSystemIdentity openedIdentity,
+                                    out bool openedIsDirectory) ||
+                                !openedIsDirectory ||
+                                openedIdentity != identity)
+                            {
+                                if (childDescriptor >= 0)
+                                {
+                                    SafePathBoundary.CloseDescriptor(childDescriptor);
+                                }
+
+                                return new WalkResult(files, reparsePaths, new ScanError(
+                                    budget.IsExhausted
+                                        ? FixtureVaultContract.FilesystemTraversalErrorCode
+                                        : "FV-E002",
+                                    budget.IsExhausted
+                                        ? FixtureVaultContract.FilesystemTraversalErrorMessage
+                                        : "A configured fixture root could not be inspected completely."));
                             }
 
                             // A callback can replace the queued directory or one of its
@@ -2440,28 +2625,45 @@ internal static class SafeFileWalker
                                         : "FV-E002",
                                     budget.IsExhausted
                                         ? FixtureVaultContract.FilesystemTraversalErrorMessage
-                                        : "A configured fixture root could not be inspected completely."));
+                                    : "A configured fixture root could not be inspected completely."));
                             }
 
                             pending.Push(new UnixPendingDirectory(
                                 childDescriptor,
                                 relativePath,
-                                identity,
-                                directory.IgnoredSubtree || directoryStatus == GlobMatchStatus.Match));
+                                identity));
 
                             continue;
                         }
 
-                        if (!directory.IgnoredSubtree)
+                        if (!SafePathBoundary.TryOpenEntryAt(
+                                directory.Descriptor,
+                                name,
+                                out int fileDescriptor,
+                                out FileSystemIdentity openedFileIdentity,
+                                out bool openedFileIsDirectory) ||
+                            openedFileIsDirectory ||
+                            openedFileIdentity != identity)
                         {
-                            files.Add(new SafeFileEntry(
-                                Path.Combine(repositoryRoot, relativePath.Replace('/', Path.DirectorySeparatorChar)),
-                                relativePath,
-                                identity));
+                            if (fileDescriptor >= 0)
+                            {
+                                SafePathBoundary.CloseDescriptor(fileDescriptor);
+                            }
+
+                            return new WalkResult(files, reparsePaths, new ScanError(
+                                budget.IsExhausted
+                                    ? FixtureVaultContract.FilesystemTraversalErrorCode
+                                    : "FV-E002",
+                                budget.IsExhausted
+                                    ? FixtureVaultContract.FilesystemTraversalErrorMessage
+                                    : "A configured fixture root could not be inspected completely."));
                         }
-                        // An ignored regular file was opened and its native name validated
-                        // above, but remains outside fixture inspection and classification.
-                        SafePathBoundary.CloseDescriptor(childDescriptor);
+
+                        files.Add(new SafeFileEntry(
+                            Path.Combine(repositoryRoot, relativePath.Replace('/', Path.DirectorySeparatorChar)),
+                            relativePath,
+                            identity));
+                        SafePathBoundary.CloseDescriptor(fileDescriptor);
                     }
                 }
                 finally
@@ -2494,6 +2696,21 @@ internal static class SafeFileWalker
         var reparsePaths = new List<string>();
         var pending = new Stack<WindowsPendingDirectory>();
         DirectoryInfo startingDirectory = new(root);
+        GlobMatchStatus startingDirectoryStatus = shouldPruneDirectory?.Invoke(
+            PathUtilities.NormalizeRelative(repositoryRoot, startingDirectory.FullName)) ?? GlobMatchStatus.NoMatch;
+        if (startingDirectoryStatus == GlobMatchStatus.Failure)
+        {
+            return new WalkResult(
+                files,
+                reparsePaths,
+                new ScanError(FixtureVaultContract.IgnoredPathMatchingErrorCode, "Ignored path matching could not be completed safely."));
+        }
+
+        if (startingDirectoryStatus == GlobMatchStatus.Match)
+        {
+            return new WalkResult(files, reparsePaths, null);
+        }
+
         if (!boundary.TryOpenDirectory(
                 relativeRoot,
                 expectedIdentity: null,
@@ -2511,21 +2728,6 @@ internal static class SafeFileWalker
         }
 
         startingHandle.Dispose();
-        GlobMatchStatus startingDirectoryStatus = shouldPruneDirectory?.Invoke(
-            PathUtilities.NormalizeRelative(repositoryRoot, startingDirectory.FullName)) ?? GlobMatchStatus.NoMatch;
-        if (startingDirectoryStatus == GlobMatchStatus.Failure)
-        {
-            return new WalkResult(
-                files,
-                reparsePaths,
-                new ScanError(FixtureVaultContract.IgnoredPathMatchingErrorCode, "Ignored path matching could not be completed safely."));
-        }
-
-        if (startingDirectoryStatus == GlobMatchStatus.Match)
-        {
-            return new WalkResult(files, reparsePaths, null);
-        }
-
         pending.Push(new WindowsPendingDirectory(startingDirectory, startingIdentity));
 
         while (pending.Count > 0)
@@ -2608,6 +2810,26 @@ internal static class SafeFileWalker
                     }
 
                     string relativePath = PathUtilities.NormalizeRelative(repositoryRoot, entry.FullName);
+                    DirectoryInfo? childDirectory = entry as DirectoryInfo;
+                    GlobMatchStatus directoryStatus = GlobMatchStatus.NoMatch;
+                    if (childDirectory is not null && (attributes & FileAttributes.ReparsePoint) == 0)
+                    {
+                        directoryStatus = shouldPruneDirectory?.Invoke(relativePath) ?? GlobMatchStatus.NoMatch;
+                        if (directoryStatus == GlobMatchStatus.Failure)
+                        {
+                            return new WalkResult(
+                                files,
+                                reparsePaths,
+                                new ScanError(FixtureVaultContract.IgnoredPathMatchingErrorCode, "Ignored path matching could not be completed safely."));
+                        }
+
+                        if (directoryStatus == GlobMatchStatus.Match)
+                        {
+                            hasEntry = enumerator.MoveNext();
+                            continue;
+                        }
+                    }
+
                     if (!FilesystemTraversalBudgetContext.TryConsumePathWork(relativePath))
                     {
                         return new WalkResult(files, reparsePaths, new ScanError(
@@ -2633,7 +2855,7 @@ internal static class SafeFileWalker
                         continue;
                     }
 
-                    if (entry is DirectoryInfo childDirectory)
+                    if (childDirectory is not null)
                     {
                         if (!SafePathBoundary.TryGetPathIdentityWithoutBudget(
                                 childDirectory.FullName,
@@ -2648,36 +2870,24 @@ internal static class SafeFileWalker
                                     : "A configured fixture root could not be inspected completely."));
                         }
 
-                        GlobMatchStatus directoryStatus = shouldPruneDirectory?.Invoke(relativePath) ?? GlobMatchStatus.NoMatch;
-                        if (directoryStatus == GlobMatchStatus.Failure)
+                        if (!boundary.TryOpenDirectory(
+                                relativePath,
+                                childIdentity,
+                                out SafeFileHandle? childHandle,
+                                out FileSystemIdentity openedChildIdentity) ||
+                            childHandle is null)
                         {
-                            return new WalkResult(
-                                files,
-                                reparsePaths,
-                                new ScanError(FixtureVaultContract.IgnoredPathMatchingErrorCode, "Ignored path matching could not be completed safely."));
+                            return new WalkResult(files, reparsePaths, new ScanError(
+                                budget.IsExhausted
+                                    ? FixtureVaultContract.FilesystemTraversalErrorCode
+                                    : "FV-E002",
+                                budget.IsExhausted
+                                    ? FixtureVaultContract.FilesystemTraversalErrorMessage
+                                    : "A configured fixture root could not be inspected completely."));
                         }
 
-                        if (directoryStatus != GlobMatchStatus.Match)
-                        {
-                            if (!boundary.TryOpenDirectory(
-                                    relativePath,
-                                    childIdentity,
-                                    out SafeFileHandle? childHandle,
-                                    out FileSystemIdentity openedChildIdentity) ||
-                                childHandle is null)
-                            {
-                                return new WalkResult(files, reparsePaths, new ScanError(
-                                    budget.IsExhausted
-                                        ? FixtureVaultContract.FilesystemTraversalErrorCode
-                                        : "FV-E002",
-                                    budget.IsExhausted
-                                        ? FixtureVaultContract.FilesystemTraversalErrorMessage
-                                        : "A configured fixture root could not be inspected completely."));
-                            }
-
-                            childHandle.Dispose();
-                            pending.Push(new WindowsPendingDirectory(childDirectory, openedChildIdentity));
-                        }
+                        childHandle.Dispose();
+                        pending.Push(new WindowsPendingDirectory(childDirectory, openedChildIdentity));
                     }
                     else
                     {
