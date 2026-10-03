@@ -811,6 +811,110 @@ try {
             Pop-Location
         }
 
+        if ([OperatingSystem]::IsLinux() -or [OperatingSystem]::IsMacOS()) {
+            $unixRoot = Join-Path $workRoot "unix-safety-consumer"
+            $unixTestsRoot = Join-Path $unixRoot "tests"
+            New-Item -ItemType Directory -Force -Path $unixTestsRoot | Out-Null
+            Push-Location $unixRoot
+            $unixSocketPaths = @(
+                (Join-Path (Join-Path $unixRoot "obj") "fv.sock"),
+                (Join-Path (Join-Path $unixTestsRoot "obj") "fv.sock")
+            )
+            $unixSocketListeners = [System.Collections.Generic.List[System.Net.Sockets.Socket]]::new()
+            $unixLinkPath = Join-Path (Join-Path $unixTestsRoot "ignored/deep") "fv-ignored-link-name-canary-965b"
+            $unixTargetRoot = Join-Path $workRoot "unix-outside-link-target"
+            try {
+                Assert-Contract ((Invoke-CommandCapture $fixtureVault @("init") (Join-Path $workRoot "unix-safety-init.txt")) -eq 0) "Unix safety consumer init failed."
+
+                try {
+                    foreach ($unixSocketPath in $unixSocketPaths) {
+                        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $unixSocketPath) | Out-Null
+                        $unixListener = [System.Net.Sockets.Socket]::new(
+                            [System.Net.Sockets.AddressFamily]::Unix,
+                            [System.Net.Sockets.SocketType]::Stream,
+                            [System.Net.Sockets.ProtocolType]::Unspecified)
+                        try {
+                            $unixListener.Bind([System.Net.Sockets.UnixDomainSocketEndPoint]::new($unixSocketPath))
+                            $unixListener.Listen(1)
+                            $unixSocketListeners.Add($unixListener)
+                        }
+                        finally {
+                            if ($unixSocketListeners -notcontains $unixListener) {
+                                $unixListener.Dispose()
+                            }
+                        }
+                    }
+
+                    foreach ($unixFormat in @("console", "json")) {
+                        $unixReportPath = Join-Path $workRoot "unix-socket-$unixFormat.txt"
+                        $unixArgs = if ($unixFormat -eq "json") { @("scan", "--format", "json") } else { @("scan") }
+                        $unixSocketCode = Invoke-CommandCapture $fixtureVault $unixArgs $unixReportPath
+                        $unixSocketText = [IO.File]::ReadAllText($unixReportPath)
+                        Assert-Contract ($unixSocketCode -eq 0) "Unix default-obj socket scan ($unixFormat) returned $unixSocketCode instead of 0."
+                        Assert-Contract (-not $unixSocketText.Contains("FV-E009", [StringComparison]::Ordinal)) "Unix default-obj socket scan ($unixFormat) treated an ignored socket as a governed special file."
+                        Assert-Contract (-not $unixSocketText.Contains("FV-SKIP-REPARSE", [StringComparison]::Ordinal)) "Unix default-obj socket scan ($unixFormat) emitted an ignored-entry reparse diagnostic."
+                        Assert-Contract (-not $unixSocketText.Contains("fv.sock", [StringComparison]::Ordinal)) "Unix default-obj socket scan ($unixFormat) disclosed an ignored socket path."
+                        if ($unixFormat -eq "json") {
+                            $unixSocketReport = $unixSocketText | ConvertFrom-Json
+                            Assert-Contract ($unixSocketReport.completed -and @($unixSocketReport.errors).Count -eq 0 -and @($unixSocketReport.findings).Count -eq 0) "Unix default-obj socket JSON scan did not complete cleanly."
+                            Assert-Contract (@($unixSocketReport.skipped | Where-Object { $_.code -eq "FV-SKIP-REPARSE" }).Count -eq 0) "Unix default-obj socket JSON scan emitted FV-SKIP-REPARSE."
+                        }
+                    }
+                }
+                finally {
+                    foreach ($unixListener in $unixSocketListeners) {
+                        $unixListener.Dispose()
+                    }
+                    foreach ($unixSocketPath in $unixSocketPaths) {
+                        [IO.File]::Delete($unixSocketPath)
+                    }
+                }
+
+                New-Item -ItemType Directory -Force -Path $unixTargetRoot | Out-Null
+                [IO.File]::WriteAllText((Join-Path $unixTargetRoot "outside-target-canary.received.json"), "outside", [Text.UTF8Encoding]::new($false))
+                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $unixLinkPath) | Out-Null
+                $unixPolicyPath = Join-Path $unixRoot ".fixturevault.json"
+                $unixPolicy = [IO.File]::ReadAllText($unixPolicyPath) | ConvertFrom-Json
+                $unixOriginalIgnoredPaths = @($unixPolicy.ignoredPaths)
+                foreach ($unixIgnoredPattern in @("tests/ignored", "tests/ignored/", "tests/ignored/**", "tests/ignored/**/")) {
+                    $unixPolicy.ignoredPaths = $unixOriginalIgnoredPaths + @($unixIgnoredPattern)
+                    [IO.File]::WriteAllText($unixPolicyPath, ($unixPolicy | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
+                    New-Item -ItemType SymbolicLink -Path $unixLinkPath -Target $unixTargetRoot | Out-Null
+                    try {
+                        foreach ($unixFormat in @("console", "json")) {
+                            $unixReportPath = Join-Path $workRoot "unix-ignored-link-$($unixFormat).txt"
+                            $unixArgs = if ($unixFormat -eq "json") { @("scan", "--format", "json") } else { @("scan") }
+                            $unixLinkCode = Invoke-CommandCapture $fixtureVault $unixArgs $unixReportPath
+                            $unixLinkText = [IO.File]::ReadAllText($unixReportPath)
+                            Assert-Contract ($unixLinkCode -eq 0) "Unix ignored-link scan ($unixFormat) for '$unixIgnoredPattern' returned $unixLinkCode instead of 0."
+                            Assert-Contract (-not $unixLinkText.Contains("FV-SKIP-REPARSE", [StringComparison]::Ordinal)) "Unix ignored-link scan ($unixFormat) for '$unixIgnoredPattern' emitted FV-SKIP-REPARSE."
+                            Assert-Contract (-not $unixLinkText.Contains("fv-ignored-link-name-canary-965b", [StringComparison]::Ordinal)) "Unix ignored-link scan ($unixFormat) for '$unixIgnoredPattern' disclosed the ignored link name."
+                            Assert-Contract (-not $unixLinkText.Contains("outside-target-canary.received.json", [StringComparison]::Ordinal)) "Unix ignored-link scan ($unixFormat) for '$unixIgnoredPattern' disclosed or followed its target."
+                            if ($unixFormat -eq "json") {
+                                $unixLinkReport = $unixLinkText | ConvertFrom-Json
+                                Assert-Contract ($unixLinkReport.completed -and @($unixLinkReport.errors).Count -eq 0 -and @($unixLinkReport.findings).Count -eq 0) "Unix ignored-link JSON scan for '$unixIgnoredPattern' did not complete cleanly."
+                                Assert-Contract (@($unixLinkReport.skipped | Where-Object { $_.code -eq "FV-SKIP-REPARSE" }).Count -eq 0) "Unix ignored-link JSON scan for '$unixIgnoredPattern' emitted FV-SKIP-REPARSE."
+                            }
+                        }
+                    }
+                    finally {
+                        Remove-Item -LiteralPath $unixLinkPath -Force
+                    }
+                }
+
+                Write-Host "Unix installed-package smoke passed: real sockets under active-root and repository-wide default obj exclusions, plus an ignored real symlink under exact/recursive custom exclusions with and without trailing slashes, in console and JSON."
+            }
+            finally {
+                if (Test-Path -LiteralPath $unixLinkPath) {
+                    Remove-Item -LiteralPath $unixLinkPath -Force
+                }
+                if (Test-Path -LiteralPath $unixTargetRoot) {
+                    Remove-Item -LiteralPath $unixTargetRoot -Recurse -Force
+                }
+                Pop-Location
+            }
+        }
+
         if ([OperatingSystem]::IsLinux()) {
             $safetyRoot = Join-Path $workRoot "safety-consumer"
             $safetyTestsRoot = Join-Path $safetyRoot "tests"
