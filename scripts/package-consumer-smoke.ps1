@@ -812,7 +812,7 @@ try {
         }
 
         if ([OperatingSystem]::IsLinux() -or [OperatingSystem]::IsMacOS()) {
-            $unixRoot = Join-Path $workRoot "unix-safety-consumer"
+            $unixRoot = Join-Path "/tmp" ("fv-consumer-" + [Guid]::NewGuid().ToString("N"))
             $unixTestsRoot = Join-Path $unixRoot "tests"
             New-Item -ItemType Directory -Force -Path $unixTestsRoot | Out-Null
             Push-Location $unixRoot
@@ -912,6 +912,9 @@ try {
                     Remove-Item -LiteralPath $unixTargetRoot -Recurse -Force
                 }
                 Pop-Location
+                if (Test-Path -LiteralPath $unixRoot) {
+                    Remove-Item -LiteralPath $unixRoot -Recurse -Force
+                }
             }
         }
 

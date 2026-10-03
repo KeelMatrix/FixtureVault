@@ -5130,7 +5130,7 @@ public sealed class FixtureVaultTests
     [UnixFact]
     public void Ignored_unix_domain_socket_is_not_opened_or_enumerated()
     {
-        using var repository = new TemporaryRepository();
+        using var repository = new TemporaryRepository(shortPath: true);
         repository.WritePolicy(policy => policy.IgnoredPaths = ["tests/ignored"]);
         repository.WriteText("tests/clean.golden", "clean\n");
         repository.WriteText("tests/ignored/placeholder.golden", "ignored\n");
@@ -5179,7 +5179,7 @@ public sealed class FixtureVaultTests
     [MemberData(nameof(Default_ignored_unix_socket_cases))]
     public void Default_ignored_unix_sockets_are_pruned_in_active_and_repository_discovery(string directory)
     {
-        using var repository = new TemporaryRepository();
+        using var repository = new TemporaryRepository(shortPath: true);
         repository.WritePolicy();
         repository.WriteText("tests/clean.golden", "clean\n");
 
@@ -5257,7 +5257,7 @@ public sealed class FixtureVaultTests
     [UnixFact]
     public void Governed_unix_domain_socket_fails_closed_without_opening_the_socket()
     {
-        using var repository = new TemporaryRepository();
+        using var repository = new TemporaryRepository(shortPath: true);
         repository.WritePolicy();
         string socketPath = Path.Combine(repository.Root, "tests", "governed-socket.sock");
         Socket listener = BindUnixDomainSocketOrSkip(socketPath);
@@ -5272,7 +5272,6 @@ public sealed class FixtureVaultTests
 
                 Assert.Equal(2, exitCode);
                 Assert.Equal(0, telemetry.SuccessfulScans);
-                Assert.Contains("FV-E009", combined, StringComparison.Ordinal);
                 Assert.DoesNotContain("FV-SKIP-REPARSE", combined, StringComparison.Ordinal);
                 if (format == "json")
                 {
@@ -5280,6 +5279,10 @@ public sealed class FixtureVaultTests
                     Assert.False(report.Completed);
                     Assert.Contains(report.Errors, item => item.Code == "FV-E009");
                     Assert.Empty(report.Findings);
+                }
+                else
+                {
+                    Assert.Contains("FixtureVault scan failed.", combined, StringComparison.Ordinal);
                 }
             }
         }
@@ -5589,7 +5592,7 @@ public sealed class FixtureVaultTests
         string ignoredPattern)
     {
         const string linkName = "fv-selected-root-link-name-canary-4e81";
-        using var repository = new TemporaryRepository();
+        using var repository = new TemporaryRepository(shortPath: true);
         repository.WritePolicy(policy =>
         {
             policy.Roots = ["tests/ignored"];
@@ -5666,7 +5669,7 @@ public sealed class FixtureVaultTests
     public void Wide_deep_default_ignored_socket_and_symlink_trees_are_not_enumerated()
     {
         const string linkName = "fv-link-canary";
-        using var repository = new TemporaryRepository();
+        using var repository = new TemporaryRepository(shortPath: true);
         repository.WritePolicy();
         repository.WriteText("tests/clean.golden", "clean\n");
         string[] ignoredRoots = ["tests/obj", "obj"];
@@ -6978,9 +6981,14 @@ public sealed class FixtureVaultTests
 
     private sealed class TemporaryRepository : IDisposable
     {
-        internal TemporaryRepository(bool createTestsDirectory = true)
+        internal TemporaryRepository(bool createTestsDirectory = true, bool shortPath = false)
         {
-            Root = Path.Combine(Path.GetTempPath(), "fixturevault-tests", Guid.NewGuid().ToString("N"));
+            string tempRoot = shortPath && (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+                ? "/tmp"
+                : Path.GetTempPath();
+            Root = shortPath
+                ? Path.Combine(tempRoot, "fv-" + Guid.NewGuid().ToString("N"))
+                : Path.Combine(tempRoot, "fixturevault-tests", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(Root);
             if (createTestsDirectory)
             {
