@@ -391,6 +391,8 @@ internal sealed class SafePathBoundary : IDisposable
     private const byte UnixDirectoryEntryDirectory = 4;
     private const byte UnixDirectoryEntrySymbolicLink = 10;
     private const int UnixDirectoryEntryTypeOffset = 18;
+    // Darwin's 64-bit dirent includes a 16-bit d_namlen before d_type.
+    private const int MacDirectoryEntryTypeOffset = 20;
     private const int LinuxAtFileDescriptor = -100;
     private const int LinuxAtSymlinkNoFollow = 0x100;
     private const int LinuxAtEmptyPath = 0x1000;
@@ -1007,7 +1009,10 @@ internal sealed class SafePathBoundary : IDisposable
             return false;
         }
 
-        byte type = Marshal.ReadByte(entry, UnixDirectoryEntryTypeOffset);
+        int typeOffset = OperatingSystem.IsMacOS()
+            ? MacDirectoryEntryTypeOffset
+            : UnixDirectoryEntryTypeOffset;
+        byte type = Marshal.ReadByte(entry, typeOffset);
         if (type == UnixDirectoryEntryUnknown)
         {
             return false;
