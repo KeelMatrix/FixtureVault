@@ -21,16 +21,9 @@ internal sealed class SharedTelemetryReporter : IUsageTelemetry
 
     public void RecordSuccessfulScan()
     {
-        try
-        {
-            client ??= new Client("fixturevault", typeof(Program));
-            client.TrackActivation();
-            client.TrackHeartbeat();
-        }
-        catch
-        {
-            // Telemetry is best-effort and must never affect a scan.
-        }
+        client ??= new Client("fixturevault", typeof(Program));
+        client.TrackActivation();
+        client.TrackHeartbeat();
     }
 }
 
