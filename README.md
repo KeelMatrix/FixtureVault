@@ -240,13 +240,13 @@ FixtureVault bounds policy size, root count, filesystem entries, logical path-wo
 
 Sensitive-data detection is separate from redaction: FixtureVault does not rewrite a fixture to clear a finding, and matched values are never retained in reports or diagnostics. The complete FV007 field, boundary, decoding, and ownership contract is maintained in the [canonical detection grammar](https://github.com/KeelMatrix/FixtureVault/blob/main/docs/DETECTION_GRAMMAR.md).
 
-FixtureVault does not upload fixture contents. After a successfully completed scan, it requests the minimal activation and weekly heartbeat signals from `KeelMatrix.Telemetry` 0.1.1. Telemetry is best-effort and cannot affect scan results. Installation and `init` do not activate telemetry. Disable it for a process with:
+FixtureVault does not upload fixture contents. After a successfully completed scan, it calls `TrackActivation()` and `TrackHeartbeat()` on `KeelMatrix.Telemetry` 0.1.1. The shared package owns activation deduplication, heartbeat cadence, opt-out parsing, identity and state, queueing, and delivery. Installation and `init` do not call the telemetry client. Disable it for a process with:
 
 ```powershell
 $env:KEELMATRIX_NO_TELEMETRY = "1"
 ```
 
-The shared telemetry package also supports repository-local opt-out through `keelmatrix.telemetry.json`, `.env.local`, or `.env`.
+The shared telemetry package also supports repository-local opt-out through `keelmatrix.telemetry.json`, `.env.local`, or `.env`. Its best-effort client keeps telemetry failures from changing scan results.
 
 ## Dependency Security Gate
 

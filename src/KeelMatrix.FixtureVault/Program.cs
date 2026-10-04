@@ -17,11 +17,9 @@ internal interface IUsageTelemetry
 
 internal sealed class SharedTelemetryReporter : IUsageTelemetry
 {
-    private Client? client;
-
     public void RecordSuccessfulScan()
     {
-        client ??= new Client("fixturevault", typeof(Program));
+        var client = new Client("fixturevault", typeof(Program));
         client.TrackActivation();
         client.TrackHeartbeat();
     }

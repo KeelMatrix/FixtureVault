@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+- Delegates telemetry opt-out, deduplication, cadence, state, queueing, delivery, and failure handling to `KeelMatrix.Telemetry`, while retaining the successful-scan eligibility gate.
 - Documents that private vulnerability reports are accepted by email only while GitHub private vulnerability reporting is disabled.
 - Bounds one scan to 64 configured or CLI-selected roots and one scan-wide filesystem traversal budget of 100,000 entries plus 1,000,000 logical path-work units shared across active-root and repository-wide discovery, with the same directory-entry and path-component charges on every supported operating system; exhaustion remains a contextual incomplete `FV-E003`/ `FV-E015` error rather than `FV008` or `FV-E011`.
 - Keeps filesystem identity for traversal-boundary and root deduplication while classifying every distinct eligible repository-relative alias, including hard-linked files with different fixture-rule suffixes.
