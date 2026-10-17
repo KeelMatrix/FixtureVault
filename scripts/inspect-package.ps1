@@ -29,6 +29,25 @@ function Assert-Contract {
 $resolvedPackage = (Resolve-Path -LiteralPath $PackagePath).Path
 Assert-Contract ([IO.Path]::GetExtension($resolvedPackage) -eq ".nupkg") "Package inspection requires a .nupkg file."
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+$websiteManifest = Get-Content -LiteralPath (Join-Path $repositoryRoot "keelmatrix.website.json") -Raw | ConvertFrom-Json -AsHashtable
+$websiteClassification = $websiteManifest.packages["KeelMatrix.FixtureVault"]
+Assert-Contract ($null -ne $websiteClassification) "Website manifest is missing KeelMatrix.FixtureVault."
+$expectedVisibilityTag = switch ([string]$websiteClassification.visibility) {
+    "public-product" { "keelmatrix-public-product" }
+    "internal-package" { "keelmatrix-internal-package" }
+    default { throw "Website manifest has an unsupported package visibility." }
+}
+$expectedRoleTag = switch ([string]$websiteClassification.role) {
+    "primary" { "keelmatrix-primary" }
+    "component" { "keelmatrix-component" }
+    default { throw "Website manifest has an unsupported package role." }
+}
+$projectDefinitionPath = Join-Path $repositoryRoot "src/KeelMatrix.FixtureVault/KeelMatrix.FixtureVault.csproj"
+Assert-Contract (Test-Path -LiteralPath $projectDefinitionPath -PathType Leaf) "Package project definition is missing."
+[xml]$projectDefinition = [IO.File]::ReadAllText($projectDefinitionPath)
+$descriptionNode = $projectDefinition.SelectSingleNode("/*[local-name()='Project']/*[local-name()='PropertyGroup']/*[local-name()='Description']")
+Assert-Contract ($null -ne $descriptionNode -and -not [string]::IsNullOrWhiteSpace($descriptionNode.InnerText)) "Package project description is missing."
+$sourceDescription = [string]$descriptionNode.InnerText
 $projectReadmePath = Join-Path $repositoryRoot "src/KeelMatrix.FixtureVault/README.md"
 Assert-Contract (Test-Path -LiteralPath $projectReadmePath -PathType Leaf) "Project-local package README is missing: $projectReadmePath"
 $expectedReadmeBytes = [IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $projectReadmePath).Path)
@@ -142,10 +161,27 @@ try {
     Assert-Contract ($metadata.version -eq $ExpectedVersion) "Package version is $($metadata.version), expected $ExpectedVersion."
     Assert-Contract ($metadata.authors -eq "KeelMatrix") "Package authors must be KeelMatrix."
     Assert-Contract ($null -ne $metadata.copyright -and ([string]$metadata.copyright) -ceq "KeelMatrix") "Package copyright must be exactly KeelMatrix."
+    Assert-Contract ([string]$metadata.description -ceq $sourceDescription) "Package description must match the source project metadata."
     Assert-Contract ($metadata.license.type -eq "expression" -and $metadata.license.InnerText -eq "MIT") "Package license must be the MIT expression."
     Assert-Contract ($metadata.readme -eq "README.md") "NuGet README metadata must point to README.md."
     Assert-Contract ($metadata.icon -eq "icon.png") "NuGet icon metadata must point to icon.png."
+    Assert-Contract ([string]$metadata.projectUrl -ceq "https://github.com/KeelMatrix/FixtureVault") "Package project URL must be the canonical GitHub repository root."
     Assert-Contract ($metadata.repository.type -eq "git" -and $metadata.repository.url -eq "https://github.com/KeelMatrix/FixtureVault") "Repository metadata is incorrect."
+    $packageTags = @(([string]$metadata.tags) -split "[;\s]+" | Where-Object { -not [string]::IsNullOrEmpty($_) })
+    $visibilityTags = [System.Collections.Generic.List[string]]::new()
+    $roleTags = [System.Collections.Generic.List[string]]::new()
+    foreach ($tag in $packageTags) {
+        if ([string]::Equals($tag, "keelmatrix-public-product", [StringComparison]::OrdinalIgnoreCase) -or
+            [string]::Equals($tag, "keelmatrix-internal-package", [StringComparison]::OrdinalIgnoreCase)) {
+            $visibilityTags.Add($tag)
+        }
+        if ([string]::Equals($tag, "keelmatrix-primary", [StringComparison]::OrdinalIgnoreCase) -or
+            [string]::Equals($tag, "keelmatrix-component", [StringComparison]::OrdinalIgnoreCase)) {
+            $roleTags.Add($tag)
+        }
+    }
+    Assert-Contract ($visibilityTags.Count -eq 1 -and [string]::Equals($visibilityTags[0], $expectedVisibilityTag, [StringComparison]::Ordinal)) "Package visibility tag must be exactly one canonical sentinel matching the website manifest."
+    Assert-Contract ($roleTags.Count -eq 1 -and [string]::Equals($roleTags[0], $expectedRoleTag, [StringComparison]::Ordinal)) "Package role tag must be exactly one canonical sentinel matching the website manifest."
     $packageTypes = @($metadata.packageTypes.packageType | ForEach-Object { $_.name })
     Assert-Contract ($packageTypes.Count -eq 1 -and $packageTypes[0] -eq "DotnetTool") "Package type must be DotnetTool."
 

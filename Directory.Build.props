@@ -31,7 +31,7 @@
     <Copyright>KeelMatrix</Copyright>
     <RepositoryType>git</RepositoryType>
     <RepositoryUrl>https://github.com/KeelMatrix/FixtureVault</RepositoryUrl>
-    <PackageProjectUrl>https://github.com/KeelMatrix/FixtureVault#readme</PackageProjectUrl>
+    <PackageProjectUrl>https://github.com/KeelMatrix/FixtureVault</PackageProjectUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageIcon>icon.png</PackageIcon>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>

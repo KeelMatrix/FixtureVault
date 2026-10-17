@@ -254,11 +254,28 @@ function Copy-ZipWithNuspecMutation {
             "id" { "/*[local-name()='package']/*[local-name()='metadata']/*[local-name()='id']" }
             "version" { "/*[local-name()='package']/*[local-name()='metadata']/*[local-name()='version']" }
             "commit" { "/*[local-name()='package']/*[local-name()='metadata']/*[local-name()='repository']" }
-            default { throw "Unknown symbol nuspec mutation: $Mutation" }
+            "repository-url" { "/*[local-name()='package']/*[local-name()='metadata']/*[local-name()='repository']" }
+            "project-url" { "/*[local-name()='package']/*[local-name()='metadata']/*[local-name()='projectUrl']" }
+            "tags" { "/*[local-name()='package']/*[local-name()='metadata']/*[local-name()='tags']" }
+            "description" { "/*[local-name()='package']/*[local-name()='metadata']/*[local-name()='description']" }
+            "readme" { "/*[local-name()='package']/*[local-name()='metadata']/*[local-name()='readme']" }
+            "package-type" { "/*[local-name()='package']/*[local-name()='metadata']/*[local-name()='packageTypes']/*[local-name()='packageType']" }
+            default { throw "Unknown nuspec mutation: $Mutation" }
         }
         $node = $nuspec.SelectSingleNode($nodePath)
-        Assert-Contract ($null -ne $node) "The symbol nuspec mutation source is missing $Mutation."
-        if ($Mutation -eq "commit") { $node.SetAttribute("commit", $Value) } else { $node.InnerText = $Value }
+        Assert-Contract ($null -ne $node) "The package nuspec mutation source is missing $Mutation."
+        if ($Mutation -eq "commit") {
+            $node.SetAttribute("commit", $Value)
+        }
+        elseif ($Mutation -eq "repository-url") {
+            $node.SetAttribute("url", $Value)
+        }
+        elseif ($Mutation -eq "package-type") {
+            $node.SetAttribute("name", $Value)
+        }
+        else {
+            $node.InnerText = $Value
+        }
         $settings = [Xml.XmlWriterSettings]::new()
         $settings.Encoding = [Text.UTF8Encoding]::new($false)
         $xmlStream = [IO.MemoryStream]::new()
@@ -400,6 +417,29 @@ try {
     $inspectionScriptPath = Join-Path $repositoryRoot "scripts/inspect-package.ps1"
     Invoke-NestedPwsh -NoProfile -File $inspectionScriptPath -PackagePath $normalPackagePath -SymbolsPackagePath $normalSymbolsPackagePath -ExpectedVersion "0.1.0" -ExpectedCommit $repositoryCommit
     Assert-Contract ($LASTEXITCODE -eq 0) "Normal pack archives failed package-content inspection."
+
+    $websiteMetadataCases = @(
+        [pscustomobject]@{ Name = "project-url-fragment"; Mutation = "project-url"; Value = "https://github.com/KeelMatrix/FixtureVault#readme"; Expected = "Package project URL must be the canonical GitHub repository root." },
+        [pscustomobject]@{ Name = "missing-visibility-sentinel"; Mutation = "tags"; Value = "snapshot-testing;approval-testing;keelmatrix-primary"; Expected = "Package visibility tag must be exactly one canonical sentinel matching the website manifest." },
+        [pscustomobject]@{ Name = "visibility-manifest-disagreement"; Mutation = "tags"; Value = "snapshot-testing;keelmatrix-internal-package;keelmatrix-primary"; Expected = "Package visibility tag must be exactly one canonical sentinel matching the website manifest." },
+        [pscustomobject]@{ Name = "wrong-case-role-sentinel"; Mutation = "tags"; Value = "snapshot-testing;KEELMATRIX-PRIMARY;keelmatrix-public-product"; Expected = "Package role tag must be exactly one canonical sentinel matching the website manifest." },
+        [pscustomobject]@{ Name = "duplicate-role-sentinels"; Mutation = "tags"; Value = "snapshot-testing;keelmatrix-public-product;keelmatrix-primary;keelmatrix-component"; Expected = "Package role tag must be exactly one canonical sentinel matching the website manifest." },
+        [pscustomobject]@{ Name = "manifest-role-disagreement"; Mutation = "tags"; Value = "snapshot-testing;keelmatrix-public-product;keelmatrix-component"; Expected = "Package role tag must be exactly one canonical sentinel matching the website manifest." },
+        [pscustomobject]@{ Name = "empty-description"; Mutation = "description"; Value = ""; Expected = "Package description must match the source project metadata." },
+        [pscustomobject]@{ Name = "wrong-repository-url"; Mutation = "repository-url"; Value = "https://github.com/KeelMatrix/Other"; Expected = "Repository metadata is incorrect." },
+        [pscustomobject]@{ Name = "wrong-readme-metadata"; Mutation = "readme"; Value = "README.txt"; Expected = "NuGet README metadata must point to README.md." },
+        [pscustomobject]@{ Name = "wrong-package-type"; Mutation = "package-type"; Value = "Dependency"; Expected = "Package type must be DotnetTool." }
+    )
+    foreach ($metadataCase in $websiteMetadataCases) {
+        $mutatedPackagePath = Join-Path $workRoot ("website-" + $metadataCase.Name + ".nupkg")
+        Copy-ZipWithNuspecMutation $normalPackagePath $mutatedPackagePath $metadataCase.Mutation $metadataCase.Value
+        $mutatedPackageResult = Invoke-PackageInspection $inspectionScriptPath $mutatedPackagePath $repositoryCommit
+        Assert-Contract ($mutatedPackageResult.ExitCode -ne 0) "Package inspection unexpectedly accepted the $($metadataCase.Name) package metadata."
+        $normalizedOutput = [Text.RegularExpressions.Regex]::Replace($mutatedPackageResult.Output, '\s*\|\s*', ' ')
+        $normalizedOutput = [Text.RegularExpressions.Regex]::Replace($normalizedOutput, '\s+', ' ').Trim()
+        Assert-Contract ($normalizedOutput.Contains($metadataCase.Expected, [StringComparison]::Ordinal)) "Package inspection rejected $($metadataCase.Name) without the expected metadata error. $($mutatedPackageResult.Output)"
+    }
+    Write-Host "Package inspection rejected incorrect website URLs, sentinel tags, descriptions, repository metadata, README metadata, and package type as expected."
 
     $symbolRequiredEntries = @(
         "_rels/.rels",

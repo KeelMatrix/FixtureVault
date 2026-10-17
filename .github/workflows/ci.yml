@@ -33,6 +33,10 @@ jobs:
         with:
           dotnet-version: "8.0.424"
 
+      - name: Validate website package metadata
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/test-website-package-contract.ps1
+
       - name: Restore dependencies
         run: dotnet restore KeelMatrix.FixtureVault.sln
 
