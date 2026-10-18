@@ -435,7 +435,8 @@ try {
         Copy-ZipWithNuspecMutation $normalPackagePath $mutatedPackagePath $metadataCase.Mutation $metadataCase.Value
         $mutatedPackageResult = Invoke-PackageInspection $inspectionScriptPath $mutatedPackagePath $repositoryCommit
         Assert-Contract ($mutatedPackageResult.ExitCode -ne 0) "Package inspection unexpectedly accepted the $($metadataCase.Name) package metadata."
-        $normalizedOutput = [Text.RegularExpressions.Regex]::Replace($mutatedPackageResult.Output, '\s*\|\s*', ' ')
+        $normalizedOutput = [Text.RegularExpressions.Regex]::Replace($mutatedPackageResult.Output, '\x1B\[[0-?]*[ -/]*[@-~]', '')
+        $normalizedOutput = [Text.RegularExpressions.Regex]::Replace($normalizedOutput, '\s*\|\s*', ' ')
         $normalizedOutput = [Text.RegularExpressions.Regex]::Replace($normalizedOutput, '\s+', ' ').Trim()
         Assert-Contract ($normalizedOutput.Contains($metadataCase.Expected, [StringComparison]::Ordinal)) "Package inspection rejected $($metadataCase.Name) without the expected metadata error. $($mutatedPackageResult.Output)"
     }
